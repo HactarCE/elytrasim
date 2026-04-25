@@ -1,80 +1,173 @@
+mod optimizer;
 mod sim;
 
 use sim::*;
 
+use crate::optimizer::*;
+
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
 
 fn main() -> eframe::Result {
-    let mut entity = Entity {
-        pos: Vec3::ZERO,
-        vel: Vec3::ZERO,
-        rot: Rot { x: 0.0, y: 0.0 },
-    };
-
-    let mut running = false;
-    let mut next_tick = std::time::Instant::now();
+    let ticks = 100;
+    let mut optimizer = Optimizer::from(Pitches::new(ticks));
+    println!(
+        "state after cycle from zero: {:#?}",
+        optimizer.pitches.after_cycle(Vec3::ZERO)
+    );
 
     eframe::run_ui_native(
-        "Eltyra Sim",
+        "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
             let now = std::time::Instant::now();
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                ui.group(|ui| {
-                    ui.checkbox(&mut running, "Running");
-                    if ui.button("Step").clicked() {
-                        entity.travel();
-                        running = false;
-                    } else if running {
-                        if next_tick <= now {
-                            entity.travel();
-                            next_tick += TICK_DURATION;
-                        }
-                        ui.request_repaint_after(next_tick.saturating_duration_since(now));
+                // square
+                let rect = {
+                    let rect = ui.max_rect();
+                    let size = rect.size();
+                    egui::Rect::from_min_size(rect.min, size)
+                };
+                for (tick, (state, pitch)) in optimizer
+                    .pitches
+                    .cycle(Vec3::ZERO)
+                    .iter()
+                    .zip(optimizer.pitches.0.iter())
+                    .enumerate()
+                {
+                    let x = rect.left()
+                        + (tick as f32 / optimizer.pitches.0.len() as f32) * rect.width();
+                    let mut dot_at = |y: f32, rad: f32, color: egui::Color32| {
+                        let dot_rect = egui::Rect::from_center_size(
+                            egui::Pos2::new(x, y),
+                            egui::Vec2::splat(10.0),
+                        );
+                        let response = ui.allocate_rect(dot_rect, egui::Sense::hover());
+                        ui.painter().circle_filled(egui::pos2(x, y), rad, color);
+                        // response.on_hover_text(format!(
+                        //     "tick {}:\napplied pitch {:.2}\nresulting state: {:#?}",
+                        //     i, pitch, state
+                        // ));
+                        response
+                    };
+
+                    // pitch (pink)
+                    {
+                        let y = rect.center().y - (*pitch / 90.0) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(252, 3, 198))
+                            .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
                     }
-                    if ui.button("Reset").clicked() {
-                        entity = Entity::default();
+
+                    // pos.y (dark green)
+                    {
+                        let y =
+                            rect.center().y - (state.pos.y as f32 / 100.0) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(0, 100, 0))
+                            .on_hover_text(format!("tick: {}, pos.y: {}", tick, state.pos.y));
                     }
-                });
 
-                ui.group(|ui| {
-                    ui.strong("Position");
-                    ui.label("X");
-                    ui.add(pos_slider(&mut entity.pos.x));
-                    ui.label("Y");
-                    ui.add(pos_slider(&mut entity.pos.y));
-                    ui.label("Z");
-                    ui.add(pos_slider(&mut entity.pos.z));
-                });
+                    // pos.z (dark blue)
+                    {
+                        let y =
+                            rect.center().y - (state.pos.z as f32 / 100.0) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(52, 61, 235))
+                            .on_hover_text(format!("tick: {}, pos.z: {}", tick, state.pos.z));
+                    }
 
-                ui.group(|ui| {
-                    ui.strong("Velocity");
-                    ui.label(format!("X = {:.3}", entity.vel.x * 20.0));
-                    ui.add(vel_slider(&mut entity.vel.x));
-                    ui.label(format!("Y = {:.3}", entity.vel.y * 20.0));
-                    ui.add(vel_slider(&mut entity.vel.y));
-                    ui.label(format!("Z = {:.3}", entity.vel.z * 20.0));
-                    ui.add(vel_slider(&mut entity.vel.z));
-                });
+                    // vel.y (light green)
+                    {
+                        let y =
+                            rect.center().y - (state.vel.y as f32 / 5.0) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(144, 238, 144))
+                            .on_hover_text(format!("tick: {}, vel.y: {}", tick, state.vel.y));
+                    }
 
-                ui.group(|ui| {
-                    ui.strong("Rotation");
-                    ui.label("X");
-                    ui.add(
-                        egui::Slider::new(&mut entity.rot.x, -180.0..=180.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-                    ui.label("Y");
-                    ui.add(
-                        egui::Slider::new(&mut entity.rot.y, -90.0..=90.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-                });
+                    // vel.z (light blue)
+                    {
+                        let y =
+                            rect.center().y - (state.vel.z as f32 / 5.0) * (rect.height() / 2.0);
+                        dot_at(y, 4.0, egui::Color32::from_rgb(52, 165, 235))
+                            .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
+                    }
+                }
             });
         },
     )
 }
+
+// pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
+
+// fn main() -> eframe::Result {
+//     let mut entity = Entity {
+//         pos: Vec3::ZERO,
+//         vel: Vec3::ZERO,
+//         rot: Rot { x: 0.0, y: 0.0 },
+//     };
+
+//     let mut running = false;
+//     let mut next_tick = std::time::Instant::now();
+
+//     eframe::run_ui_native(
+//         "Elytra Sim",
+//         eframe::NativeOptions::default(),
+//         move |ui, _frame| {
+//             let now = std::time::Instant::now();
+
+//             egui::CentralPanel::default().show_inside(ui, |ui| {
+//                 ui.group(|ui| {
+//                     ui.checkbox(&mut running, "Running");
+//                     if ui.button("Step").clicked() {
+//                         entity.travel();
+//                         running = false;
+//                     } else if running {
+//                         if next_tick <= now {
+//                             entity.travel();
+//                             next_tick += TICK_DURATION;
+//                         }
+//                         ui.request_repaint_after(next_tick.saturating_duration_since(now));
+//                     }
+//                     if ui.button("Reset").clicked() {
+//                         entity = Entity::default();
+//                     }
+//                 });
+
+//                 ui.group(|ui| {
+//                     ui.strong("Position");
+//                     ui.label("X");
+//                     ui.add(pos_slider(&mut entity.pos.x));
+//                     ui.label("Y");
+//                     ui.add(pos_slider(&mut entity.pos.y));
+//                     ui.label("Z");
+//                     ui.add(pos_slider(&mut entity.pos.z));
+//                 });
+
+//                 ui.group(|ui| {
+//                     ui.strong("Velocity");
+//                     ui.label(format!("X = {:.3}", entity.vel.x * 20.0));
+//                     ui.add(vel_slider(&mut entity.vel.x));
+//                     ui.label(format!("Y = {:.3}", entity.vel.y * 20.0));
+//                     ui.add(vel_slider(&mut entity.vel.y));
+//                     ui.label(format!("Z = {:.3}", entity.vel.z * 20.0));
+//                     ui.add(vel_slider(&mut entity.vel.z));
+//                 });
+
+//                 ui.group(|ui| {
+//                     ui.strong("Rotation");
+//                     ui.label("X");
+//                     ui.add(
+//                         egui::Slider::new(&mut entity.rot.x, -180.0..=180.0)
+//                             .clamping(egui::SliderClamping::Never),
+//                     );
+//                     ui.label("Y");
+//                     ui.add(
+//                         egui::Slider::new(&mut entity.rot.y, -90.0..=90.0)
+//                             .clamping(egui::SliderClamping::Never),
+//                     );
+//                 });
+//             });
+//         },
+//     )
+// }
 
 pub fn pos_slider(value: &mut f64) -> egui::Slider<'_> {
     egui::Slider::new(value, -100.0..=100.0).clamping(egui::SliderClamping::Never)
