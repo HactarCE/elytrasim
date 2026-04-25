@@ -21,7 +21,7 @@ impl Entity {
 }
 
 pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
-    let look_angle: Vec3 = dbg!(rot.look_angle());
+    let look_angle: Vec3 = rot.look_angle();
     let lean_angle: f32 = rot.x * (PI / 180.0) as f32;
 
     let look_hor_length: f64 = (look_angle.x * look_angle.x + look_angle.z * look_angle.z).sqrt();
@@ -31,13 +31,11 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
     vel.y += gravity * (-1.0 + lift_force * 0.75);
     if vel.y < 0.0 && look_hor_length > 0.0 {
         let convert: f64 = vel.y * -0.1 * lift_force;
-        dbg!(vel);
         vel += Vec3::new(
             look_angle.x * convert / look_hor_length,
             convert,
             look_angle.z * convert / look_hor_length,
         );
-        dbg!(vel);
     }
 
     if lean_angle < 0.0 && look_hor_length > 0.0 {
