@@ -1,6 +1,5 @@
 mod entity;
 mod mth;
-mod orig_entity;
 mod rot;
 mod vec3;
 
