@@ -25,8 +25,13 @@ fn main() -> eframe::Result {
         // let pitches = Pitches::new_4040(ticks, 0.65);
         let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
 
-        // OptimizerInitState::new(Vel::ZERO, pitches)
         OptimizerSteadyState::new(pitches)
+
+        // // let vel = Vel::ZERO;
+        // // the optimal steady state vel
+        // let vel = Vel::new(0.0, 0.17, 0.2);
+
+        // OptimizerInitState::new(vel, pitches)
     };
 
     let mut optimization_strategy = OptimizationStrategy::GradientDescent;
@@ -37,6 +42,35 @@ fn main() -> eframe::Result {
 
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
+
+    fn get_neighboring_optimizers<const N: usize>(
+        base_vel: Vel,
+        base_pitches: &Pitches,
+        delta_vel: f64,
+    ) -> [[OptimizerInitState; N]; N] {
+        (0..N)
+            .map(|i| {
+                let delta_y = (i as f64 - (N as f64 - 1.0) / 2.0) * delta_vel;
+                (0..N)
+                    .map(|j| {
+                        let delta_z = (j as f64 - (N as f64 - 1.0) / 2.0) * delta_vel;
+                        let vel = base_vel + Vel::new(0.0, delta_y, delta_z);
+                        OptimizerInitState::new(vel, base_pitches.clone())
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
+    // OptimizerInitState in a grid around the optimal steady state vel, for comparison
+    const N: usize = 3;
+    // const N: usize = 5;
+    let mut neighboring_delta_vel = 0.5;
+    let mut neighboring_optimizers: Option<[[OptimizerInitState; N]; N]> = None;
 
     eframe::run_ui_native(
         "Elytra Sim",
@@ -58,6 +92,13 @@ fn main() -> eframe::Result {
                         if ui.button("-").on_hover_text("hold shift for 10x").clicked() {
                             for _ in 0..mul {
                                 optimizer.pitches.0.pop();
+                                if let Some(optimizers) = neighboring_optimizers.as_mut() {
+                                    for line in optimizers.iter_mut() {
+                                        for optimizer in line.iter_mut() {
+                                            optimizer.pitches.0.pop();
+                                        }
+                                    }
+                                }
                             }
                         }
                         if ui.button("+").on_hover_text("hold shift for 10x").clicked() {
@@ -66,29 +107,35 @@ fn main() -> eframe::Result {
                                     .pitches
                                     .0
                                     .push(*optimizer.pitches.0.last().unwrap_or(&0.0));
+                                if let Some(optimizers) = neighboring_optimizers.as_mut() {
+                                    for line in optimizers.iter_mut() {
+                                        for optimizer in line.iter_mut() {
+                                            optimizer
+                                                .pitches
+                                                .0
+                                                .push(*optimizer.pitches.0.last().unwrap_or(&0.0));
+                                        }
+                                    }
+                                }
                             }
                         }
                     });
                 });
 
-                // optimization on / off
+                // neighboring optimizers
                 ui.group(|ui| {
-                    if ui.button("optimization step").clicked() {
-                        match optimization_strategy {
-                            OptimizationStrategy::GradientDescent => {
-                                optimizer.gradient_descent_step(learning_rate)
-                            }
-                            OptimizationStrategy::FixedDelta => {
-                                optimizer.fixed_delta_step(fixed_delta)
-                            }
-                        }
+                    if ui.button("set neighboring optimizers").clicked() {
+                        neighboring_optimizers = Some(get_neighboring_optimizers::<N>(
+                            optimizer.init_vel(),
+                            &optimizer.pitches,
+                            neighboring_delta_vel,
+                        ));
                     }
-                    ui.checkbox(&mut optimizing, "optimizing");
-                    ui.label("optimization steps per frame:");
-                    ui.add(egui::Slider::new(
-                        &mut optimization_steps_per_frame,
-                        0..=100,
-                    ));
+                    if ui.button("clear neighboring optimizers").clicked() {
+                        neighboring_optimizers = None;
+                    }
+                    ui.label("neighboring optimizers delta vel:");
+                    ui.add(egui::Slider::new(&mut neighboring_delta_vel, 0.0..=1.0));
                 });
 
                 // optimizer parameters
@@ -119,16 +166,48 @@ fn main() -> eframe::Result {
                     ui.add(egui::Slider::new(&mut fixed_delta, 0.0..=1.0));
                 });
 
-                // do the optimization steps
-                if optimizing {
-                    for _ in 0..optimization_steps_per_frame {
-                        match optimization_strategy {
-                            OptimizationStrategy::GradientDescent => {
-                                optimizer.gradient_descent_step(learning_rate)
+                // optimization on / off
+                {
+                    let mut do_optimization_step = || match optimization_strategy {
+                        OptimizationStrategy::GradientDescent => {
+                            optimizer.gradient_descent_step(learning_rate);
+                            if let Some(optimizers) = neighboring_optimizers.as_mut() {
+                                for line in optimizers.iter_mut() {
+                                    for optimizer in line.iter_mut() {
+                                        optimizer.gradient_descent_step(learning_rate);
+                                    }
+                                }
                             }
-                            OptimizationStrategy::FixedDelta => {
-                                optimizer.fixed_delta_step(fixed_delta)
+                        }
+                        OptimizationStrategy::FixedDelta => {
+                            optimizer.fixed_delta_step(fixed_delta);
+                            if let Some(optimizers) = neighboring_optimizers.as_mut() {
+                                for line in optimizers.iter_mut() {
+                                    for optimizer in line.iter_mut() {
+                                        optimizer.fixed_delta_step(fixed_delta);
+                                    }
+                                }
                             }
+                        }
+                    };
+
+                    // optimization on / off
+                    ui.group(|ui| {
+                        if ui.button("optimization step").clicked() {
+                            do_optimization_step();
+                        }
+                        ui.checkbox(&mut optimizing, "optimizing");
+                        ui.label("optimization steps per frame:");
+                        ui.add(egui::Slider::new(
+                            &mut optimization_steps_per_frame,
+                            0..=100,
+                        ));
+                    });
+
+                    // do the optimization steps
+                    if optimizing {
+                        for _ in 0..optimization_steps_per_frame {
+                            do_optimization_step();
                         }
                     }
                 }
@@ -177,6 +256,21 @@ fn main() -> eframe::Result {
                     }
                 }
 
+                let value_to_y = |value: f32, approx_max_value: f32| {
+                    rect.center().y - (value / approx_max_value) * (rect.height() / 2.0)
+                };
+
+                let mut dot_at = |x, y: f32, rad: f32, color: egui::Color32| {
+                    let dot_rect = egui::Rect::from_center_size(
+                        egui::Pos2::new(x, y),
+                        egui::Vec2::splat(10.0),
+                    );
+                    let r = ui.allocate_rect(dot_rect, egui::Sense::hover());
+                    ui.painter().circle_filled(egui::pos2(x, y), rad, color);
+                    r
+                };
+
+                // show all the stuff for the main optimizer
                 for (tick, (state, pitch)) in optimizer
                     .pitches
                     .cycle(optimizer.init_vel())
@@ -186,24 +280,10 @@ fn main() -> eframe::Result {
                     let x = rect.left()
                         + (tick as f32 / optimizer.pitches.0.len() as f32) * rect.width();
 
-                    let value_to_y = |value: f32, approx_max_value: f32| {
-                        rect.center().y - (value / approx_max_value) * (rect.height() / 2.0)
-                    };
-
-                    let mut dot_at = |y: f32, rad: f32, color: egui::Color32| {
-                        let dot_rect = egui::Rect::from_center_size(
-                            egui::Pos2::new(x, y),
-                            egui::Vec2::splat(10.0),
-                        );
-                        let r = ui.allocate_rect(dot_rect, egui::Sense::hover());
-                        ui.painter().circle_filled(egui::pos2(x, y), rad, color);
-                        r
-                    };
-
                     // pitch (pink)
                     {
                         let y = value_to_y(-*pitch, 90.0);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(252, 3, 198))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(252, 3, 198))
                             .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
                     }
 
@@ -217,35 +297,35 @@ fn main() -> eframe::Result {
                         let approx_max_grad = 0.01;
                         let grad = grad.clamp(-approx_max_grad, approx_max_grad);
                         let y = value_to_y(-grad, approx_max_grad);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(128, 0, 128))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(128, 0, 128))
                             .on_hover_text(format!("tick: {}, pitch gradient: {}", tick, grad));
                     }
 
                     // pos.y (dark green)
                     {
                         let y = value_to_y(state.pos.y as f32, 100.0);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(0, 100, 0))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(0, 100, 0))
                             .on_hover_text(format!("tick: {}, pos.y: {}", tick, state.pos.y));
                     }
 
                     // pos.z (dark blue)
                     {
                         let y = value_to_y(state.pos.z as f32, 100.0);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(52, 61, 235))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(52, 61, 235))
                             .on_hover_text(format!("tick: {}, pos.z: {}", tick, state.pos.z));
                     }
 
                     // vel.y (light green)
                     {
                         let y = value_to_y(state.vel.y as f32, 5.0);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(144, 238, 144))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(144, 238, 144))
                             .on_hover_text(format!("tick: {}, vel.y: {}", tick, state.vel.y));
                     }
 
                     // vel.z (light blue)
                     {
                         let y = value_to_y(state.vel.z as f32, 5.0);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(52, 165, 235))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(52, 165, 235))
                             .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
                     }
 
@@ -254,7 +334,7 @@ fn main() -> eframe::Result {
                     {
                         let ke = state.kinetic_energy();
                         let y = value_to_y(ke as f32, approx_max_energy);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(235, 214, 52))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(235, 214, 52))
                             .on_hover_text(format!("tick: {}, kinetic energy: {}", tick, ke));
                     }
 
@@ -262,7 +342,7 @@ fn main() -> eframe::Result {
                     {
                         let pe = state.potential_energy();
                         let y = value_to_y(pe as f32, approx_max_energy);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(255, 0, 0))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(255, 0, 0))
                             .on_hover_text(format!("tick: {}, potential energy: {}", tick, pe));
                     }
 
@@ -270,8 +350,145 @@ fn main() -> eframe::Result {
                     {
                         let energy = state.total_energy();
                         let y = value_to_y(energy as f32, approx_max_energy);
-                        dot_at(y, 4.0, egui::Color32::from_rgb(235, 143, 52))
+                        dot_at(x, y, 4.0, egui::Color32::from_rgb(235, 143, 52))
                             .on_hover_text(format!("tick: {}, total energy: {}", tick, energy));
+                    }
+                }
+
+                // show the optimizer grid
+                if let Some(optimizers) = neighboring_optimizers.as_mut() {
+                    for line in optimizers.iter() {
+                        for optimizer in line.iter() {
+                            for (tick, (state, pitch)) in optimizer
+                                .pitches
+                                .cycle(optimizer.init_vel())
+                                .zip(optimizer.pitches.0.iter())
+                                .enumerate()
+                            {
+                                let x = rect.left()
+                                    + (tick as f32 / optimizer.pitches.0.len() as f32)
+                                        * rect.width();
+
+                                // pitch (pink)
+                                {
+                                    let y = value_to_y(-*pitch, 90.0);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(252, 3, 198))
+                                        .on_hover_text(format!(
+                                            "tick: {}, pitch: {}, init_vel: {:?}",
+                                            tick,
+                                            pitch,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // pitch gradient (purple)
+                                // actually this just goes to zero, so it's not very interesting
+                                #[cfg(false)]
+                                {
+                                    // this is for the ui, just clone it.
+                                    let mut pitches = optimizer.pitches.clone();
+                                    let grad = pitches.grad_at_tick(optimizer.init_vel(), tick);
+                                    let approx_max_grad = 0.01;
+                                    let grad = grad.clamp(-approx_max_grad, approx_max_grad);
+                                    let y = value_to_y(-grad, approx_max_grad);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(128, 0, 128))
+                                        .on_hover_text(format!(
+                                            "tick: {}, pitch gradient: {}, init_vel: {:?}",
+                                            tick,
+                                            grad,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // pos.y (dark green)
+                                {
+                                    let y = value_to_y(state.pos.y as f32, 100.0);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(0, 100, 0))
+                                        .on_hover_text(format!(
+                                            "tick: {}, pos.y: {}, init_vel: {:?}",
+                                            tick,
+                                            state.pos.y,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // pos.z (dark blue)
+                                {
+                                    let y = value_to_y(state.pos.z as f32, 100.0);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(52, 61, 235))
+                                        .on_hover_text(format!(
+                                            "tick: {}, pos.z: {}, init_vel: {:?}",
+                                            tick,
+                                            state.pos.z,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // vel.y (light green)
+                                {
+                                    let y = value_to_y(state.vel.y as f32, 5.0);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(144, 238, 144))
+                                        .on_hover_text(format!(
+                                            "tick: {}, vel.y: {}, init_vel: {:?}",
+                                            tick,
+                                            state.vel.y,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // vel.z (light blue)
+                                {
+                                    let y = value_to_y(state.vel.z as f32, 5.0);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(52, 165, 235))
+                                        .on_hover_text(format!(
+                                            "tick: {}, vel.z: {}, init_vel: {:?}",
+                                            tick,
+                                            state.vel.z,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                let approx_max_energy = 4.0;
+                                // kinetic energy (yellow)
+                                {
+                                    let ke = state.kinetic_energy();
+                                    let y = value_to_y(ke as f32, approx_max_energy);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(235, 214, 52))
+                                        .on_hover_text(format!(
+                                            "tick: {}, kinetic energy: {}, init_vel: {:?}",
+                                            tick,
+                                            ke,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // potential energy (red)
+                                {
+                                    let pe = state.potential_energy();
+                                    let y = value_to_y(pe as f32, approx_max_energy);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(255, 0, 0))
+                                        .on_hover_text(format!(
+                                            "tick: {}, potential energy: {}, init_vel: {:?}",
+                                            tick,
+                                            pe,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+
+                                // total energy (orange)
+                                {
+                                    let energy = state.total_energy();
+                                    let y = value_to_y(energy as f32, approx_max_energy);
+                                    dot_at(x, y, 2.0, egui::Color32::from_rgb(235, 143, 52))
+                                        .on_hover_text(format!(
+                                            "tick: {}, total energy: {}, init_vel: {:?}",
+                                            tick,
+                                            energy,
+                                            optimizer.init_vel()
+                                        ));
+                                }
+                            }
+                        }
                     }
                 }
             });

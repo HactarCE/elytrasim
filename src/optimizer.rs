@@ -151,18 +151,7 @@ impl Pitches {
 
     /// +40 then 0 then lerp down.
     pub fn new_4000lerp(ticks: usize) -> Self {
-        const LEFT_CUT: f64 = 0.5;
-        const RIGHT_CUT: f64 = 0.7;
-        assert!(LEFT_CUT < RIGHT_CUT);
-        let left = (ticks as f64 * LEFT_CUT) as usize;
-        let right = (ticks as f64 * RIGHT_CUT) as usize;
-        Self(
-            (0..left)
-                .map(|_| 40.0)
-                .chain((left..right).map(|_| 0.0))
-                .chain((right..ticks).map(|_| -40.0))
-                .collect(),
-        )
+        todo!();
     }
 
     /// the state at each tick *after* applying the pitches.
