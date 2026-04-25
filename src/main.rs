@@ -19,7 +19,11 @@ fn main() -> eframe::Result {
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
-            let now = std::time::Instant::now();
+            egui::Panel::left("side_panel").show_inside(ui, |ui| {
+                if ui.button("optimization step").clicked() {
+                    optimizer.optimization_step();
+                }
+            });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 // square
@@ -88,6 +92,39 @@ fn main() -> eframe::Result {
                             rect.center().y - (state.vel.z as f32 / 5.0) * (rect.height() / 2.0);
                         dot_at(y, 4.0, egui::Color32::from_rgb(52, 165, 235))
                             .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
+                    }
+
+                    // energy
+                    {
+                        let energy_scale = 1.0 / 2.0;
+                        // kinetic energy (yellow)
+                        // kilograms * blocks^2 / ticks^2
+                        let ke = state.vel.length_sq() * 0.5;
+                        {
+                            let y = rect.center().y
+                                - (ke as f32 * energy_scale) * (rect.height() / 2.0);
+                            dot_at(y, 4.0, egui::Color32::from_rgb(235, 214, 52))
+                                .on_hover_text(format!("tick: {}, kinetic energy: {}", tick, ke));
+                        }
+
+                        // potential energy (red)
+                        // kilograms * blocks^2 / ticks^2
+                        let pe = state.pos.y * GRAVITY;
+                        {
+                            let y = rect.center().y
+                                - (pe as f32 * energy_scale) * (rect.height() / 2.0);
+                            dot_at(y, 4.0, egui::Color32::from_rgb(255, 0, 0))
+                                .on_hover_text(format!("tick: {}, potential energy: {}", tick, pe));
+                        }
+
+                        // total energy (orange)
+                        {
+                            let energy = ke + pe;
+                            let y = rect.center().y
+                                - (energy as f32 * energy_scale) * (rect.height() / 2.0);
+                            dot_at(y, 4.0, egui::Color32::from_rgb(235, 143, 52))
+                                .on_hover_text(format!("tick: {}, total energy: {}", tick, energy));
+                        }
                     }
                 }
             });

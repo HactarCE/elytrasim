@@ -16,6 +16,12 @@ impl Vec3 {
     pub fn horizontal_distance(self) -> f64 {
         (self.x * self.x + self.z * self.z).sqrt()
     }
+    pub fn length_sq(self) -> f64 {
+        self.x * self.x + self.y * self.y + self.z * self.z
+    }
+    pub fn length(self) -> f64 {
+        self.length_sq().sqrt()
+    }
 }
 
 impl AddAssign for Vec3 {

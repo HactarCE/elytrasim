@@ -133,7 +133,7 @@ impl Optimizer {
     }
 
     /// apply one step of optimization to the pitches.
-    fn optimization_step(&mut self) {
+  pub  fn optimization_step(&mut self) {
         for i in 0..self.pitches.0.len() {
             self.optimization_step_pitch(i);
         }
