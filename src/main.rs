@@ -1,368 +1,144 @@
+mod replay_pitches;
 mod sim;
 
-use egui::vec2;
 use sim::*;
 
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
+// const REPLAY_PITCHES: &[f32] = replay_pitches::FORTY_FORTY;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::FORTY_ZERO_FORTY;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::FOUR_LINES_300;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_200;
+const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_300;
+// const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_400;
 
 fn main() -> eframe::Result {
-    let pitches = vec![
-        2.2041235,
-        2.9893193,
-        4.074002,
-        5.578016,
-        7.6685104,
-        10.512784,
-        13.433644,
-        13.528389,
-        13.573162,
-        13.582421,
-        13.568344,
-        13.540985,
-        13.508449,
-        13.4771595,
-        13.452049,
-        13.436776,
-        13.433888,
-        13.445045,
-        13.471154,
-        13.512545,
-        13.569151,
-        13.640649,
-        13.726605,
-        13.858109,
-        14.103367,
-        14.365466,
-        14.642613,
-        14.933199,
-        15.235708,
-        15.548787,
-        15.871189,
-        16.20175,
-        16.539377,
-        16.883091,
-        17.231901,
-        17.584986,
-        17.941479,
-        18.300648,
-        18.661722,
-        19.02406,
-        19.387075,
-        19.750092,
-        20.11266,
-        20.474201,
-        20.83436,
-        21.192682,
-        21.548737,
-        21.902246,
-        22.252848,
-        22.60035,
-        22.944395,
-        23.284863,
-        23.621557,
-        23.954332,
-        24.283033,
-        24.607628,
-        24.927933,
-        25.243956,
-        25.555662,
-        25.863018,
-        26.166016,
-        26.464724,
-        26.75912,
-        27.049223,
-        27.335136,
-        27.616919,
-        27.89459,
-        28.168287,
-        28.43809,
-        28.70398,
-        28.966185,
-        29.224733,
-        29.479721,
-        29.731274,
-        29.979477,
-        30.224405,
-        30.466183,
-        30.704916,
-        30.940664,
-        31.173552,
-        31.403685,
-        31.631092,
-        31.85592,
-        32.078243,
-        32.298103,
-        32.515667,
-        32.730877,
-        32.94389,
-        33.154808,
-        33.363594,
-        33.570408,
-        33.775215,
-        33.978172,
-        34.1793,
-        34.378593,
-        34.576115,
-        34.771973,
-        34.966194,
-        35.158726,
-        35.349648,
-        35.53905,
-        35.72698,
-        35.91335,
-        36.09826,
-        36.281788,
-        36.463863,
-        36.64453,
-        36.823875,
-        37.00182,
-        37.178444,
-        37.353794,
-        37.527817,
-        37.70055,
-        37.87208,
-        38.042336,
-        38.21134,
-        38.379147,
-        38.545757,
-        38.711098,
-        38.875317,
-        39.038326,
-        39.200207,
-        39.360905,
-        39.520485,
-        39.678894,
-        39.836174,
-        39.992397,
-        40.14746,
-        40.301456,
-        40.454357,
-        40.60614,
-        40.756897,
-        40.906536,
-        41.055122,
-        41.202686,
-        41.349117,
-        41.494583,
-        41.638943,
-        41.782284,
-        41.924587,
-        42.06585,
-        42.206104,
-        42.345264,
-        42.48343,
-        42.620567,
-        42.75665,
-        42.89172,
-        43.025723,
-        43.158756,
-        43.290707,
-        43.421726,
-        43.551704,
-        43.68068,
-        43.80877,
-        43.935925,
-        44.062225,
-        44.187782,
-        44.312637,
-        44.437008,
-        44.560963,
-        44.68482,
-        44.808796,
-        44.933197,
-        45.05854,
-        45.185375,
-        45.31429,
-        45.44614,
-        45.581997,
-        45.72013,
-        45.856422,
-        45.99768,
-        46.14178,
-        46.27799,
-        46.390766,
-        46.49076,
-        46.589626,
-        46.68601,
-        46.778362,
-        46.86499,
-        46.94406,
-        47.01364,
-        47.071777,
-        47.11652,
-        47.146008,
-        47.158558,
-        47.152737,
-        47.127506,
-        47.082355,
-        47.017467,
-        46.93391,
-        46.43348,
-        45.47536,
-        44.13551,
-        42.29089,
-        39.79308,
-        1.5233016,
-        1.1420771,
-        0.72004724,
-        0.4557087,
-        0.365286,
-        0.28655583,
-        0.22103214,
-        0.16957241,
-        0.13287868,
-        0.11149618,
-        0.10455809,
-        0.103193514,
-        0.07538817,
-        -17.628214,
-        -36.381187,
-        -64.5585,
-        -82.631546,
-        -82.625275,
-        -82.55319,
-        -79.43314,
-        -75.416595,
-        -71.351906,
-        -67.56552,
-        -64.19418,
-        -61.236485,
-        -58.633514,
-        -56.318954,
-        -54.236233,
-        -52.34138,
-        -50.60108,
-        -48.990517,
-        -47.49101,
-        -46.087605,
-        -44.768566,
-        -43.524544,
-        -42.347637,
-        -41.231358,
-        -40.170036,
-        -39.159103,
-        -38.19427,
-        -37.271732,
-        -36.388557,
-        -35.541786,
-        -34.728996,
-        -33.947807,
-        -33.197018,
-        -32.473717,
-        -31.776304,
-        -31.103443,
-        -30.453566,
-        -29.825502,
-        -29.217987,
-        -28.629969,
-        -28.060482,
-        -27.508501,
-        -26.973194,
-        -26.453753,
-        -25.94946,
-        -25.459549,
-        -24.983358,
-        -24.520266,
-        -24.069754,
-        -23.631186,
-        -23.204111,
-        -22.788,
-        -22.382378,
-        -21.986855,
-        -21.600971,
-        -21.22437,
-        -20.856604,
-        -20.497389,
-        -20.146328,
-        -19.803099,
-        -19.467426,
-        -19.138927,
-        -18.817366,
-        -18.502365,
-        -18.19373,
-        -17.891094,
-        -17.59425,
-        -17.302841,
-        -17.016619,
-        -16.735308,
-        -16.458517,
-        -16.185974,
-        -15.917335,
-        -15.652224,
-        -15.390199,
-        -15.130762,
-        -14.873377,
-        -14.617364,
-        -14.3619175,
-        -14.106107,
-        -13.848643,
-        -13.587981,
-        -13.322128,
-        -13.048467,
-        -12.76348,
-        -12.462531,
-        -12.139348,
-        -11.785178,
-        -11.388125,
-        -10.931468,
-        -10.391628,
-        -9.735042,
-    ];
-    let mut state_index: usize = 0;
+    #[cfg(false)]
+    {
+        let vel = Vec3 {
+            x: 0.,
+            y: -0.6,
+            z: 2.4,
+        };
+        let state = State {
+            pos: Vec3::ZERO,
+            vel,
+        };
 
-    let mut replay_states = vec![State { pos: Vec3 { x: 0., y: 0., z: 0. }, vel: Vec3 { x: 0., y: 0.167467, z: 0.200887 } }];
-    for &p in &pitches {
-        let state = replay_states.last().expect("wtf");
-        replay_states.push(state.ticked(Rot { x: p, y: 0. }));
+        let next_plus = state.ticked(Rot { x: 1., y: 0. });
+        println!("plus: {:#?}", next_plus.sub(&state));
+
+        let next_zero = state.ticked(Rot { x: 0., y: 0. });
+        println!("zero: {:#?}", next_zero.sub(&state));
+
+        let next_minus = state.ticked(Rot { x: -1., y: 0. });
+        println!("minus: {:#?}", next_minus.sub(&state));
+
+        panic!();
     }
-    let replay_states = replay_states;
 
-    let mut base_vel = (0,0);
+    let mut grid_width = 100;
+
+    // const Y_VEL_LO: f64 = -3.;
+    // const Y_VEL_HI: f64 = 3.;
+    // const Z_VEL_LO: f64 = 0.;
+    // const Z_VEL_HI: f64 = 4.;
+
+    // TODO: make these uniform
+
+    // const Y_VEL_LO: f64 = -6.;
+    // const Y_VEL_HI: f64 = 6.;
+    // const Z_VEL_LO: f64 = 0.;
+    // const Z_VEL_HI: f64 = 8.;
+
+    const Z_VEL_LO: f64 = 0.;
+    let mut z_vel_hi = 4.;
+
+    let mut mag_scale = 0.04;
+    let mut arrow_scale = 0.6;
+
+    let mut draw_arrow_type = DrawArrowType::OptimalDeltaVel;
 
     let mut rot = Rot::new(0., 0.);
 
+    let mut clicked_cell = None;
 
-    let mut mag_scale = 1.;
-    let mut arrow_length = 5.;
-
-    const GRID_H: usize = 200;
-    const GRID_V: usize = 150;
-
-    let h_factor = 6.;
-    let v_factor = h_factor * GRID_H as f64/GRID_V as f64;
-
-    let grid_to_vel = move |(x,y): (usize, usize)| {
-        (h_factor * (x as f64 / GRID_H as f64), v_factor * (0.5 - (y as f64 / GRID_V as f64)))
-    };
-    let vel_to_grid = move |(z,y): (f64, f64)| {
-        ((z * (GRID_H as f64) / h_factor), (y - v_factor / 2.) * (GRID_V as f64) / -v_factor)
-    };
-    let mut grid_states: Vec<State> = vec![Entity::default().into(); GRID_H * GRID_V];
-    for x in 0..GRID_H {
-        for y in 0..GRID_V {
-            let s = &mut grid_states[x+GRID_H*y];
-            (s.vel.z, s.vel.y) = grid_to_vel((x,y));
+    let mut state_index: usize = 0;
+    let replay_states = {
+        let mut replay_states = vec![State {
+            pos: Vec3 {
+                x: 0.,
+                y: 0.,
+                z: 0.,
+            },
+            vel: Vec3 {
+                x: 0.,
+                y: 0.167467,
+                z: 0.200887,
+            },
+        }];
+        for p in REPLAY_PITCHES {
+            let state = replay_states.last().expect("wtf");
+            replay_states.push(state.ticked(Rot { x: *p, y: 0. }));
         }
-    }
-
-    let mut tick = false;
+        replay_states
+    };
 
     eframe::run_ui_native(
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
-
             egui::Panel::left("left").show_inside(ui, |ui| {
-                tick = false;
                 ui.group(|ui| {
+                    ui.label("Grid Width");
+                    ui.add(
+                        egui::Slider::new(&mut grid_width, 1..=500)
+                            .clamping(egui::SliderClamping::Never),
+                    );
+
+                    ui.label("Max Z Vel");
+                    ui.add(
+                        egui::Slider::new(&mut z_vel_hi, 0.0..=8.0)
+                            .clamping(egui::SliderClamping::Never),
+                    );
+
                     ui.label("Mag Scale");
                     ui.add(
-                        egui::Slider::new(&mut mag_scale, 0.0..=100.0).clamping(egui::SliderClamping::Never)
+                        egui::Slider::new(&mut mag_scale, 0.01..=100.0)
+                            .clamping(egui::SliderClamping::Never)
+                            .logarithmic(true),
                     );
-                    ui.label("Arrow length");
+
+                    ui.label("Arrow Scale");
                     ui.add(
-                        egui::Slider::new(&mut arrow_length, 0.0..=20.0)
+                        egui::Slider::new(&mut arrow_scale, 0.0..=2.0)
+                            .clamping(egui::SliderClamping::Never),
                     );
+
+                    // draw_arrow_type
+                    ui.label("Draw Arrow Type");
+                    egui::ComboBox::from_id_salt("Draw Arrow Type")
+                        .selected_text(match draw_arrow_type {
+                            DrawArrowType::GlobalPitch => "Global Pitch",
+                            DrawArrowType::OptimalPitch => "Optimal Pitch",
+                            DrawArrowType::OptimalDeltaVel => "Optimal Delta Vel",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut draw_arrow_type,
+                                DrawArrowType::GlobalPitch,
+                                "Global Pitch",
+                            );
+                            ui.selectable_value(
+                                &mut draw_arrow_type,
+                                DrawArrowType::OptimalPitch,
+                                "Optimal Pitch",
+                            );
+                            ui.selectable_value(
+                                &mut draw_arrow_type,
+                                DrawArrowType::OptimalDeltaVel,
+                                "Optimal Delta Vel",
+                            );
+                        });
                 });
                 ui.group(|ui| {
                     ui.strong("Rotation");
@@ -370,31 +146,40 @@ fn main() -> eframe::Result {
 
                     ui.add(
                         egui::Slider::new(&mut rot.x, -90.0..=90.0)
-                        .clamping(egui::SliderClamping::Never)
+                            .clamping(egui::SliderClamping::Never),
                     );
                     ui.label("Yaw");
                     ui.add(
                         egui::Slider::new(&mut rot.y, -90.0..=90.0)
-                        .clamping(egui::SliderClamping::Never)
+                            .clamping(egui::SliderClamping::Never),
                     );
-                    let a = rot.x * std::f32::consts::PI / 180.;
-                    ui.allocate_ui(vec2(50.,50.), |ui| {
-                        ui.painter().arrow(ui.available_rect_before_wrap().left_top(), 40. * vec2(a.cos(), a.sin()), (3.,egui::Color32::GRAY));
-                    } );
+                    ui.allocate_ui(egui::vec2(50., 50.), |ui| {
+                        ui.painter().arrow(
+                            ui.available_rect_before_wrap().left_top(),
+                            40. * egui::Vec2::angled(rot.x * std::f32::consts::PI / 180.),
+                            (3., egui::Color32::from_rgb(252, 3, 198)),
+                        );
+                    });
                 });
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        let mut changed = ui.add(egui::Slider::new(&mut state_index, 0..=replay_states.len()-1)).changed();
+                        let mut changed = ui
+                            .add(egui::Slider::new(
+                                &mut state_index,
+                                // TODO: should this be 0..=replay_states.len() - 2,
+                                0..=replay_states.len() - 1,
+                            ))
+                            .changed();
                         if ui.button("-").clicked() {
                             state_index = state_index.saturating_sub(1);
                             changed = true;
                         }
                         if ui.button("+").clicked() {
-                            state_index = std::cmp::min(state_index+1, replay_states.len()-1);
+                            state_index = std::cmp::min(state_index + 1, replay_states.len() - 1);
                             changed = true;
                         }
                         if changed {
-                            rot.x = pitches[state_index % pitches.len()];
+                            rot.x = REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()];
                         }
                     })
                 })
@@ -402,76 +187,307 @@ fn main() -> eframe::Result {
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                let egui::Vec2{x: width,y: height} = rect.size();
 
+                let y_vel_hi = z_vel_hi * (rect.height() / rect.width()) as f64;
+                let y_vel_lo = -y_vel_hi;
 
-                let stepx = width/GRID_H as f32;
-                let stepy = height/GRID_V as f32;
+                let grid_to_vel = |(x, y): (usize, usize)| Vec3 {
+                    x: 0.,
+                    y: lerp_f64(
+                        y_vel_lo,
+                        y_vel_hi,
+                        1.0 - inv_lerp_f64(
+                            0.,
+                            grid_width as f64 * (rect.height() / rect.width()) as f64,
+                            y as f64,
+                        ),
+                    ),
+                    z: lerp_f64(
+                        Z_VEL_LO,
+                        z_vel_hi,
+                        inv_lerp_f64(0., grid_width as f64, x as f64),
+                    ),
+                };
 
-                let step = f32::min(stepx,stepy);
+                let vel_to_grid = move |vel: Vec3| {
+                    assert_eq!(vel.x, 0., "not a hard error, but probably should have this");
+                    (
+                        lerp_f64(
+                            0.,
+                            grid_width as f64,
+                            inv_lerp_f64(Z_VEL_LO, z_vel_hi, vel.z),
+                        ) as f32,
+                        lerp_f64(
+                            0.,
+                            grid_width as f64 * (rect.height() / rect.width()) as f64,
+                            1.0 - inv_lerp_f64(y_vel_lo, y_vel_hi, vel.y),
+                        ) as f32,
+                    )
+                };
 
-                for x in 0..GRID_H {
-                    for y in 0..GRID_V {
-                        let init_state = &grid_states[x + GRID_H*y];
+                let grid_v = (grid_width as f32 * rect.height() / rect.width()) as usize;
 
-                        let new_state = init_state.ticked(rot);
+                let step = rect.width() / grid_width as f32;
 
-                        let dv = new_state.vel - init_state.vel;
-                        let de = new_state.total_energy() - init_state.total_energy();
+                let color_of_energy = |delta_energy: f64| {
+                    // fade to slightly different purples to show off 0
+                    if delta_energy >= 0. {
+                        egui::Color32::lerp_to_gamma(
+                            &egui::Color32::from_rgb(130, 0, 100),
+                            egui::Color32::RED,
+                            (delta_energy / mag_scale) as f32,
+                        )
+                    } else {
+                        egui::Color32::lerp_to_gamma(
+                            &egui::Color32::from_rgb(100, 0, 130),
+                            egui::Color32::BLUE,
+                            (-delta_energy / mag_scale) as f32,
+                        )
+                    }
+                };
 
-                        let norm = dv.length_sq().sqrt();
-                        let mag = norm / de;
-                        let vec = vec2((dv.z/norm) as f32,-(dv.y/norm) as f32);
+                for x in 0..grid_width {
+                    for y in 0..grid_v {
+                        let cen = rect.left_top() + egui::vec2(x as f32, y as f32) * step;
 
-                        let cen = rect.left_top() + egui::vec2(x as f32 * step, y as f32 * step);
-
-                        let col = if mag >= 0. {
-                            egui::Color32::lerp_to_gamma(&egui::Color32::PURPLE, egui::Color32::RED, (mag / mag_scale) as f32)
-                        } else {
-                            egui::Color32::lerp_to_gamma(&egui::Color32::PURPLE, egui::Color32::BLUE, (-mag / mag_scale) as f32)
+                        let init_state = State {
+                            pos: Vec3::ZERO,
+                            vel: grid_to_vel((x, y)),
                         };
-                        ui.painter().arrow(cen, vec * arrow_length, egui::Stroke::new(2., col));
-                        let r = ui.allocate_rect(egui::Rect::from_center_size(cen, egui::Vec2::splat(step)), egui::Sense::HOVER | egui::Sense::CLICK);
-                        if r.on_hover_text(format!("zVel: {:?}bpt\nyVel: {:?}bpt\ndv/de: {:?}", init_state.vel.z, init_state.vel.y, mag)).clicked() {
-                            base_vel = (x,y);
+
+                        let rot_new_state = init_state.ticked(rot);
+                        let rot_delta_vel = rot_new_state.vel - init_state.vel;
+                        let rot_delta_kinetic =
+                            rot_new_state.kinetic_energy() - init_state.kinetic_energy();
+                        let rot_delta_potential =
+                            rot_new_state.potential_energy() - init_state.potential_energy();
+                        let rot_delta_energy =
+                            rot_new_state.total_energy() - init_state.total_energy();
+
+                        // stuff for argmax_{pitch} (delta_energy)
+                        let optimal_pitch = get_argmax_over_pitch_of_delta_energy(init_state.vel);
+                        let optimal_new_state = init_state.ticked(Rot {
+                            x: optimal_pitch,
+                            y: 0.,
+                        });
+                        let optimal_delta_vel = optimal_new_state.vel - init_state.vel;
+                        let optimal_delta_kinetic =
+                            optimal_new_state.kinetic_energy() - init_state.kinetic_energy();
+                        let optimal_delta_potential =
+                            optimal_new_state.potential_energy() - init_state.potential_energy();
+                        let optimal_delta_energy =
+                            optimal_new_state.total_energy() - init_state.total_energy();
+
+                        // label energy components
+
+                        match draw_arrow_type {
+                            DrawArrowType::GlobalPitch => {
+                                // delta vel along global pitch (colored by delta energy)
+
+                                let color = color_of_energy(rot_delta_energy);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::vec2(rot_delta_vel.z as f32, -rot_delta_vel.y as f32)
+                                        .normalized()
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::OptimalPitch => {
+                                // // optimal pitch (pink)
+                                // let color = egui::Color32::from_rgba_unmultiplied(252, 3, 198, 150);
+                                // optimal pitch (fancy color)
+                                let color = color_of_energy(optimal_delta_energy);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::Vec2::angled(optimal_pitch * std::f32::consts::PI / 180.)
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::OptimalDeltaVel => {
+                                // delta vel along optimal pitch (colored by delta energy)
+                                let color = color_of_energy(
+                                    optimal_new_state.total_energy() - init_state.total_energy(),
+                                );
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::vec2(
+                                        optimal_delta_vel.z as f32,
+                                        -optimal_delta_vel.y as f32,
+                                    )
+                                    .normalized()
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                        }
+
+                        // show tooltip on hover, toggle clicked cell on click
+                        if ui
+                            .allocate_rect(
+                                egui::Rect::from_center_size(cen, egui::Vec2::splat(step)),
+                                egui::Sense::HOVER | egui::Sense::CLICK,
+                            )
+                            .on_hover_ui(|ui| {
+                                ui.group(|ui| {
+                                    ui.label(format!("z vel: {:?} bpt", init_state.vel.z));
+                                    ui.label(format!("y vel: {:?} bpt", init_state.vel.y));
+                                });
+                                ui.group(|ui| {
+                                    ui.label(format!("pitch: {:?} deg", rot.x));
+                                    ui.label(format!("|dv|: {:?}", rot_delta_vel.length()));
+                                    ui.label(format!("dk: {:?}", rot_delta_kinetic));
+                                    ui.label(format!("dp: {:?}", rot_delta_potential));
+                                    ui.label(format!("de: {:?}", rot_delta_energy));
+                                });
+                                ui.group(|ui| {
+                                    ui.label(format!("optimal pitch: {:?} deg", optimal_pitch));
+                                    ui.label(format!("|odv|: {:?}", optimal_delta_vel.length()));
+                                    ui.label(format!("odk: {:?}", optimal_delta_kinetic));
+                                    ui.label(format!("odp: {:?}", optimal_delta_potential));
+                                    ui.label(format!("ode: {:?}", optimal_delta_energy));
+                                });
+                            })
+                            .clicked()
+                        {
+                            if clicked_cell == Some((x, y)) {
+                                clicked_cell = None;
+                            } else {
+                                clicked_cell = Some((x, y));
+                            }
                         }
                     }
                 }
-                // let (x,y) = base_vel;
-                // let mut start = rect.left_top() + egui::vec2(x as f32 * step, y as f32 * step);
-                // ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
-                // let mut state = states[x + GRID_H*y].clone();
-                // for _ in 0..10 {
-                //     state = state.ticked(rot);
-                //     let (x,y) = vel_to_grid((state.vel.z, state.vel.y));
-                //     let end = rect.left_top() + egui::vec2(
-                //         x as f32 * step,
-                //         y as f32 * step
-                //     );
-                //     ui.painter().line_segment([start, end], (3., egui::Color32::GOLD));
-                //     ui.painter().circle_filled(end, 4., egui::Color32::GOLD);
-                //     start = end;
-                // }
 
-                for i in 0..=state_index {
-                    let state = &replay_states[i];
-                    let (x,y) = vel_to_grid((state.vel.z,state.vel.y));
-                    let start = rect.left_top() + egui::vec2(x as f32 * step, y as f32 * step);
+                // draw the path from the clicked cell
+                if let Some((x, y)) = clicked_cell {
+                    let mut start = rect.left_top() + egui::vec2(x as f32, y as f32) * step;
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
-                    if i < state_index {
-                        let end_state = &replay_states[i+1];
-                        let (x2,y2) = vel_to_grid((end_state.vel.z,end_state.vel.y));
-                        let end = rect.left_top() + egui::vec2(
-                            x2 as f32 * step,
-                            y2 as f32 * step
-                        );
-                        ui.painter().line_segment([start, end], (3., egui::Color32::GOLD));
+                    let mut state = State {
+                        pos: Vec3::ZERO,
+                        vel: grid_to_vel((x, y)),
+                    };
+                    const PATH_LEN: usize = 10;
+                    for _ in 0..PATH_LEN {
+                        state = state.ticked(rot);
+                        let (x, y) = vel_to_grid(state.vel);
+                        let end = rect.left_top() + egui::vec2(x, y) * step;
+                        ui.painter()
+                            .line_segment([start, end], (3., egui::Color32::GOLD));
+                        ui.painter().circle_filled(end, 4., egui::Color32::GOLD);
+                        start = end;
                     }
-                    if i == state_index {
-                        let a = rot.x * std::f32::consts::PI / 180.;
-                        ui.allocate_ui(vec2(50.,50.), |ui| {
-                            ui.painter().arrow(start, 40. * vec2(a.cos(), a.sin()), (3.,egui::Color32::GRAY));
-                        } );
+                }
+
+                // TODO: factor out, show multiple at once
+                // replay path
+                for i in 0..state_index {
+                    let state = &replay_states[i];
+                    let next = &replay_states[i + 1];
+
+                    // draw dot at state
+                    let (x0, y0) = vel_to_grid(state.vel);
+                    let start = rect.left_top() + egui::vec2(x0, y0) * step;
+                    ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
+
+                    // draw line to next state
+                    let (x1, y1) = vel_to_grid(next.vel);
+                    let end = rect.left_top() + egui::vec2(x1, y1) * step;
+                    ui.painter()
+                        .line_segment([start, end], (3., egui::Color32::GOLD));
+
+                    // let state = &replay_states[i];
+                    // let (x, y) = vel_to_grid(state.vel);
+                    // let start = rect.left_top() + egui::vec2(x, y) * step;
+                    // ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
+                    // if i < state_index {
+                    //     let end_state = &replay_states[i + 1];
+                    //     let (x2, y2) = vel_to_grid(end_state.vel);
+                    //     let end = rect.left_top() + egui::vec2(x2, y2) * step;
+                    //     ui.painter()
+                    //         .line_segment([start, end], (3., egui::Color32::GOLD));
+                    // }
+                    // if i == state_index {
+                    //     let a = rot.x * std::f32::consts::PI / 180.;
+                    //     ui.allocate_ui(egui::vec2(50., 50.), |ui| {
+                    //         ui.painter().arrow(
+                    //             start,
+                    //             40. * egui::vec2(a.cos(), a.sin()),
+                    //             (3., egui::Color32::GRAY),
+                    //         );
+                    //     });
+                    // }
+                }
+
+                // at last state draw dot and pitch arrow and delta vel arrow
+                {
+                    let state = &replay_states[state_index];
+                    let (x, y) = vel_to_grid(state.vel);
+                    let start = rect.left_top() + egui::vec2(x, y) * step;
+                    ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
+
+                    // pitch arrow (pink)
+                    ui.painter().arrow(
+                        start,
+                        40. * egui::Vec2::angled(
+                            REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()]
+                                * std::f32::consts::PI
+                                / 180.,
+                        ),
+                        (3., egui::Color32::from_rgb(252, 3, 198)),
+                    );
+
+                    let vel_scale = 60.;
+
+                    // vel arrow (green)
+                    {
+                        ui.painter().arrow(
+                            start,
+                            vel_scale * egui::vec2(state.vel.z as f32, -state.vel.y as f32),
+                            (3., egui::Color32::from_rgb(0, 170, 0)),
+                        );
+                    }
+
+                    // TODO: recolor this, add vel arrow, don't normalize, arrow for (potential, kinetic)
+                    // TODO: arrow direction for best energy?
+
+                    // arrow of argmax_over_pitch_of_delta_energy (fancy color)
+                    {
+                        let best_pitch = get_argmax_over_pitch_of_delta_energy(state.vel);
+                        let rot = Rot {
+                            x: best_pitch,
+                            y: 0.,
+                        };
+                        let new_state = state.ticked(rot);
+                        let delta_vel = new_state.vel - state.vel;
+                        let color = egui::Color32::lerp_to_gamma(
+                            &color_of_energy(new_state.total_energy() - state.total_energy()),
+                            egui::Color32::WHITE,
+                            0.5,
+                        );
+                        ui.painter().arrow(
+                            start,
+                            vel_scale * 18. * egui::vec2(delta_vel.z as f32, -delta_vel.y as f32),
+                            egui::Stroke::new(3., color),
+                        );
+                    }
+
+                    // delta vel arrow (light green)
+                    {
+                        let next = state.ticked(Rot {
+                            x: REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()],
+                            y: 0.,
+                        });
+                        let delta_vel = next.vel - state.vel;
+                        ui.painter().arrow(
+                            start,
+                            vel_scale * 20. * egui::vec2(delta_vel.z as f32, -delta_vel.y as f32),
+                            (3., egui::Color32::from_rgb(100, 238, 100)),
+                        );
                     }
                 }
             });
@@ -487,4 +503,51 @@ pub fn vel_slider(value: &mut f64) -> egui::Slider<'_> {
     egui::Slider::new(value, -5.0..=5.0).clamping(egui::SliderClamping::Never)
 }
 
+pub fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
 
+pub fn inv_lerp_f32(a: f32, b: f32, v: f32) -> f32 {
+    (v - a) / (b - a)
+}
+
+pub fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
+    // assert!((0.0..=1.0).contains(&t));
+    a + (b - a) * t
+}
+
+pub fn inv_lerp_f64(a: f64, b: f64, v: f64) -> f64 {
+    // assert!((a..=b).contains(&v));
+    (v - a) / (b - a)
+}
+
+// TODO: longer time horizon
+// TODO: flow field which the optimal path is following by definition
+fn get_argmax_over_pitch_of_delta_energy(vel: Vec3) -> f32 {
+    let mut best_pitch = 0.;
+    let mut best_delta_energy = f64::NEG_INFINITY;
+    for pitch in -90..=90 {
+        let rot = Rot {
+            x: pitch as f32,
+            y: 0.,
+        };
+        let state = State {
+            pos: Vec3::ZERO,
+            vel,
+        };
+        let new_state = state.ticked(rot);
+        let delta_energy = new_state.total_energy() - state.total_energy();
+        if delta_energy > best_delta_energy {
+            best_delta_energy = delta_energy;
+            best_pitch = pitch as f32;
+        }
+    }
+    best_pitch
+}
+
+#[derive(Debug, PartialEq)]
+enum DrawArrowType {
+    GlobalPitch,
+    OptimalPitch,
+    OptimalDeltaVel,
+}
