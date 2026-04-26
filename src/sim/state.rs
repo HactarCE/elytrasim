@@ -30,6 +30,13 @@ impl State {
     pub fn total_energy(&self) -> f64 {
         self.kinetic_energy() + self.potential_energy()
     }
+
+    pub fn sub(&self, other: &Self) -> Self {
+        Self {
+            pos: self.pos - other.pos,
+            vel: self.vel - other.vel,
+        }
+    }
 }
 impl From<Entity> for State {
     fn from(entity: Entity) -> Self {
