@@ -82,11 +82,10 @@ fn main() -> eframe::Result {
                         egui::Slider::new(&mut rot.y, -90.0..=90.0)
                             .clamping(egui::SliderClamping::Never),
                     );
-                    let a = rot.x * std::f32::consts::PI / 180.;
                     ui.allocate_ui(egui::vec2(50., 50.), |ui| {
                         ui.painter().arrow(
                             ui.available_rect_before_wrap().left_top(),
-                            40. * egui::vec2(a.cos(), a.sin()),
+                            40. * egui::Vec2::angled(rot.x * std::f32::consts::PI / 180.),
                             (3., egui::Color32::GRAY),
                         );
                     });
@@ -96,6 +95,7 @@ fn main() -> eframe::Result {
                         let mut changed = ui
                             .add(egui::Slider::new(
                                 &mut state_index,
+                                // TODO: should this be 0..=replay_states.len() - 2,
                                 0..=replay_states.len() - 1,
                             ))
                             .changed();
@@ -237,28 +237,77 @@ fn main() -> eframe::Result {
                 }
 
                 // replay path
-                for i in 0..=state_index {
+                for i in 0..state_index {
                     let state = &replay_states[i];
+                    let next = &replay_states[i + 1];
+
+                    // draw dot at state
+                    let (x0, y0) = vel_to_grid(state.vel);
+                    let start = rect.left_top() + egui::vec2(x0, y0) * step;
+                    ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
+
+                    // draw line to next state
+                    let (x1, y1) = vel_to_grid(next.vel);
+                    let end = rect.left_top() + egui::vec2(x1, y1) * step;
+                    ui.painter()
+                        .line_segment([start, end], (3., egui::Color32::GOLD));
+
+                    // let state = &replay_states[i];
+                    // let (x, y) = vel_to_grid(state.vel);
+                    // let start = rect.left_top() + egui::vec2(x, y) * step;
+                    // ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
+                    // if i < state_index {
+                    //     let end_state = &replay_states[i + 1];
+                    //     let (x2, y2) = vel_to_grid(end_state.vel);
+                    //     let end = rect.left_top() + egui::vec2(x2, y2) * step;
+                    //     ui.painter()
+                    //         .line_segment([start, end], (3., egui::Color32::GOLD));
+                    // }
+                    // if i == state_index {
+                    //     let a = rot.x * std::f32::consts::PI / 180.;
+                    //     ui.allocate_ui(egui::vec2(50., 50.), |ui| {
+                    //         ui.painter().arrow(
+                    //             start,
+                    //             40. * egui::vec2(a.cos(), a.sin()),
+                    //             (3., egui::Color32::GRAY),
+                    //         );
+                    //     });
+                    // }
+                }
+
+                // at last state draw dot and pitch arrow and delta vel arrow
+                {
+                    let state = &replay_states[state_index];
                     let (x, y) = vel_to_grid(state.vel);
                     let start = rect.left_top() + egui::vec2(x, y) * step;
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
-                    if i < state_index {
-                        let end_state = &replay_states[i + 1];
-                        let (x2, y2) = vel_to_grid(end_state.vel);
-                        let end = rect.left_top() + egui::vec2(x2, y2) * step;
-                        ui.painter()
-                            .line_segment([start, end], (3., egui::Color32::GOLD));
-                    }
-                    if i == state_index {
-                        let a = rot.x * std::f32::consts::PI / 180.;
-                        ui.allocate_ui(egui::vec2(50., 50.), |ui| {
-                            ui.painter().arrow(
-                                start,
-                                40. * egui::vec2(a.cos(), a.sin()),
-                                (3., egui::Color32::GRAY),
-                            );
+
+                    ui.painter().arrow(
+                        start,
+                        40. * egui::Vec2::angled(
+                            REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()]
+                                * std::f32::consts::PI
+                                / 180.,
+                        ),
+                        (3., egui::Color32::YELLOW),
+                    );
+
+                    // delta vel arrow
+                    {
+                        // TODO: am i using a pitch that's off by one?
+                        let next = state.ticked(Rot {
+                            x: REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()],
+                            y: 0.,
                         });
+                        let dv = next.vel - state.vel;
+                        ui.painter().arrow(
+                            start,
+                            40. * egui::vec2(dv.z as f32, -dv.y as f32).normalized(),
+                            (3., egui::Color32::GREEN),
+                        );
                     }
+
+                    // ui.painter().arrow()
                 }
             });
         },
