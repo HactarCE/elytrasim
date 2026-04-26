@@ -1,7 +1,6 @@
 mod replay_pitches;
 mod sim;
 
-use egui;
 use sim::*;
 
 use crate::replay_pitches::REPLAY_PITCHES;
@@ -9,6 +8,30 @@ use crate::replay_pitches::REPLAY_PITCHES;
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
 
 fn main() -> eframe::Result {
+    #[cfg(false)]
+    {
+        let vel = Vec3 {
+            x: 0.,
+            y: -0.6,
+            z: 2.4,
+        };
+        let state = State {
+            pos: Vec3::ZERO,
+            vel,
+        };
+
+        let next_plus = state.ticked(Rot { x: 1., y: 0. });
+        println!("plus: {:#?}", next_plus.sub(&state));
+
+        let next_zero = state.ticked(Rot { x: 0., y: 0. });
+        println!("zero: {:#?}", next_zero.sub(&state));
+
+        let next_minus = state.ticked(Rot { x: -1., y: 0. });
+        println!("minus: {:#?}", next_minus.sub(&state));
+
+        panic!();
+    }
+
     let mut grid_width = 100;
 
     const Y_VEL_LO: f64 = -3.;
@@ -16,7 +39,7 @@ fn main() -> eframe::Result {
     const Z_VEL_LO: f64 = 0.;
     const Z_VEL_HI: f64 = 4.;
 
-    let mut mag_scale = 8.;
+    let mut mag_scale = 0.04;
     let mut arrow_scale = 0.9;
 
     let mut rot = Rot::new(0., 0.);
@@ -58,7 +81,7 @@ fn main() -> eframe::Result {
 
                     ui.label("Mag Scale");
                     ui.add(
-                        egui::Slider::new(&mut mag_scale, 0.1..=100.0)
+                        egui::Slider::new(&mut mag_scale, 0.01..=100.0)
                             .clamping(egui::SliderClamping::Never)
                             .logarithmic(true),
                     );
@@ -155,6 +178,22 @@ fn main() -> eframe::Result {
 
                 let step = rect.width() / grid_width as f32;
 
+                let color_of_energy = |delta_energy: f64| {
+                    if delta_energy >= 0. {
+                        egui::Color32::lerp_to_gamma(
+                            &egui::Color32::PURPLE,
+                            egui::Color32::RED,
+                            (delta_energy / mag_scale) as f32,
+                        )
+                    } else {
+                        egui::Color32::lerp_to_gamma(
+                            &egui::Color32::PURPLE,
+                            egui::Color32::BLUE,
+                            (-delta_energy / mag_scale) as f32,
+                        )
+                    }
+                };
+
                 for x in 0..grid_width {
                     for y in 0..grid_v {
                         let init_state = State {
@@ -164,55 +203,46 @@ fn main() -> eframe::Result {
 
                         let new_state = init_state.ticked(rot);
 
-                        let dv = new_state.vel - init_state.vel;
-                        let de = new_state.total_energy() - init_state.total_energy();
-
-                        let norm = dv.length();
-                        let mag = norm / de;
-                        let vec = egui::vec2(dv.z as f32, -dv.y as f32) / norm as f32;
+                        let delta_vel = new_state.vel - init_state.vel;
+                        let delta_vel_length = delta_vel.length();
+                        let delta_kinetic =
+                            new_state.kinetic_energy() - init_state.kinetic_energy();
+                        let delta_potential =
+                            new_state.potential_energy() - init_state.potential_energy();
+                        let delta_energy = new_state.total_energy() - init_state.total_energy();
 
                         let cen = rect.left_top() + egui::vec2(x as f32, y as f32) * step;
 
+                        // (foreach vel) arrow along argmax_{pitch} (delta_energy)
+                        // (foreach vel) delta vel for argmax_{pitch} (delta_energy)
+                        // label energy components
+
                         // draw arrow
                         {
-                            let color = if mag >= 0. {
-                                egui::Color32::lerp_to_gamma(
-                                    &egui::Color32::PURPLE,
-                                    egui::Color32::RED,
-                                    (mag / mag_scale) as f32,
-                                )
-                            } else {
-                                egui::Color32::lerp_to_gamma(
-                                    &egui::Color32::PURPLE,
-                                    egui::Color32::BLUE,
-                                    (-mag / mag_scale) as f32,
-                                )
-                            };
+                            let color = color_of_energy(delta_energy);
                             ui.painter().arrow(
                                 cen,
-                                vec * arrow_scale * step,
+                                egui::vec2(delta_vel.z as f32, -delta_vel.y as f32).normalized()
+                                    * arrow_scale
+                                    * step,
                                 egui::Stroke::new(0.2 * step, color),
                             );
                         }
 
                         // toggle clicked cell on click, show tooltip on hover
-                        if ui
-                            .allocate_rect(
-                                egui::Rect::from_center_size(cen, egui::Vec2::splat(step)),
-                                egui::Sense::HOVER | egui::Sense::CLICK,
-                            )
-                            .on_hover_text(format!(
-                                "zVel: {:?} bpt\nyVel: {:?} bpt\ndv/de: {:?}",
-                                init_state.vel.z, init_state.vel.y, mag
-                            ))
-                            .clicked()
-                        {
-                            if clicked_cell == Some((x, y)) {
-                                clicked_cell = None;
-                            } else {
-                                clicked_cell = Some((x, y));
-                            }
-                        }
+                        arrow_rect(
+                            ui,
+                            cen,
+                            step,
+                            init_state,
+                            delta_kinetic,
+                            delta_potential,
+                            delta_energy,
+                            delta_vel_length,
+                            x,
+                            y,
+                            &mut clicked_cell,
+                        );
                     }
                 }
 
@@ -282,6 +312,7 @@ fn main() -> eframe::Result {
                     let start = rect.left_top() + egui::vec2(x, y) * step;
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
 
+                    // pitch arrow (pink)
                     ui.painter().arrow(
                         start,
                         40. * egui::Vec2::angled(
@@ -289,21 +320,34 @@ fn main() -> eframe::Result {
                                 * std::f32::consts::PI
                                 / 180.,
                         ),
-                        (3., egui::Color32::YELLOW),
+                        (3., egui::Color32::from_rgb(252, 3, 198)),
                     );
 
-                    // delta vel arrow
+                    let vel_scale = 60.;
+
+                    // vel arrow (green)
                     {
-                        // TODO: am i using a pitch that's off by one?
+                        ui.painter().arrow(
+                            start,
+                            vel_scale * egui::vec2(state.vel.z as f32, -state.vel.y as f32),
+                            (3., egui::Color32::from_rgb(0, 170, 0)),
+                        );
+                    }
+
+                    // TODO: recolor this, add vel arrow, don't normalize, arrow for (potential, kinetic)
+                    // TODO: arrow direction for best energy?
+
+                    // delta vel arrow (light green)
+                    {
                         let next = state.ticked(Rot {
                             x: REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()],
                             y: 0.,
                         });
-                        let dv = next.vel - state.vel;
+                        let delta_vel = next.vel - state.vel;
                         ui.painter().arrow(
                             start,
-                            40. * egui::vec2(dv.z as f32, -dv.y as f32).normalized(),
-                            (3., egui::Color32::GREEN),
+                            vel_scale * 20. * egui::vec2(delta_vel.z as f32, -delta_vel.y as f32),
+                            (3., egui::Color32::from_rgb(100, 238, 100)),
                         );
                     }
 
@@ -338,4 +382,42 @@ pub fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
 pub fn inv_lerp_f64(a: f64, b: f64, v: f64) -> f64 {
     assert!((a..=b).contains(&v));
     (v - a) / (b - a)
+}
+/// toggle clicked cell on click, show tooltip on hover
+/// the long string makes rustfmt die, so factor this out
+fn arrow_rect(
+    ui: &mut egui::Ui,
+    cen: egui::Pos2,
+    step: f32,
+    init_state: State,
+    delta_kinetic: f64,
+    delta_potential: f64,
+    delta_energy: f64,
+    delta_vel_length: f64,
+    x: usize,
+    y: usize,
+    clicked_cell: &mut Option<(usize, usize)>,
+) {
+    if ui
+        .allocate_rect(
+            egui::Rect::from_center_size(cen, egui::Vec2::splat(step)),
+            egui::Sense::HOVER | egui::Sense::CLICK,
+        )
+        .on_hover_text(format!(
+            "z vel: {:?} bpt\ny vel: {:?} bpt\ndk: {:?}\ndp: {:?}\nde: {:?}\n|dv|: {:?}",
+            init_state.vel.z,
+            init_state.vel.y,
+            delta_kinetic,
+            delta_potential,
+            delta_energy,
+            delta_vel_length
+        ))
+        .clicked()
+    {
+        if *clicked_cell == Some((x, y)) {
+            *clicked_cell = None;
+        } else {
+            *clicked_cell = Some((x, y));
+        }
+    }
 }
