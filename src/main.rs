@@ -310,17 +310,27 @@ fn main() -> eframe::Result {
     ];
     let mut state_index: usize = 0;
 
-    let mut replay_states = vec![State { pos: Vec3 { x: 0., y: 0., z: 0. }, vel: Vec3 { x: 0., y: 0.167467, z: 0.200887 } }];
+    let mut replay_states = vec![State {
+        pos: Vec3 {
+            x: 0.,
+            y: 0.,
+            z: 0.,
+        },
+        vel: Vec3 {
+            x: 0.,
+            y: 0.167467,
+            z: 0.200887,
+        },
+    }];
     for &p in &pitches {
         let state = replay_states.last().expect("wtf");
         replay_states.push(state.ticked(Rot { x: p, y: 0. }));
     }
     let replay_states = replay_states;
 
-    let mut base_vel = (0,0);
+    let mut base_vel = (0, 0);
 
     let mut rot = Rot::new(0., 0.);
-
 
     let mut mag_scale = 1.;
     let mut arrow_length = 5.;
@@ -329,21 +339,29 @@ fn main() -> eframe::Result {
     const GRID_V: usize = 150;
 
     let h_factor = 6.;
-    let v_factor = h_factor * GRID_H as f64/GRID_V as f64;
+    let v_factor = h_factor * GRID_H as f64 / GRID_V as f64;
 
-    let grid_to_vel = move |(x,y): (usize, usize)| {
-        (h_factor * (x as f64 / GRID_H as f64), v_factor * (0.5 - (y as f64 / GRID_V as f64)))
+    let grid_to_vel = move |(x, y): (usize, usize)| {
+        (
+            h_factor * (x as f64 / GRID_H as f64),
+            v_factor * (0.5 - (y as f64 / GRID_V as f64)),
+        )
     };
-    let vel_to_grid = move |(z,y): (f64, f64)| {
-        ((z * (GRID_H as f64) / h_factor), (y - v_factor / 2.) * (GRID_V as f64) / -v_factor)
+    let vel_to_grid = move |(z, y): (f64, f64)| {
+        (
+            (z * (GRID_H as f64) / h_factor),
+            (y - v_factor / 2.) * (GRID_V as f64) / -v_factor,
+        )
     };
     let mut grid_states: Vec<State> = vec![Entity::default().into(); GRID_H * GRID_V];
     for x in 0..GRID_H {
         for y in 0..GRID_V {
-            let s = &mut grid_states[x+GRID_H*y];
-            (s.vel.z, s.vel.y) = grid_to_vel((x,y));
+            let s = &mut grid_states[x + GRID_H * y];
+            (s.vel.z, s.vel.y) = grid_to_vel((x, y));
         }
     }
+
+    dbg!("change");
 
     let mut tick = false;
 
@@ -351,18 +369,16 @@ fn main() -> eframe::Result {
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
-
             egui::Panel::left("left").show_inside(ui, |ui| {
                 tick = false;
                 ui.group(|ui| {
                     ui.label("Mag Scale");
                     ui.add(
-                        egui::Slider::new(&mut mag_scale, 0.0..=100.0).clamping(egui::SliderClamping::Never)
+                        egui::Slider::new(&mut mag_scale, 0.0..=100.0)
+                            .clamping(egui::SliderClamping::Never),
                     );
                     ui.label("Arrow length");
-                    ui.add(
-                        egui::Slider::new(&mut arrow_length, 0.0..=20.0)
-                    );
+                    ui.add(egui::Slider::new(&mut arrow_length, 0.0..=20.0));
                 });
                 ui.group(|ui| {
                     ui.strong("Rotation");
@@ -370,27 +386,36 @@ fn main() -> eframe::Result {
 
                     ui.add(
                         egui::Slider::new(&mut rot.x, -90.0..=90.0)
-                        .clamping(egui::SliderClamping::Never)
+                            .clamping(egui::SliderClamping::Never),
                     );
                     ui.label("Yaw");
                     ui.add(
                         egui::Slider::new(&mut rot.y, -90.0..=90.0)
-                        .clamping(egui::SliderClamping::Never)
+                            .clamping(egui::SliderClamping::Never),
                     );
                     let a = rot.x * std::f32::consts::PI / 180.;
-                    ui.allocate_ui(vec2(50.,50.), |ui| {
-                        ui.painter().arrow(ui.available_rect_before_wrap().left_top(), 40. * vec2(a.cos(), a.sin()), (3.,egui::Color32::GRAY));
-                    } );
+                    ui.allocate_ui(vec2(50., 50.), |ui| {
+                        ui.painter().arrow(
+                            ui.available_rect_before_wrap().left_top(),
+                            40. * vec2(a.cos(), a.sin()),
+                            (3., egui::Color32::GRAY),
+                        );
+                    });
                 });
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        let mut changed = ui.add(egui::Slider::new(&mut state_index, 0..=replay_states.len()-1)).changed();
+                        let mut changed = ui
+                            .add(egui::Slider::new(
+                                &mut state_index,
+                                0..=replay_states.len() - 1,
+                            ))
+                            .changed();
                         if ui.button("-").clicked() {
                             state_index = state_index.saturating_sub(1);
                             changed = true;
                         }
                         if ui.button("+").clicked() {
-                            state_index = std::cmp::min(state_index+1, replay_states.len()-1);
+                            state_index = std::cmp::min(state_index + 1, replay_states.len() - 1);
                             changed = true;
                         }
                         if changed {
@@ -402,17 +427,19 @@ fn main() -> eframe::Result {
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                let egui::Vec2{x: width,y: height} = rect.size();
+                let egui::Vec2 {
+                    x: width,
+                    y: height,
+                } = rect.size();
 
+                let stepx = width / GRID_H as f32;
+                let stepy = height / GRID_V as f32;
 
-                let stepx = width/GRID_H as f32;
-                let stepy = height/GRID_V as f32;
-
-                let step = f32::min(stepx,stepy);
+                let step = f32::min(stepx, stepy);
 
                 for x in 0..GRID_H {
                     for y in 0..GRID_V {
-                        let init_state = &grid_states[x + GRID_H*y];
+                        let init_state = &grid_states[x + GRID_H * y];
 
                         let new_state = init_state.ticked(rot);
 
@@ -421,19 +448,36 @@ fn main() -> eframe::Result {
 
                         let norm = dv.length_sq().sqrt();
                         let mag = norm / de;
-                        let vec = vec2((dv.z/norm) as f32,-(dv.y/norm) as f32);
+                        let vec = vec2((dv.z / norm) as f32, -(dv.y / norm) as f32);
 
                         let cen = rect.left_top() + egui::vec2(x as f32 * step, y as f32 * step);
 
                         let col = if mag >= 0. {
-                            egui::Color32::lerp_to_gamma(&egui::Color32::PURPLE, egui::Color32::RED, (mag / mag_scale) as f32)
+                            egui::Color32::lerp_to_gamma(
+                                &egui::Color32::PURPLE,
+                                egui::Color32::RED,
+                                (mag / mag_scale) as f32,
+                            )
                         } else {
-                            egui::Color32::lerp_to_gamma(&egui::Color32::PURPLE, egui::Color32::BLUE, (-mag / mag_scale) as f32)
+                            egui::Color32::lerp_to_gamma(
+                                &egui::Color32::PURPLE,
+                                egui::Color32::BLUE,
+                                (-mag / mag_scale) as f32,
+                            )
                         };
-                        ui.painter().arrow(cen, vec * arrow_length, egui::Stroke::new(2., col));
-                        let r = ui.allocate_rect(egui::Rect::from_center_size(cen, egui::Vec2::splat(step)), egui::Sense::HOVER | egui::Sense::CLICK);
-                        if r.on_hover_text(format!("zVel: {:?}bpt\nyVel: {:?}bpt\ndv/de: {:?}", init_state.vel.z, init_state.vel.y, mag)).clicked() {
-                            base_vel = (x,y);
+                        ui.painter()
+                            .arrow(cen, vec * arrow_length, egui::Stroke::new(2., col));
+                        let r = ui.allocate_rect(
+                            egui::Rect::from_center_size(cen, egui::Vec2::splat(step)),
+                            egui::Sense::HOVER | egui::Sense::CLICK,
+                        );
+                        if r.on_hover_text(format!(
+                            "zVel: {:?}bpt\nyVel: {:?}bpt\ndv/de: {:?}",
+                            init_state.vel.z, init_state.vel.y, mag
+                        ))
+                        .clicked()
+                        {
+                            base_vel = (x, y);
                         }
                     }
                 }
@@ -455,23 +499,25 @@ fn main() -> eframe::Result {
 
                 for i in 0..=state_index {
                     let state = &replay_states[i];
-                    let (x,y) = vel_to_grid((state.vel.z,state.vel.y));
+                    let (x, y) = vel_to_grid((state.vel.z, state.vel.y));
                     let start = rect.left_top() + egui::vec2(x as f32 * step, y as f32 * step);
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
                     if i < state_index {
-                        let end_state = &replay_states[i+1];
-                        let (x2,y2) = vel_to_grid((end_state.vel.z,end_state.vel.y));
-                        let end = rect.left_top() + egui::vec2(
-                            x2 as f32 * step,
-                            y2 as f32 * step
-                        );
-                        ui.painter().line_segment([start, end], (3., egui::Color32::GOLD));
+                        let end_state = &replay_states[i + 1];
+                        let (x2, y2) = vel_to_grid((end_state.vel.z, end_state.vel.y));
+                        let end = rect.left_top() + egui::vec2(x2 as f32 * step, y2 as f32 * step);
+                        ui.painter()
+                            .line_segment([start, end], (3., egui::Color32::GOLD));
                     }
                     if i == state_index {
                         let a = rot.x * std::f32::consts::PI / 180.;
-                        ui.allocate_ui(vec2(50.,50.), |ui| {
-                            ui.painter().arrow(start, 40. * vec2(a.cos(), a.sin()), (3.,egui::Color32::GRAY));
-                        } );
+                        ui.allocate_ui(vec2(50., 50.), |ui| {
+                            ui.painter().arrow(
+                                start,
+                                40. * vec2(a.cos(), a.sin()),
+                                (3., egui::Color32::GRAY),
+                            );
+                        });
                     }
                 }
             });
@@ -486,5 +532,3 @@ pub fn pos_slider(value: &mut f64) -> egui::Slider<'_> {
 pub fn vel_slider(value: &mut f64) -> egui::Slider<'_> {
     egui::Slider::new(value, -5.0..=5.0).clamping(egui::SliderClamping::Never)
 }
-
-
