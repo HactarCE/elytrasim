@@ -1,5 +1,12 @@
 use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
+pub type Pos = f64;
+pub type Pos3 = Vec3;
+pub type Vel = f64;
+pub type Vel3 = Vec3;
+pub type Acc = f64;
+pub type Acc3 = Vec3;
+
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub struct Vec3 {
     pub x: f64,

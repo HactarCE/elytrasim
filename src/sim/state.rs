@@ -1,4 +1,16 @@
-use super::{Entity, GRAVITY, Rot, Vec3};
+use super::*;
+
+// pub type Energy = f64;
+
+pub type KineticEnergy = f64;
+pub type PotentialEnergy = f64;
+pub type TotalEnergy = f64;
+
+pub type DeltaKineticEnergy = f64;
+pub type DeltaPotentialEnergy = f64;
+pub type DeltaTotalEnergy = f64;
+
+pub type DeltaState = State;
 
 #[derive(Debug, Default, Clone)]
 pub struct State {
@@ -16,26 +28,34 @@ impl State {
         entity.into()
     }
 
-    /// kilograms * blocks^2 / ticks^2
-    pub fn kinetic_energy(&self) -> f64 {
-        self.vel.length_sq() * 0.5
-    }
-
-    /// kilograms * blocks^2 / ticks^2
-    pub fn potential_energy(&self) -> f64 {
-        self.pos.y * GRAVITY
-    }
-
-    /// kilograms * blocks^2 / ticks^2
-    pub fn total_energy(&self) -> f64 {
-        self.kinetic_energy() + self.potential_energy()
-    }
-
-    pub fn sub(&self, other: &Self) -> Self {
+    pub fn sub(&self, other: &Self) -> DeltaState {
         Self {
             pos: self.pos - other.pos,
             vel: self.vel - other.vel,
         }
+    }
+
+    // pub fn delta_for_pitch(vel: Vel3, pitch: f32) -> DeltaState {
+    //     let state = State {
+    //         pos: Vec3::ZERO,
+    //         vel,
+    //     };
+    //     state.ticked(Rot { x: pitch, y: 0. }).sub(&state)
+    // }
+
+    /// kilograms * blocks^2 / ticks^2
+    pub fn kinetic_energy(&self) -> KineticEnergy {
+        self.vel.length_sq() * 0.5
+    }
+
+    /// kilograms * blocks^2 / ticks^2
+    pub fn potential_energy(&self) -> PotentialEnergy {
+        self.pos.y * GRAVITY
+    }
+
+    /// kilograms * blocks^2 / ticks^2
+    pub fn total_energy(&self) -> TotalEnergy {
+        self.kinetic_energy() + self.potential_energy()
     }
 }
 impl From<Entity> for State {
