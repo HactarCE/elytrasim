@@ -2,16 +2,19 @@ use std::f64::consts::PI;
 
 use super::{Mth, Vec3};
 
+pub type Pitch = f32;
+pub type Yaw = f32;
+
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub struct Rot {
     /// Pitch
-    pub x: f32,
+    pub x: Pitch,
     /// Yaw
-    pub y: f32,
+    pub y: Yaw,
 }
 
 impl Rot {
-    pub fn new(x: f32, y: f32) -> Self {
+    pub fn new(x: Pitch, y: Yaw) -> Self {
         Self { x, y }
     }
 

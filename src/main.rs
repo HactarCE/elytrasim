@@ -1,7 +1,9 @@
+mod energy_grid;
 mod replay_pitches;
 mod sim;
 
-use sim::*;
+use crate::energy_grid::*;
+use crate::sim::*;
 
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
 // const REPLAY_PITCHES: &[f32] = replay_pitches::FORTY_FORTY;
@@ -66,11 +68,7 @@ fn main() -> eframe::Result {
     let mut state_index: usize = 0;
     let replay_states = {
         let mut replay_states = vec![State {
-            pos: Vec3 {
-                x: 0.,
-                y: 0.,
-                z: 0.,
-            },
+            pos: Vec3::ZERO,
             vel: Vec3 {
                 x: 0.,
                 y: 0.167467,
@@ -118,21 +116,21 @@ fn main() -> eframe::Result {
                     ui.label("Arrow Thickness");
                     ui.add(
                         egui::Slider::new(&mut arrow_thickness, 0.0..=5.0)
-                        .clamping(egui::SliderClamping::Never),
+                            .clamping(egui::SliderClamping::Never),
                     );
 
                     // draw_arrow_type
                     ui.label("Draw Arrow Type");
                     egui::ComboBox::from_id_salt("Draw Arrow Type")
                         .selected_text(match draw_arrow_type {
-                            DrawArrowType::GlobalPitch => "Global Pitch",
+                            DrawArrowType::FixedPitch => "Global Pitch",
                             DrawArrowType::OptimalPitch => "Optimal Pitch",
                             DrawArrowType::OptimalDeltaVel => "Optimal Delta Vel",
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut draw_arrow_type,
-                                DrawArrowType::GlobalPitch,
+                                DrawArrowType::FixedPitch,
                                 "Global Pitch",
                             );
                             ui.selectable_value(
@@ -195,44 +193,46 @@ fn main() -> eframe::Result {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
 
-                let y_vel_hi = z_vel_hi * (rect.height() / rect.width()) as f64;
-                let y_vel_lo = -y_vel_hi;
+                // let y_vel_hi = z_vel_hi * (rect.height() / rect.width()) as f64;
+                // let y_vel_lo = -y_vel_hi;
 
-                let grid_to_vel = |(x, y): (usize, usize)| Vec3 {
-                    x: 0.,
-                    y: lerp_f64(
-                        y_vel_lo,
-                        y_vel_hi,
-                        1.0 - inv_lerp_f64(
-                            0.,
-                            grid_width as f64 * (rect.height() / rect.width()) as f64,
-                            y as f64,
-                        ),
-                    ),
-                    z: lerp_f64(
-                        Z_VEL_LO,
-                        z_vel_hi,
-                        inv_lerp_f64(0., grid_width as f64, x as f64),
-                    ),
-                };
+                // let grid_to_vel = |(x, y): (usize, usize)| Vec3 {
+                //     x: 0.,
+                //     y: lerp_f64(
+                //         y_vel_lo,
+                //         y_vel_hi,
+                //         1.0 - inv_lerp_f64(
+                //             0.,
+                //             grid_width as f64 * (rect.height() / rect.width()) as f64,
+                //             y as f64,
+                //         ),
+                //     ),
+                //     z: lerp_f64(
+                //         Z_VEL_LO,
+                //         z_vel_hi,
+                //         inv_lerp_f64(0., grid_width as f64, x as f64),
+                //     ),
+                // };
 
-                let vel_to_grid = move |vel: Vec3| {
-                    assert_eq!(vel.x, 0., "not a hard error, but probably should have this");
-                    (
-                        lerp_f64(
-                            0.,
-                            grid_width as f64,
-                            inv_lerp_f64(Z_VEL_LO, z_vel_hi, vel.z),
-                        ) as f32,
-                        lerp_f64(
-                            0.,
-                            grid_width as f64 * (rect.height() / rect.width()) as f64,
-                            1.0 - inv_lerp_f64(y_vel_lo, y_vel_hi, vel.y),
-                        ) as f32,
-                    )
-                };
+                // let vel_to_grid = move |vel: Vec3| {
+                //     assert_eq!(vel.x, 0., "not a hard error, but probably should have this");
+                //     (
+                //         lerp_f64(
+                //             0.,
+                //             grid_width as f64,
+                //             inv_lerp_f64(Z_VEL_LO, z_vel_hi, vel.z),
+                //         ) as f32,
+                //         lerp_f64(
+                //             0.,
+                //             grid_width as f64 * (rect.height() / rect.width()) as f64,
+                //             1.0 - inv_lerp_f64(y_vel_lo, y_vel_hi, vel.y),
+                //         ) as f32,
+                //     )
+                // };
 
-                let grid_v = (grid_width as f32 * rect.height() / rect.width()) as usize;
+                let grid_meta = GridMeta::new_uniform(grid_width, 0.0, 0.0, z_vel_hi, rect);
+
+                // let grid_height = (grid_width as f32 * rect.height() / rect.width()) as usize;
 
                 let step = rect.width() / grid_width as f32;
 
@@ -253,13 +253,13 @@ fn main() -> eframe::Result {
                     }
                 };
 
-                for x in 0..grid_width {
-                    for y in 0..grid_v {
-                        let cen = rect.left_top() + egui::vec2(x as f32, y as f32) * step;
-
+                // for row in 0..grid_meta.height {
+                //     for col in 0..grid_meta.width {
+                for (row, line) in grid_meta.rects(rect).enumerate() {
+                    for (col, cell_rect) in line.enumerate() {
                         let init_state = State {
                             pos: Vec3::ZERO,
-                            vel: grid_to_vel((x, y)),
+                            vel: grid_meta.row_col_usize_to_vel((row, col)),
                         };
 
                         let rot_new_state = init_state.ticked(rot);
@@ -272,7 +272,7 @@ fn main() -> eframe::Result {
                             rot_new_state.total_energy() - init_state.total_energy();
 
                         // stuff for argmax_{pitch} (delta_energy)
-                        let optimal_pitch = get_argmax_over_pitch_of_delta_energy(init_state.vel);
+                        let optimal_pitch = argmax_over_pitch_of_delta_energy(init_state.vel);
                         let optimal_new_state = init_state.ticked(Rot {
                             x: optimal_pitch,
                             y: 0.,
@@ -285,12 +285,10 @@ fn main() -> eframe::Result {
                         let optimal_delta_energy =
                             optimal_new_state.total_energy() - init_state.total_energy();
 
-                        // label energy components
-
+                        let cen = rect.left_top() + egui::vec2(col as f32, row as f32) * step;
                         match draw_arrow_type {
-                            DrawArrowType::GlobalPitch => {
+                            DrawArrowType::FixedPitch => {
                                 // delta vel along global pitch (colored by delta energy)
-
                                 let color = color_of_energy(rot_delta_energy);
                                 ui.painter().arrow(
                                     cen,
@@ -361,27 +359,28 @@ fn main() -> eframe::Result {
                             })
                             .clicked()
                         {
-                            if clicked_cell == Some((x, y)) {
+                            if clicked_cell == Some((row, col)) {
                                 clicked_cell = None;
                             } else {
-                                clicked_cell = Some((x, y));
+                                clicked_cell = Some((row, col));
                             }
                         }
                     }
                 }
 
                 // draw the path from the clicked cell
-                if let Some((x, y)) = clicked_cell {
-                    let mut start = rect.left_top() + egui::vec2(x as f32, y as f32) * step;
+                if let Some((row, col)) = clicked_cell {
+                    // let mut start = rect.left_top() + egui::vec2(x as f32, y as f32) * step;
+                    let mut start = grid_meta.row_col_usize_to_egui_pos2((row, col), rect);
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
                     let mut state = State {
                         pos: Vec3::ZERO,
-                        vel: grid_to_vel((x, y)),
+                        vel: grid_meta.row_col_usize_to_vel((row, col)),
                     };
                     const PATH_LEN: usize = 10;
                     for _ in 0..PATH_LEN {
                         state = state.ticked(rot);
-                        let (x, y) = vel_to_grid(state.vel);
+                        let (x, y) = grid_meta.vel_to_grid_row_col_float(state.vel);
                         let end = rect.left_top() + egui::vec2(x, y) * step;
                         ui.painter()
                             .line_segment([start, end], (3., egui::Color32::GOLD));
@@ -397,13 +396,15 @@ fn main() -> eframe::Result {
                     let next = &replay_states[i + 1];
 
                     // draw dot at state
-                    let (x0, y0) = vel_to_grid(state.vel);
-                    let start = rect.left_top() + egui::vec2(x0, y0) * step;
+                    // let (x0, y0) = vel_to_grid(state.vel);
+                    // let start = rect.left_top() + egui::vec2(x0, y0) * step;
+                    let start = grid_meta.vel_to_egui_pos2(state.vel, rect);
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
 
                     // draw line to next state
-                    let (x1, y1) = vel_to_grid(next.vel);
-                    let end = rect.left_top() + egui::vec2(x1, y1) * step;
+                    // let (x1, y1) = vel_to_grid(next.vel);
+                    // let end = rect.left_top() + egui::vec2(x1, y1) * step;
+                    let end = grid_meta.vel_to_egui_pos2(next.vel, rect);
                     ui.painter()
                         .line_segment([start, end], (3., egui::Color32::GOLD));
 
@@ -433,8 +434,9 @@ fn main() -> eframe::Result {
                 // at last state draw dot and pitch arrow and delta vel arrow
                 {
                     let state = &replay_states[state_index];
-                    let (x, y) = vel_to_grid(state.vel);
-                    let start = rect.left_top() + egui::vec2(x, y) * step;
+                    // let (x, y) = vel_to_grid(state.vel);
+                    // let start = rect.left_top() + egui::vec2(x, y) * step;
+                    let start = grid_meta.vel_to_egui_pos2(state.vel, rect);
                     ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
 
                     // pitch arrow (pink)
@@ -464,7 +466,7 @@ fn main() -> eframe::Result {
 
                     // arrow of argmax_over_pitch_of_delta_energy (fancy color)
                     {
-                        let best_pitch = get_argmax_over_pitch_of_delta_energy(state.vel);
+                        let best_pitch = argmax_over_pitch_of_delta_energy(state.vel);
                         let rot = Rot {
                             x: best_pitch,
                             y: 0.,
@@ -528,33 +530,9 @@ pub fn inv_lerp_f64(a: f64, b: f64, v: f64) -> f64 {
     (v - a) / (b - a)
 }
 
-// TODO: longer time horizon
-// TODO: flow field which the optimal path is following by definition
-fn get_argmax_over_pitch_of_delta_energy(vel: Vec3) -> f32 {
-    let mut best_pitch = 0.;
-    let mut best_delta_energy = f64::NEG_INFINITY;
-    for pitch in -90..=90 {
-        let rot = Rot {
-            x: pitch as f32,
-            y: 0.,
-        };
-        let state = State {
-            pos: Vec3::ZERO,
-            vel,
-        };
-        let new_state = state.ticked(rot);
-        let delta_energy = new_state.total_energy() - state.total_energy();
-        if delta_energy > best_delta_energy {
-            best_delta_energy = delta_energy;
-            best_pitch = pitch as f32;
-        }
-    }
-    best_pitch
-}
-
 #[derive(Debug, PartialEq)]
 enum DrawArrowType {
-    GlobalPitch,
+    FixedPitch,
     OptimalPitch,
     OptimalDeltaVel,
 }
