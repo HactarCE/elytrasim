@@ -29,6 +29,8 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
     let gravity: f64 = GRAVITY;
     let lift_force: f64 = Mth::square((lean_angle as f64).cos());
     vel.y += gravity * (-1.0 + lift_force * 0.75);
+
+    // converts v_down to v_forward
     if vel.y < 0.0 && look_hor_length > 0.0 {
         let convert: f64 = vel.y * -0.1 * lift_force;
         vel += Vec3::new(
@@ -38,6 +40,7 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
         );
     }
 
+    // converts v_forward to v_up if looking up
     if lean_angle < 0.0 && look_hor_length > 0.0 {
         let convert: f64 = move_hor_length * -Mth::sin(lean_angle) as f64 * 0.04;
         vel += Vec3::new(
@@ -47,6 +50,7 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
         );
     }
 
+    // turning
     if look_hor_length > 0.0 {
         vel += Vec3::new(
             (look_angle.x / look_hor_length * move_hor_length - vel.x) * 0.1,
@@ -56,4 +60,5 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
     }
 
     vel * Vec3::new(0.99_f32 as f64, 0.98_f32 as f64, 0.99_f32 as f64)
+    //vel
 }

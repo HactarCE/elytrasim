@@ -55,6 +55,7 @@ fn main() -> eframe::Result {
 
     let mut mag_scale = 0.04;
     let mut arrow_scale = 0.6;
+    let mut arrow_thickness = 3.;
 
     let mut draw_arrow_type = DrawArrowType::OptimalDeltaVel;
 
@@ -112,6 +113,12 @@ fn main() -> eframe::Result {
                     ui.add(
                         egui::Slider::new(&mut arrow_scale, 0.0..=2.0)
                             .clamping(egui::SliderClamping::Never),
+                    );
+
+                    ui.label("Arrow Thickness");
+                    ui.add(
+                        egui::Slider::new(&mut arrow_thickness, 0.0..=5.0)
+                        .clamping(egui::SliderClamping::Never),
                     );
 
                     // draw_arrow_type
