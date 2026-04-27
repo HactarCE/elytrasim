@@ -14,23 +14,23 @@ fn main() -> eframe::Result {
     // let ticks = 50;
     // let ticks = 100; // like -6 delta y
     // let ticks = 150; // like 2 delta y
-    // let ticks = 200;
+    // let ticks = 200; // like 12 delta y
     // let ticks = 250;
-    let ticks = 300; // like 20 delta y
+    let ticks = 300; // like 21.5 delta y
+    // let ticks = 310; // like 21.65 delta y
+    // let ticks = 400; // like 18 delta y
     // let ticks = 500;
 
     let mut optimizer: Box<dyn Optimizer> = {
         // let pitches = Pitches::new_uniform(ticks, 0.0);
-        // let pitches = Pitches::new_4040(ticks, 0.5);
-        // let pitches = Pitches::new_4040(ticks, 0.65);
+        let pitches = Pitches::new_4040(ticks, 0.65);
         // let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
         // close to the optimal curve with four lines
+        #[cfg(false)]
         let pitches = {
-            // let left_left_cut = 0.05;
             let left_cut = 0.65;
             let right_cut = 0.70;
             let right_right_cut = 0.80;
-            // let left_left = (ticks as f64 * left_left_cut) as usize;
             let left = (ticks as f64 * left_cut) as usize;
             let right = (ticks as f64 * right_cut) as usize;
             let right_right = (ticks as f64 * right_right_cut) as usize;
