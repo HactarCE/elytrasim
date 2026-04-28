@@ -2,8 +2,6 @@ mod energy_grid;
 mod replay_pitches;
 mod sim;
 
-use egui::TextWrapMode;
-
 use crate::energy_grid::*;
 use crate::sim::*;
 
@@ -46,7 +44,7 @@ fn main() -> eframe::Result {
 
     let mut fixed_rot = Rot::new(0., 0.);
 
-    let mut draw_arrow_type = DrawArrowType::OptimalDeltaVel;
+    let mut draw_arrow_type = DrawArrowType::DeepOptimalDeltaVel;
 
     const Y_VEL_MID: f64 = 0.;
     const Z_VEL_LO: f64 = 0.;
@@ -62,8 +60,12 @@ fn main() -> eframe::Result {
     );
     let mut fixed_pitch_energies =
         Grid::<DeltaTotalEnergy>::from_fixed_pitch(&grid_meta, fixed_rot.x);
-    let (mut optimal_pitches, mut optimal_energies) =
-        energy_grid::new_grid_optimal_pitch(&grid_meta);
+    let (mut immediate_optimal_pitches, mut immediate_optimal_energies) =
+        energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
+    let (mut deep_optimal_pitches, mut deep_optimal_energies) =
+        energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
+    let mut deep_optimizer_running = false;
+    let mut deep_optimizer_steps_per_frame = 0;
 
     let mut clicked_cell = None;
     let mut hovered_vel = Vel3::ZERO;
@@ -131,25 +133,41 @@ fn main() -> eframe::Result {
                             ui.label("Draw Arrow Type");
                             egui::ComboBox::from_id_salt("Draw Arrow Type")
                                 .selected_text(match draw_arrow_type {
-                                    DrawArrowType::FixedPitch => "Global Pitch",
-                                    DrawArrowType::OptimalPitch => "Optimal Pitch",
-                                    DrawArrowType::OptimalDeltaVel => "Optimal Delta Vel",
+                                    DrawArrowType::FixedDeltaVel => "Global Pitch",
+                                    DrawArrowType::ImmediateOptimalPitch => {
+                                        "Immediate Optimal Pitch"
+                                    }
+                                    DrawArrowType::ImmediateOptimalDeltaVel => {
+                                        "Immediate Optimal Delta Vel"
+                                    }
+                                    DrawArrowType::DeepOptimalPitch => "Deep Optimal Pitch",
+                                    DrawArrowType::DeepOptimalDeltaVel => "Deep Optimal Delta Vel",
                                 })
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
-                                        DrawArrowType::FixedPitch,
+                                        DrawArrowType::FixedDeltaVel,
                                         "Global Pitch",
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
-                                        DrawArrowType::OptimalPitch,
-                                        "Optimal Pitch",
+                                        DrawArrowType::ImmediateOptimalPitch,
+                                        "Immediate Optimal Pitch",
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
-                                        DrawArrowType::OptimalDeltaVel,
-                                        "Optimal Delta Vel",
+                                        DrawArrowType::ImmediateOptimalDeltaVel,
+                                        "Immediate Optimal Delta Vel",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::DeepOptimalPitch,
+                                        "Deep Optimal Pitch",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::DeepOptimalDeltaVel,
+                                        "Deep Optimal Delta Vel",
                                     );
                                 });
                         });
@@ -177,6 +195,32 @@ fn main() -> eframe::Result {
                             });
                         });
                         ui.group(|ui| {
+                            let mut do_step_back = || {
+                                let (new_deep_optimal_pitches, new_deep_optimal_energies) =
+                                    energy_grid::optimal_pitch_step_back(
+                                        &grid_meta,
+                                        &deep_optimal_energies,
+                                    );
+                                deep_optimal_pitches = new_deep_optimal_pitches;
+                                deep_optimal_energies = new_deep_optimal_energies;
+                            };
+                            if ui.button("step back").clicked() {
+                                do_step_back();
+                            }
+                            ui.checkbox(&mut deep_optimizer_running, "Deep Optimizer Running");
+                            ui.label("Deep Optimizer Steps Per Frame");
+                            ui.add(
+                                egui::Slider::new(&mut deep_optimizer_steps_per_frame, 1..=1000)
+                                    .logarithmic(true)
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                            if deep_optimizer_running {
+                                for _ in 0..deep_optimizer_steps_per_frame {
+                                    do_step_back();
+                                }
+                            }
+                        });
+                        ui.group(|ui| {
                             ui.label("Replay Progress");
                             ui.horizontal(|ui| {
                                 let mut changed = ui
@@ -202,51 +246,94 @@ fn main() -> eframe::Result {
                             })
                         });
                         ui.group(|ui| {
+                            let (row, col) = grid_meta.vel_to_grid_row_col_float(hovered_vel);
                             let init_state = State {
                                 pos: Vec3::ZERO,
                                 vel: hovered_vel,
                             };
-
-                            let rot_new_state = init_state.ticked(fixed_rot);
-                            let rot_delta_vel = rot_new_state.vel - init_state.vel;
-                            let rot_delta_kinetic =
-                                rot_new_state.kinetic_energy() - init_state.kinetic_energy();
-                            let rot_delta_potential =
-                                rot_new_state.potential_energy() - init_state.potential_energy();
-                            let rot_delta_energy =
-                                rot_new_state.total_energy() - init_state.total_energy();
-
-                            // stuff for argmax_{pitch} (delta_energy)
-                            let optimal_pitch = argmax_over_pitch_of_delta_energy(init_state.vel);
-                            let optimal_new_state = init_state.ticked(Rot {
-                                x: optimal_pitch,
-                                y: 0.,
-                            });
-                            let optimal_delta_vel = optimal_new_state.vel - init_state.vel;
-                            let optimal_delta_kinetic =
-                                optimal_new_state.kinetic_energy() - init_state.kinetic_energy();
-                            let optimal_delta_potential = optimal_new_state.potential_energy()
-                                - init_state.potential_energy();
-                            let optimal_delta_energy =
-                                optimal_new_state.total_energy() - init_state.total_energy();
-
                             ui.group(|ui| {
                                 ui.label(format!("z vel: {:.09?} bpt", init_state.vel.z));
                                 ui.label(format!("y vel: {:.09?} bpt", init_state.vel.y));
                             });
                             ui.group(|ui| {
-                                ui.label(format!("pitch: {:.09?} deg", fixed_rot.x));
-                                ui.label(format!("|dv|: {:.09?}", rot_delta_vel.length()));
-                                ui.label(format!("dk: {:.09?}", rot_delta_kinetic));
-                                ui.label(format!("dp: {:.09?}", rot_delta_potential));
-                                ui.label(format!("de: {:.09?}", rot_delta_energy));
+                                let new_state = init_state.ticked(fixed_rot);
+                                let delta_vel = new_state.vel - init_state.vel;
+                                let delta_kinetic =
+                                    new_state.kinetic_energy() - init_state.kinetic_energy();
+                                let delta_potential =
+                                    new_state.potential_energy() - init_state.potential_energy();
+                                let delta_energy =
+                                    new_state.total_energy() - init_state.total_energy();
+                                ui.label(format!("fixed pitch: {:.09?} deg", fixed_rot.x));
+                                ui.label(format!("|dv|: {:.09?}", delta_vel.length()));
+                                ui.label(format!("dk: {:.09?}", delta_kinetic));
+                                ui.label(format!("dp: {:.09?}", delta_potential));
+                                ui.label(format!("de: {:.09?}", delta_energy));
                             });
                             ui.group(|ui| {
-                                ui.label(format!("optimal pitch: {:.09?} deg", optimal_pitch));
-                                ui.label(format!("|odv|: {:.09?}", optimal_delta_vel.length()));
-                                ui.label(format!("odk: {:.09?}", optimal_delta_kinetic));
-                                ui.label(format!("odp: {:.09?}", optimal_delta_potential));
-                                ui.label(format!("ode: {:.09?}", optimal_delta_energy));
+                                // stuff for argmax_{pitch} (delta_energy) oracle
+                                let pitch = argmax_over_pitch_of_delta_energy(init_state.vel);
+                                let optimal_new_state = init_state.ticked(Rot { x: pitch, y: 0. });
+                                let optimal_delta_vel = optimal_new_state.vel - init_state.vel;
+                                let optimal_delta_kinetic = optimal_new_state.kinetic_energy()
+                                    - init_state.kinetic_energy();
+                                let optimal_delta_potential = optimal_new_state.potential_energy()
+                                    - init_state.potential_energy();
+                                let optimal_delta_energy =
+                                    optimal_new_state.total_energy() - init_state.total_energy();
+                                ui.label("immediate optimizer oracle");
+                                ui.label(format!("pitch: {:.09?} deg", pitch));
+                                ui.label(format!("|dv|: {:.09?}", optimal_delta_vel.length()));
+                                ui.label(format!("dk: {:.09?}", optimal_delta_kinetic));
+                                ui.label(format!("dp: {:.09?}", optimal_delta_potential));
+                                ui.label(format!("de: {:.09?}", optimal_delta_energy));
+                            });
+                            ui.group(|ui| {
+                                // stuff for argmax_{pitch} (delta_energy) grid
+                                if let Some(pitch) = immediate_optimal_pitches
+                                    .f32_bilinear_from_row_col_float((row, col))
+                                {
+                                    let optimal_new_state =
+                                        init_state.ticked(Rot { x: pitch, y: 0. });
+                                    let optimal_delta_vel = optimal_new_state.vel - init_state.vel;
+                                    let optimal_delta_kinetic = optimal_new_state.kinetic_energy()
+                                        - init_state.kinetic_energy();
+                                    let optimal_delta_potential = optimal_new_state
+                                        .potential_energy()
+                                        - init_state.potential_energy();
+                                    let optimal_delta_energy = optimal_new_state.total_energy()
+                                        - init_state.total_energy();
+                                    ui.label("immediate optimizer gird");
+                                    ui.label(format!("pitch grid: {:.09?} deg", pitch));
+                                    ui.label(format!("|dv|: {:.09?}", optimal_delta_vel.length()));
+                                    ui.label(format!("dk: {:.09?}", optimal_delta_kinetic));
+                                    ui.label(format!("dp: {:.09?}", optimal_delta_potential));
+                                    ui.label(format!("de: {:.09?}", optimal_delta_energy));
+                                } else {
+                                    ui.label("immediate optimal pitch grid is None");
+                                }
+                            });
+                            ui.group(|ui| {
+                                if let Some(pitch) =
+                                    deep_optimal_pitches.f32_bilinear_from_row_col_float((row, col))
+                                {
+                                    let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
+                                    let delta_vel = new_state.vel - init_state.vel;
+                                    let delta_kinetic =
+                                        new_state.kinetic_energy() - init_state.kinetic_energy();
+                                    let delta_potential = new_state.potential_energy()
+                                        - init_state.potential_energy();
+                                    let delta_energy =
+                                        new_state.total_energy() - init_state.total_energy();
+                                    ui.label("deep optimizer");
+                                    ui.label(format!("pitch: {:.09?} deg", pitch));
+                                    ui.label(format!("|dv|: {:.09?}", delta_vel.length()));
+                                    ui.label(format!("dk: {:.09?}", delta_kinetic));
+                                    ui.label(format!("dp: {:.09?}", delta_potential));
+                                    ui.label(format!("de: {:.09?}", delta_energy));
+                                } else {
+                                    ui.label("deep optimal pitch grid is None");
+                                }
                             });
                         });
                     })
@@ -263,8 +350,10 @@ fn main() -> eframe::Result {
                         grid_meta = new_grid_meta;
                         fixed_pitch_energies =
                             Grid::<DeltaTotalEnergy>::from_fixed_pitch(&grid_meta, fixed_rot.x);
-                        (optimal_pitches, optimal_energies) =
-                            energy_grid::new_grid_optimal_pitch(&grid_meta);
+                        (immediate_optimal_pitches, immediate_optimal_energies) =
+                            energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
+                        (deep_optimal_pitches, deep_optimal_energies) =
+                            energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
                     }
                 }
 
@@ -300,51 +389,101 @@ fn main() -> eframe::Result {
                         };
 
                         let cen = rect.left_top() + egui::vec2(col as f32, row as f32) * step;
+                        let get_delta_vel = |pitch: f32| {
+                            let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
+                            new_state.vel - init_state.vel
+                        };
+                        let get_energy_color = |pitch: f32| {
+                            let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
+                            let delta_energy = new_state.total_energy() - init_state.total_energy();
+                            color_of_energy(delta_energy)
+                        };
+
+                        // let draw_pitch_arrow = |pitch, | {
+
+                        // };
+
                         match draw_arrow_type {
-                            DrawArrowType::FixedPitch => {
+                            DrawArrowType::FixedDeltaVel => {
                                 // delta vel along global pitch (colored by delta energy)
-                                let new_state = init_state.ticked(fixed_rot);
-                                let delta_vel = new_state.vel - init_state.vel;
-                                let delta_energy =
-                                    new_state.total_energy() - init_state.total_energy();
-                                let color = color_of_energy(delta_energy);
+                                // let new_state = init_state.ticked(fixed_rot);
+                                // let delta_vel = new_state.vel - init_state.vel;
+                                // let delta_energy =
+                                //     new_state.total_energy() - init_state.total_energy();
+                                // let color = color_of_energy(delta_energy);
+                                let delta_vel = get_delta_vel(fixed_rot.x);
+                                let color = get_energy_color(fixed_rot.x);
                                 ui.painter().arrow(
                                     cen,
                                     delta_vel.yz_to_egui_vec2().normalized() * arrow_scale * step,
                                     egui::Stroke::new(0.2 * step, color),
                                 );
                             }
-                            DrawArrowType::OptimalPitch => {
+                            DrawArrowType::ImmediateOptimalPitch => {
                                 // optimal pitch (colored by delta energy)
-                                let optimal_pitch = optimal_pitches.0[row][col];
-                                let rot = Rot {
-                                    x: optimal_pitch,
-                                    y: 0.,
-                                };
-                                let new_state = init_state.ticked(rot);
-                                let delta_energy =
-                                    new_state.total_energy() - init_state.total_energy();
-                                let color = color_of_energy(delta_energy);
+                                let pitch = immediate_optimal_pitches.0[row][col];
+                                // let rot = Rot { x: pitch, y: 0. };
+                                // let new_state = init_state.ticked(rot);
+                                // let delta_energy =
+                                //     new_state.total_energy() - init_state.total_energy();
+                                // let color = color_of_energy(delta_energy);
+                                let color = get_energy_color(pitch);
                                 ui.painter().arrow(
                                     cen,
-                                    egui::Vec2::angled(optimal_pitch * std::f32::consts::PI / 180.)
+                                    egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
                                         * arrow_scale
                                         * step,
                                     egui::Stroke::new(0.2 * step, color),
                                 );
                             }
-                            DrawArrowType::OptimalDeltaVel => {
+                            DrawArrowType::ImmediateOptimalDeltaVel => {
                                 // delta vel along optimal pitch (colored by delta energy)
-                                let optimal_pitch = optimal_pitches.0[row][col];
-                                let rot = Rot {
-                                    x: optimal_pitch,
-                                    y: 0.,
-                                };
-                                let new_state = init_state.ticked(rot);
-                                let delta_vel = new_state.vel - init_state.vel;
-                                let delta_energy =
-                                    new_state.total_energy() - init_state.total_energy();
-                                let color = color_of_energy(delta_energy);
+                                let pitch = immediate_optimal_pitches.0[row][col];
+                                // let rot = Rot { x: pitch, y: 0. };
+                                // let new_state = init_state.ticked(rot);
+                                // let delta_vel = new_state.vel - init_state.vel;
+                                // let delta_energy =
+                                //     new_state.total_energy() - init_state.total_energy();
+                                // let color = color_of_energy(delta_energy);
+                                let delta_vel = get_delta_vel(pitch);
+                                let color = get_energy_color(pitch);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::vec2(delta_vel.z as f32, -delta_vel.y as f32)
+                                        .normalized()
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::DeepOptimalPitch => {
+                                // optimal pitch (colored by delta energy)
+                                let pitch = deep_optimal_pitches.0[row][col];
+                                // let rot = Rot { x: pitch, y: 0. };
+                                // let new_state = init_state.ticked(rot);
+                                // let delta_energy =
+                                //     new_state.total_energy() - init_state.total_energy();
+                                // let color = color_of_energy(delta_energy);
+                                let color = get_energy_color(pitch);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::DeepOptimalDeltaVel => {
+                                // delta vel along optimal pitch (colored by delta energy)
+                                let pitch = deep_optimal_pitches.0[row][col];
+                                // let rot = Rot { x: pitch, y: 0. };
+                                // let new_state = init_state.ticked(rot);
+                                // let delta_vel = new_state.vel - init_state.vel;
+                                // let delta_energy =
+                                //     new_state.total_energy() - init_state.total_energy();
+                                // let color = color_of_energy(delta_energy);
+                                let delta_vel = get_delta_vel(pitch);
+                                let color = get_energy_color(pitch);
                                 ui.painter().arrow(
                                     cen,
                                     egui::vec2(delta_vel.z as f32, -delta_vel.y as f32)
@@ -502,8 +641,19 @@ pub fn inv_lerp_f64(a: f64, b: f64, v: f64) -> f64 {
 }
 
 #[derive(Debug, PartialEq)]
+/// everything is colored by delta energy
 enum DrawArrowType {
-    FixedPitch,
-    OptimalPitch,
-    OptimalDeltaVel,
+    // don't actually do this because it's just arrows pointing in the same direction
+    // /// draw the pitch for the global fixed pitch
+    // FixedPitch,
+    /// draw the delta vel for the global fixed pitch
+    FixedDeltaVel,
+    /// draw the pitch for the immediate optimizer
+    ImmediateOptimalPitch,
+    /// draw the delta vel for the immediate optimizer
+    ImmediateOptimalDeltaVel,
+    /// draw the pitch for the deep optimizer
+    DeepOptimalPitch,
+    /// draw the delta vel for the deep optimizer
+    DeepOptimalDeltaVel,
 }

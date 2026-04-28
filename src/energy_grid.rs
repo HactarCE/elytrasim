@@ -1,7 +1,8 @@
 use super::*;
 
 type GridCoord = f32;
-// type Grid<T> = Box<[Box<[T]>]>;
+
+/// don't store samples at center of cells.
 pub struct Grid<T>(pub Box<[Box<[T]>]>);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,16 +105,10 @@ impl GridMeta {
         )
     }
 
-    // pub fn vel_to_grid_row_col_usize(&self, vel: Vel3) -> (usize, usize) {
-    //     let (row, col) = self.vel_to_grid_row_col_float(vel);
-    //     // TODO: should this round or floor or what?
-    //     (row as usize, col as usize)
-    // }
-
-    // pub fn vel_to_grid_col_row(&self, vel: Vel3) -> (GridCoord, GridCoord) {
-    //     let (row, col) = self.vel_to_grid_row_col(vel);
-    //     (col, row)
-    // }
+    pub fn vel_to_grid_row_col_usize(&self, vel: Vel3) -> (usize, usize) {
+        let (row, col) = self.vel_to_grid_row_col_float(vel);
+        (row.floor() as usize, col.floor() as usize)
+    }
 
     pub fn row_col_float_to_vel(&self, (row, col): (GridCoord, GridCoord)) -> Vel3 {
         Vec3 {
@@ -133,7 +128,7 @@ impl GridMeta {
 
     /// from the center of the cell
     pub fn row_col_usize_to_vel(&self, (row, col): (usize, usize)) -> Vel3 {
-        self.row_col_float_to_vel((row as GridCoord + 0.5, col as GridCoord + 0.5))
+        self.row_col_float_to_vel((row as GridCoord, col as GridCoord))
     }
 
     pub fn vel_to_egui_pos2(&self, vel: Vel3, rect: egui::Rect) -> egui::Pos2 {
@@ -162,7 +157,7 @@ impl GridMeta {
         (row, col): (usize, usize),
         rect: egui::Rect,
     ) -> egui::Pos2 {
-        self.row_col_float_to_egui_pos2((row as GridCoord + 0.5, col as GridCoord + 0.5), rect)
+        self.row_col_float_to_egui_pos2((row as GridCoord, col as GridCoord), rect)
     }
 
     pub fn rects(
@@ -198,7 +193,53 @@ impl Grid<DeltaTotalEnergy> {
     }
 }
 
-pub fn new_grid_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
+impl Grid<f32> {
+    pub fn f32_bilinear_from_row_col_float(
+        &self,
+        (row, col): (GridCoord, GridCoord),
+    ) -> Option<f32> {
+        let row_lo = row.floor() as usize;
+        let col_lo = col.floor() as usize;
+        let row_hi = row_lo + 1;
+        let col_hi = col_lo + 1;
+        let row_frac = row - row_lo as GridCoord;
+        let col_frac = col - col_lo as GridCoord;
+        let energy_ll = *self.0.get(row_lo)?.get(col_lo)?;
+        let energy_lh = *self.0.get(row_lo)?.get(col_hi)?;
+        let energy_hl = *self.0.get(row_hi)?.get(col_lo)?;
+        let energy_hh = *self.0.get(row_hi)?.get(col_hi)?;
+        Some(lerp_f32(
+            lerp_f32(energy_ll, energy_lh, col_frac),
+            lerp_f32(energy_hl, energy_hh, col_frac),
+            1.0 - row_frac,
+        ))
+    }
+}
+
+impl Grid<f64> {
+    pub fn f64_bilinear_from_row_col_float(
+        &self,
+        (row, col): (GridCoord, GridCoord),
+    ) -> Option<f64> {
+        let row_lo = row.floor() as usize;
+        let col_lo = col.floor() as usize;
+        let row_hi = row_lo + 1;
+        let col_hi = col_lo + 1;
+        let row_frac = row - row_lo as GridCoord;
+        let col_frac = col - col_lo as GridCoord;
+        let energy_ll = *self.0.get(row_lo)?.get(col_lo)?;
+        let energy_lh = *self.0.get(row_lo)?.get(col_hi)?;
+        let energy_hl = *self.0.get(row_hi)?.get(col_lo)?;
+        let energy_hh = *self.0.get(row_hi)?.get(col_hi)?;
+        Some(lerp_f64(
+            lerp_f64(energy_ll, energy_lh, col_frac as f64),
+            lerp_f64(energy_hl, energy_hh, col_frac as f64),
+            1.0 - row_frac as f64,
+        ))
+    }
+}
+
+pub fn new_grid_immediate_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
     let pitches = Grid(
         (0..meta.height)
             .map(|row| {
@@ -228,6 +269,78 @@ pub fn new_grid_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<DeltaTotalE
             .collect(),
     );
     (pitches, energies)
+}
+
+pub fn optimal_pitch_step_back(
+    meta: &GridMeta,
+    old_energies: &Grid<DeltaTotalEnergy>,
+) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
+    fn energy_for_vel_pitch(
+        meta: &GridMeta,
+        old_energies: &Grid<DeltaTotalEnergy>,
+        vel: Vel3,
+        pitch: Pitch,
+    ) -> Option<DeltaTotalEnergy> {
+        let state = State {
+            pos: Vec3::ZERO,
+            vel,
+        };
+        let new_state = state.ticked(Rot { x: pitch, y: 0. });
+        let delta_energy = new_state.total_energy() - state.total_energy();
+        // bilinear interpolation
+        let old_energy = {
+            let (row, col) = meta.vel_to_grid_row_col_float(vel);
+            old_energies.f64_bilinear_from_row_col_float((row, col))
+        }?;
+        Some(old_energy + delta_energy)
+    }
+    fn optimal_pitch_for_vel(
+        meta: &GridMeta,
+        old_energies: &Grid<DeltaTotalEnergy>,
+        vel: Vel3,
+    ) -> Pitch {
+        let mut best_pitch = 0.;
+        let mut best_delta_energy = f64::NEG_INFINITY;
+        for pitch in -90..=90 {
+            let delta_energy = energy_for_vel_pitch(meta, old_energies, vel, pitch as Pitch);
+            if let Some(delta_energy) = delta_energy
+                && delta_energy > best_delta_energy
+            {
+                best_delta_energy = delta_energy;
+                best_pitch = pitch as Pitch;
+            }
+        }
+        best_pitch
+    }
+    let new_pitches = Grid(
+        (0..meta.height)
+            .map(|row| {
+                (0..meta.width)
+                    .map(|col| {
+                        let vel = meta.row_col_usize_to_vel((row, col));
+                        optimal_pitch_for_vel(meta, old_energies, vel)
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    let new_energies = Grid(
+        new_pitches
+            .0
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                line.iter()
+                    .enumerate()
+                    .map(|(col, &pitch)| {
+                        let vel = meta.row_col_usize_to_vel((row, col));
+                        delta_total_energy_for_vel_at_pitch(vel, pitch)
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    (new_pitches, new_energies)
 }
 
 struct Optim {
