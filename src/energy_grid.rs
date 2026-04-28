@@ -1,6 +1,11 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::*;
 
-type GridCoord = f32;
+pub type GridCoord = f32;
+pub type Goodness = f64;
+
+pub static LOOKAHEAD: AtomicUsize = AtomicUsize::new(1);
 
 /// don't store samples at center of cells.
 pub struct Grid<T>(pub Box<[Box<[T]>]>);
@@ -239,6 +244,582 @@ impl Grid<f64> {
     }
 }
 
+impl Grid<State> {
+    pub fn state_bilinear_from_row_col_float(
+        &self,
+        (row, col): (GridCoord, GridCoord),
+    ) -> Option<State> {
+        let row_lo = row.floor() as usize;
+        let col_lo = col.floor() as usize;
+        let row_hi = row_lo + 1;
+        let col_hi = col_lo + 1;
+        let row_frac = row - row_lo as GridCoord;
+        let col_frac = col - col_lo as GridCoord;
+        let energy_ll = self.0.get(row_lo)?.get(col_lo)?;
+        let energy_lh = self.0.get(row_lo)?.get(col_hi)?;
+        let energy_hl = self.0.get(row_hi)?.get(col_lo)?;
+        let energy_hh = self.0.get(row_hi)?.get(col_hi)?;
+        Some(lerp_state(
+            &lerp_state(energy_ll, energy_lh, col_frac as f64),
+            &lerp_state(energy_hl, energy_hh, col_frac as f64),
+            1.0 - row_frac as f64,
+        ))
+    }
+}
+
+// def goodness(state) is that we tick state n times,
+// then take goodness_heuristic(ticked_state) := total_energy(ticked_state).
+// the point of what we're doing is so that we don't need to tick states n times to get this value,
+// we have caches of this value for tick n - 1 on a grid,
+// TODO: remove storing states.
+// so how does it happen that a vel gets a higher goodness?
+// it got a higher goodness from a place that had a higher goodness.
+// TODO: i need to store a 3d grid of goodness, indexed by vel and y,
+// because that's what total_energy is computed from.
+
+#[derive(Debug, Clone)]
+pub struct DPMeta {
+    y_pos_lo: Pos,
+    y_pos_hi: Pos,
+    y_vel_lo: Vel,
+    y_vel_hi: Vel,
+    z_vel_lo: Vel,
+    z_vel_hi: Vel,
+    y_pos_width: usize,
+    y_vel_width: usize,
+    z_vel_width: usize,
+}
+impl DPMeta {
+    pub fn from_grid_meta(
+        grid_meta: &GridMeta,
+        y_pos_lo: Pos,
+        y_pos_hi: Pos,
+        y_pos_width: usize,
+    ) -> Self {
+        Self {
+            y_pos_lo,
+            y_pos_hi,
+            y_vel_lo: grid_meta.y_vel_lo,
+            y_vel_hi: grid_meta.y_vel_hi,
+            z_vel_lo: grid_meta.z_vel_lo,
+            z_vel_hi: grid_meta.z_vel_hi,
+            y_pos_width,
+            y_vel_width: grid_meta.height,
+            z_vel_width: grid_meta.width,
+        }
+    }
+
+    fn index_usize_to_vals(
+        &self,
+        (y_pos_i, y_vel_i, z_vel_i): (usize, usize, usize),
+    ) -> (Pos, Vel, Vel) {
+        let y_pos = lerp_f64(
+            self.y_pos_lo,
+            self.y_pos_hi,
+            y_pos_i as f64 / self.y_pos_width as f64,
+        );
+        let y_vel = lerp_f64(
+            self.y_vel_lo,
+            self.y_vel_hi,
+            y_vel_i as f64 / self.y_vel_width as f64,
+        );
+        let z_vel = lerp_f64(
+            self.z_vel_lo,
+            self.z_vel_hi,
+            z_vel_i as f64 / self.z_vel_width as f64,
+        );
+        (y_pos, y_vel, z_vel)
+    }
+
+    fn vals_to_index_float(
+        &self,
+        (y_pos, y_vel, z_vel): (Pos, Vel, Vel),
+    ) -> (GridCoord, GridCoord, GridCoord) {
+        let y_pos_i = (inv_lerp_f64(self.y_pos_lo, self.y_pos_hi, y_pos) * self.y_pos_width as f64)
+            as GridCoord;
+        let y_vel_i = (inv_lerp_f64(self.y_vel_lo, self.y_vel_hi, y_vel) * self.y_vel_width as f64)
+            as GridCoord;
+        let z_vel_i = (inv_lerp_f64(self.z_vel_lo, self.z_vel_hi, z_vel) * self.z_vel_width as f64)
+            as GridCoord;
+        (y_pos_i, y_vel_i, z_vel_i)
+    }
+
+    // fn values_to_index_usize(&self, vals: (Pos, Vel, Vel)) -> (usize, usize, usize) {
+    //     let (y_pos_i_f, y_vel_i_f, z_vel_i_f) = self.vals_to_index_float(vals);
+    //     (
+    //         y_pos_i_f.floor() as usize,
+    //         y_vel_i_f.floor() as usize,
+    //         z_vel_i_f.floor() as usize,
+    //     )
+    // }
+}
+
+/// don't enforce uniform scaling
+#[derive(Debug, Clone)]
+pub struct DP {
+    meta: DPMeta,
+    arr: Box<[Box<[Box<[(Pitch, Goodness)]>]>]>,
+}
+impl DP {
+    pub fn base(meta: DPMeta) -> Self {
+        pub fn goodness_base((y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> Goodness {
+            let state = State {
+                pos: Vec3 {
+                    x: 0.,
+                    y: y_pos,
+                    z: 0.,
+                },
+                vel: Vec3 {
+                    x: 0.,
+                    y: y_vel,
+                    z: z_vel,
+                },
+            };
+            state.total_energy()
+        }
+
+        Self {
+            arr: (0..meta.y_pos_width)
+                .map(|y_pos_i| {
+                    (0..meta.y_vel_width)
+                        .map(|y_vel_i| {
+                            (0..meta.z_vel_width)
+                                .map(|z_vel_i| {
+                                    (
+                                        0.0,
+                                        goodness_base(
+                                            meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
+                                        ),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+            meta,
+        }
+    }
+
+    pub fn stepped(&self) -> Self {
+        fn goodness_step(dp: &DP, (y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> (Pitch, Goodness) {
+            let state = State {
+                pos: Vec3 {
+                    x: 0.,
+                    y: y_pos,
+                    z: 0.,
+                },
+                vel: Vec3 {
+                    x: 0.,
+                    y: y_vel,
+                    z: z_vel,
+                },
+            };
+            let mut best_pitch = 0.;
+            let mut best_goodness = f64::NEG_INFINITY;
+            for pitch in -90..=90 {
+                let rot = Rot {
+                    x: pitch as Pitch,
+                    y: 0.,
+                };
+                let new_state = state.ticked(rot);
+                // let (y_pos, y_vel, z_vel) = dp.meta.vals_to_index_float((
+                //     new_state.pos.y,
+                //     new_state.vel.y,
+                //     new_state.vel.z,
+                // ));
+                let goodness = dp
+                    .trilinear_from_vals((new_state.pos.y, new_state.vel.y, new_state.vel.z))
+                    .map(|(_, goodness)| goodness)
+                    .unwrap_or(f64::NEG_INFINITY);
+                if goodness > best_goodness {
+                    best_goodness = goodness;
+                    best_pitch = pitch as Pitch;
+                }
+            }
+            (best_pitch, best_goodness)
+        }
+
+        let arr = (0..self.meta.y_pos_width)
+            .map(|y_pos_i| {
+                (0..self.meta.y_vel_width)
+                    .map(|y_vel_i| {
+                        (0..self.meta.z_vel_width)
+                            .map(|z_vel_i| {
+                                goodness_step(
+                                    self,
+                                    self.meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+
+        Self {
+            arr,
+            meta: self.meta.clone(),
+        }
+    }
+
+    pub fn trilinear_from_indexes(
+        &self,
+        (y_pos_i_f, y_vel_i_f, z_vel_i_f): (GridCoord, GridCoord, GridCoord),
+    ) -> Option<(Pitch, Goodness)> {
+        let y_pos_i_lo = y_pos_i_f.floor() as usize;
+        let y_vel_i_lo = y_vel_i_f.floor() as usize;
+        let z_vel_i_lo = z_vel_i_f.floor() as usize;
+        let y_pos_i_hi = y_pos_i_lo + 1;
+        let y_vel_i_hi = y_vel_i_lo + 1;
+        let z_vel_i_hi = z_vel_i_lo + 1;
+        let y_pos_frac = y_pos_i_f - y_pos_i_lo as GridCoord;
+        let y_vel_frac = y_vel_i_f - y_vel_i_lo as GridCoord;
+        let z_vel_frac = z_vel_i_f - z_vel_i_lo as GridCoord;
+
+        // get the 8 surrounding values
+        let (p000, g000) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
+        let (p001, g001) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
+        let (p010, g010) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
+        let (p011, g011) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+        let (p100, g100) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
+        let (p101, g101) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
+        let (p110, g110) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
+        let (p111, g111) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+
+        // trilinear interpolation
+        Some((
+            lerp_f32(
+                lerp_f32(
+                    lerp_f32(p000, p001, z_vel_frac as f32),
+                    lerp_f32(p010, p011, z_vel_frac as f32),
+                    y_vel_frac as f32,
+                ),
+                lerp_f32(
+                    lerp_f32(p100, p101, z_vel_frac as f32),
+                    lerp_f32(p110, p111, z_vel_frac as f32),
+                    y_vel_frac as f32,
+                ),
+                y_pos_frac as f32,
+            ),
+            lerp_f64(
+                lerp_f64(
+                    lerp_f64(g000, g001, z_vel_frac as f64),
+                    lerp_f64(g010, g011, z_vel_frac as f64),
+                    y_vel_frac as f64,
+                ),
+                lerp_f64(
+                    lerp_f64(g100, g101, z_vel_frac as f64),
+                    lerp_f64(g110, g111, z_vel_frac as f64),
+                    y_vel_frac as f64,
+                ),
+                y_pos_frac as f64,
+            ),
+        ))
+    }
+
+    pub fn trilinear_from_vals(
+        &self,
+        (y_pos, y_vel, z_vel): (Pos, Vel, Vel),
+    ) -> Option<(Pitch, Goodness)> {
+        let (y_pos_i_f, y_vel_i_f, z_vel_i_f) =
+            self.meta.vals_to_index_float((y_pos, y_vel, z_vel));
+        self.trilinear_from_indexes((y_pos_i_f, y_vel_i_f, z_vel_i_f))
+    }
+
+    pub fn step(&mut self) {
+        *self = self.stepped();
+    }
+}
+
+pub fn goodness_for_vel_y_after_ticks(
+    y_pos: Pos,
+    y_vel: Vel,
+    z_vel: Vel,
+    ticks: usize,
+) -> Goodness {
+    let state = State {
+        pos: Vec3 {
+            x: 0.,
+            y: y_pos,
+            z: 0.,
+        },
+        vel: Vec3 {
+            x: 0.,
+            y: y_vel,
+            z: z_vel,
+        },
+    };
+    if ticks == 0 {
+        return state.total_energy();
+    }
+    let mut best_goodness = Goodness::NEG_INFINITY;
+    for pitch in -90..=90 {
+        let rot = Rot {
+            x: pitch as Pitch,
+            y: 0.,
+        };
+        let new_state = state.ticked(rot);
+        let goodness = goodness_for_vel_y_after_ticks(
+            new_state.vel.y,
+            new_state.vel.z,
+            new_state.pos.y,
+            ticks - 1,
+        );
+        if goodness > best_goodness {
+            best_goodness = goodness;
+        }
+    }
+    best_goodness
+}
+
+pub struct DeepOptim {
+    pub meta: GridMeta,
+    pub pitches: Grid<Pitch>,
+    pub states: Grid<State>,
+    pub goodnesses: Grid<Goodness>,
+}
+
+impl DeepOptim {
+    pub fn new(meta: GridMeta) -> Self {
+        let old_states = Grid(
+            (0..meta.height)
+                .map(|row| {
+                    (0..meta.width)
+                        .map(|col| State {
+                            pos: Vec3::ZERO,
+                            vel: meta.row_col_usize_to_vel((row, col)),
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
+        let old_goodnesses = Grid(
+            old_states
+                .0
+                .iter()
+                .map(|line| line.iter().map(|state| state.total_energy()).collect())
+                .collect(),
+        );
+        // just use some default
+        let old_pitches = Grid(
+            old_states
+                .0
+                .iter()
+                .map(|line| line.iter().map(|_| 0.).collect())
+                .collect(),
+        );
+        // let (pitches, states, goodnesses) = Self::stepped(&meta, &old_states, &old_goodnesses);
+        Self {
+            meta,
+            pitches: old_pitches,
+            states: old_states,
+            goodnesses: old_goodnesses,
+        }
+    }
+
+    fn stepped(
+        meta: &GridMeta,
+        old_states: &Grid<State>,
+        goodnesses: &Grid<Goodness>,
+    ) -> (Grid<Pitch>, Grid<State>, Grid<Goodness>) {
+        // fn goodness(state: &State) -> f64 {
+        //     state.total_energy()
+        // }
+
+        // fn state_for_vel_pitch(
+        //     meta: &GridMeta,
+        //     old_states: &Grid<State>,
+        //     vel: Vel3,
+        //     pitch: Pitch,
+        // ) -> Option<State> {
+        //     let (row, col) = meta.vel_to_grid_row_col_float(vel);
+        //     let state = old_states.state_bilinear_from_row_col_float((row, col))?;
+        //     let rot = Rot { x: pitch, y: 0. };
+        //     Some(state.ticked(rot))
+        // }
+
+        fn goodness_for_vel_pitch(
+            meta: &GridMeta,
+            goodnesses: &Grid<Goodness>,
+            vel: Vel3,
+            pitch: Pitch,
+        ) -> Option<Goodness> {
+            let rot = Rot { x: pitch, y: 0. };
+            let init_state = State {
+                pos: Vec3::ZERO,
+                vel,
+            };
+            let new_state = init_state.ticked(rot);
+            // let delta_goodness = new_state.total_energy() - init_state.total_energy();
+            let (row, col) = meta.vel_to_grid_row_col_float(new_state.vel);
+            goodnesses.f64_bilinear_from_row_col_float((row, col))
+            // .map(|old_goodness| old_goodness + delta_goodness)
+        }
+
+        fn optimal_pitch_for_state(
+            meta: &GridMeta,
+            goodnesses: &Grid<Goodness>,
+            init_state: &State,
+        ) -> Pitch {
+            let mut best_pitch = 0.;
+            let mut best_goodness = f64::NEG_INFINITY;
+            for pitch in -90..=90 {
+                if let Some(goodness) =
+                    goodness_for_vel_pitch(meta, goodnesses, init_state.vel, pitch as Pitch)
+                    && goodness > best_goodness
+                {
+                    best_goodness = goodness;
+                    best_pitch = pitch as Pitch;
+                }
+            }
+            best_pitch
+        }
+
+        let new_pitches = Grid(
+            old_states
+                .0
+                .iter()
+                .enumerate()
+                .map(|(row, line)| {
+                    line.iter()
+                        .enumerate()
+                        .map(|(col, state)| optimal_pitch_for_state(meta, goodnesses, state))
+                        .collect()
+                })
+                .collect(),
+        );
+
+        let new_states = Grid(
+            new_pitches
+                .0
+                .iter()
+                .zip(old_states.0.iter())
+                .map(|(pitch_line, state_line)| {
+                    pitch_line
+                        .iter()
+                        .zip(state_line.iter())
+                        .map(|(pitch, state)| {
+                            let rot = Rot { x: *pitch, y: 0. };
+                            state.ticked(rot)
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
+
+        let new_goodnesses = Grid(
+            new_pitches
+                .0
+                .iter()
+                .zip(old_states.0.iter())
+                .map(|(pitch_line, state_line)| {
+                    pitch_line
+                        .iter()
+                        .zip(state_line.iter())
+                        .map(|(pitch, state)| {
+                            goodness_for_vel_pitch(meta, goodnesses, state.vel, *pitch)
+                                .unwrap_or(f64::NEG_INFINITY)
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
+
+        (new_pitches, new_states, new_goodnesses)
+    }
+
+    pub fn step(&mut self) {
+        let (new_pitches, new_states, new_goodnesses) =
+            Self::stepped(&self.meta, &self.states, &self.goodnesses);
+        self.pitches = new_pitches;
+        self.states = new_states;
+        self.goodnesses = new_goodnesses;
+    }
+}
+
+// pub fn optimal_pitch_step_back(
+//     meta: &GridMeta,
+//     old_energies: &Grid<TotalEnergy>,
+// ) -> (Grid<Pitch>, Grid<TotalEnergy>) {
+//     // fn energy_for_vel_pitch(
+//     //     meta: &GridMeta,
+//     //     old_energies: &Grid<TotalEnergy>,
+//     //     vel: Vel3,
+//     //     pitch: Pitch,
+//     // ) -> Option<TotalEnergy> {
+//     //     let state = State {
+//     //         pos: Vec3::ZERO,
+//     //         vel,
+//     //     };
+//     //     let rot = Rot { x: pitch, y: 0. };
+//     //     // let new_state = state.ticked(rot);
+//     //     // TODO: this is goofy
+//     //     let new_state = {
+//     //         let mut new_state = state.clone();
+//     //         for _ in 0..LOOKAHEAD.load(Ordering::Relaxed) {
+//     //             new_state = new_state.ticked(rot)
+//     //         }
+//     //         new_state
+//     //     };
+//     //     let delta_energy = new_state.total_energy() - state.total_energy();
+//     //     // bilinear interpolation
+//     //     let old_energy = {
+//     //         let (row, col) = meta.vel_to_grid_row_col_float(new_state.vel);
+//     //         old_energies.f64_bilinear_from_row_col_float((row, col))
+//     //     }?;
+//     //     Some(old_energy + delta_energy)
+//     //     // Some(old_energy + new_state.vel.y - state.vel.y)
+//     // }
+//     // fn optimal_pitch_for_vel(
+//     //     meta: &GridMeta,
+//     //     old_energies: &Grid<TotalEnergy>,
+//     //     vel: Vel3,
+//     // ) -> Pitch {
+//     //     let mut best_pitch = 0.;
+//     //     let mut best_delta_energy = f64::NEG_INFINITY;
+//     //     for pitch in -90..=90 {
+//     //         let delta_energy = energy_for_vel_pitch(meta, old_energies, vel, pitch as Pitch);
+//     //         if let Some(delta_energy) = delta_energy
+//     //             && delta_energy > best_delta_energy
+//     //         {
+//     //             best_delta_energy = delta_energy;
+//     //             best_pitch = pitch as Pitch;
+//     //         }
+//     //     }
+//     //     best_pitch
+//     // }
+//     let new_pitches = Grid(
+//         (0..meta.height)
+//             .map(|row| {
+//                 (0..meta.width)
+//                     .map(|col| {
+//                         let vel = meta.row_col_usize_to_vel((row, col));
+//                         optimal_pitch_for_vel(meta, old_energies, vel)
+//                     })
+//                     .collect()
+//             })
+//             .collect(),
+//     );
+//     let new_energies = Grid(
+//         new_pitches
+//             .0
+//             .iter()
+//             .enumerate()
+//             .map(|(row, line)| {
+//                 line.iter()
+//                     .enumerate()
+//                     .map(|(col, &pitch)| {
+//                         let vel = meta.row_col_usize_to_vel((row, col));
+//                         delta_total_energy_for_vel_at_pitch(vel, pitch)
+//                     })
+//                     .collect()
+//             })
+//             .collect(),
+//     );
+//     (new_pitches, new_energies)
+// }
+
 pub fn new_grid_immediate_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
     let pitches = Grid(
         (0..meta.height)
@@ -263,90 +844,18 @@ pub fn new_grid_immediate_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<D
                     .map(|(col, &pitch)| {
                         let vel = meta.row_col_usize_to_vel((row, col));
                         delta_total_energy_for_vel_at_pitch(vel, pitch)
+                        // let state = State {
+                        //     pos: Vec3::ZERO,
+                        //     vel,
+                        // };
+                        // let new_state = state.ticked(Rot { x: pitch, y: 0. });
+                        // new_state.vel.y - state.vel.y
                     })
                     .collect()
             })
             .collect(),
     );
     (pitches, energies)
-}
-
-pub fn optimal_pitch_step_back(
-    meta: &GridMeta,
-    old_energies: &Grid<DeltaTotalEnergy>,
-) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
-    fn energy_for_vel_pitch(
-        meta: &GridMeta,
-        old_energies: &Grid<DeltaTotalEnergy>,
-        vel: Vel3,
-        pitch: Pitch,
-    ) -> Option<DeltaTotalEnergy> {
-        let state = State {
-            pos: Vec3::ZERO,
-            vel,
-        };
-        let new_state = state.ticked(Rot { x: pitch, y: 0. });
-        let delta_energy = new_state.total_energy() - state.total_energy();
-        // bilinear interpolation
-        let old_energy = {
-            let (row, col) = meta.vel_to_grid_row_col_float(vel);
-            old_energies.f64_bilinear_from_row_col_float((row, col))
-        }?;
-        Some(old_energy + delta_energy)
-    }
-    fn optimal_pitch_for_vel(
-        meta: &GridMeta,
-        old_energies: &Grid<DeltaTotalEnergy>,
-        vel: Vel3,
-    ) -> Pitch {
-        let mut best_pitch = 0.;
-        let mut best_delta_energy = f64::NEG_INFINITY;
-        for pitch in -90..=90 {
-            let delta_energy = energy_for_vel_pitch(meta, old_energies, vel, pitch as Pitch);
-            if let Some(delta_energy) = delta_energy
-                && delta_energy > best_delta_energy
-            {
-                best_delta_energy = delta_energy;
-                best_pitch = pitch as Pitch;
-            }
-        }
-        best_pitch
-    }
-    let new_pitches = Grid(
-        (0..meta.height)
-            .map(|row| {
-                (0..meta.width)
-                    .map(|col| {
-                        let vel = meta.row_col_usize_to_vel((row, col));
-                        optimal_pitch_for_vel(meta, old_energies, vel)
-                    })
-                    .collect()
-            })
-            .collect(),
-    );
-    let new_energies = Grid(
-        new_pitches
-            .0
-            .iter()
-            .enumerate()
-            .map(|(row, line)| {
-                line.iter()
-                    .enumerate()
-                    .map(|(col, &pitch)| {
-                        let vel = meta.row_col_usize_to_vel((row, col));
-                        delta_total_energy_for_vel_at_pitch(vel, pitch)
-                    })
-                    .collect()
-            })
-            .collect(),
-    );
-    (new_pitches, new_energies)
-}
-
-struct Optim {
-    meta: GridMeta,
-    pitches: Grid<Pitch>,
-    delta_energies: Grid<DeltaTotalEnergy>,
 }
 
 fn delta_total_energy_for_vel_at_pitch(vel: Vel3, pitch: Pitch) -> DeltaTotalEnergy {
@@ -363,6 +872,7 @@ fn delta_total_energy_for_vel_at_pitch(vel: Vel3, pitch: Pitch) -> DeltaTotalEne
 pub fn argmax_over_pitch_of_delta_energy(vel: Vel3) -> Pitch {
     let mut best_pitch = 0.;
     let mut best_delta_energy = f64::NEG_INFINITY;
+    // for pitch in -40..=90 {
     for pitch in -90..=90 {
         let rot = Rot {
             x: pitch as f32,
@@ -373,6 +883,13 @@ pub fn argmax_over_pitch_of_delta_energy(vel: Vel3) -> Pitch {
             vel,
         };
         let new_state = state.ticked(rot);
+        // let new_state = {
+        //     let mut new_state = state.clone();
+        //     for _ in 0..LOOKAHEAD.load(Ordering::Relaxed) {
+        //         new_state = new_state.ticked(rot)
+        //     }
+        //     new_state
+        // };
         let delta_energy = new_state.total_energy() - state.total_energy();
         if delta_energy > best_delta_energy {
             best_delta_energy = delta_energy;
