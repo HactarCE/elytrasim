@@ -14,18 +14,45 @@ pub struct GridMeta {
 }
 impl GridMeta {
     pub fn new_uniform(
-        width: usize,
+        max_width_height: usize,
         y_vel_mid: Vel,
         z_vel_lo: Vel,
         z_vel_hi: Vel,
         rect: egui::Rect,
     ) -> Self {
         let scale = rect.height() / rect.width();
-        let delta_z_vel = z_vel_hi - z_vel_lo;
+        assert!(
+            scale > 0.,
+            "rect must have positive width and height, got rect: {:?}",
+            rect
+        );
+        let (width, height) = if scale < 1. {
+            let width = max_width_height;
+            let height = ((max_width_height as f32 * scale).round() as usize).max(1);
+            (width, height)
+        } else {
+            let height = max_width_height;
+            let width = ((max_width_height as f32 / scale).round() as usize).max(1);
+            (width, height)
+        };
+        assert!(
+            width > 0 && height > 0,
+            "width and height must be positive, got width: {}, height: {}. rect: {:?}",
+            width,
+            height,
+            rect
+        );
+        assert_eq!(usize::max(width, height), max_width_height);
+        // let height = (max_width_height as f32 * scale).round() as usize;
+        const MIN_DELTA_Z_VEL: Vel = 0.01;
+        let delta_z_vel = (z_vel_hi - z_vel_lo).max(MIN_DELTA_Z_VEL);
         let delta_y_vel = delta_z_vel * scale as Vel;
+        assert!(delta_y_vel > 0.);
+        assert!(delta_z_vel > 0.);
+
         Self {
             width,
-            height: (width as f32 * scale).round() as usize,
+            height,
             y_vel_lo: y_vel_mid - delta_y_vel / 2.,
             y_vel_hi: y_vel_mid + delta_y_vel / 2.,
             z_vel_lo,
@@ -33,31 +60,35 @@ impl GridMeta {
         }
     }
 
-    fn debug_is_uniform(&self) -> bool {
-        let delta_z_vel = self.z_vel_hi - self.z_vel_lo;
-        let delta_y_vel = self.y_vel_hi - self.y_vel_lo;
-        let scale = delta_y_vel / delta_z_vel;
-        let expected_height = (self.width as f64 * scale).round() as usize;
-        (self.height as isize - expected_height as isize).abs() <= 1
+    // fn assert_is_uniform(&self) {
+    //     let delta_z_vel = self.z_vel_hi - self.z_vel_lo;
+    //     let delta_y_vel = self.y_vel_hi - self.y_vel_lo;
+    //     let scale = delta_y_vel / delta_z_vel;
+    //     let expected_height = (self.width as f64 * scale).round() as usize;
+    //     if (self.height as isize - expected_height as isize).abs() <= 1 {
+    //         return;
+    //     }
+    //     eprintln!("grid is not uniform");
+    //     dbg!(self.width, self.height, scale, expected_height);
+    //     panic!("grid is not uniform");
+    // }
+
+    pub fn vel_step(&self) -> Vel {
+        let horizontal_step = (self.z_vel_hi - self.z_vel_lo) / self.width as Vel;
+        // let vertical_step = (self.y_vel_hi - self.y_vel_lo) / self.height as Vel;
+        // self.assert_is_uniform();
+        horizontal_step
     }
 
-    /// returns an egui float.
-    pub fn step(&self) -> f32 {
-        // assert!()
-        let horizontal_step = self.width as f32 / (self.z_vel_hi - self.z_vel_lo) as f32;
-        let vertical_step = self.height as f32 / (self.y_vel_hi - self.y_vel_lo) as f32;
-        assert!(
-            self.debug_is_uniform(),
-            "step is only well defined for uniform grids, horizontal_step: {}, vertical_step: {}",
-            horizontal_step,
-            vertical_step
-        );
-        // horizontal_step
-        horizontal_step.min(vertical_step)
+    pub fn egui_step(&self, rect: egui::Rect) -> f32 {
+        let horizontal_step = rect.width() / self.width as f32;
+        // let vertical_step = rect.height() / self.height as f32;
+        // self.assert_is_uniform();
+        horizontal_step
     }
 
     pub fn vel_to_grid_row_col_float(&self, vel: Vel3) -> (GridCoord, GridCoord) {
-        assert_eq!(vel.x, 0., "not a hard error, but probably should have this");
+        // assert_eq!(vel.x, 0., "not a hard error, but probably should have this");
         (
             lerp_f32(
                 0.,
@@ -106,7 +137,7 @@ impl GridMeta {
 
     pub fn vel_to_egui_pos2(&self, vel: Vel3, rect: egui::Rect) -> egui::Pos2 {
         let (row, col) = self.vel_to_grid_row_col_float(vel);
-        rect.left_top() + egui::vec2(col, row) * self.step()
+        rect.left_top() + egui::vec2(col, row) * self.egui_step(rect)
     }
 
     pub fn row_col_float_to_egui_pos2(
@@ -114,7 +145,7 @@ impl GridMeta {
         (row, col): (GridCoord, GridCoord),
         rect: egui::Rect,
     ) -> egui::Pos2 {
-        rect.left_top() + egui::vec2(col, row) * self.step()
+        rect.left_top() + egui::vec2(col, row) * self.egui_step(rect)
     }
 
     /// from the center of the cell
@@ -130,8 +161,8 @@ impl GridMeta {
         &self,
         rect: egui::Rect,
     ) -> impl Iterator<Item = impl Iterator<Item = egui::Rect>> {
-        (0..self.width).map(move |col| {
-            (0..self.height).map(move |row| {
+        (0..self.height).map(move |col| {
+            (0..self.width).map(move |row| {
                 let cell_width = rect.width() / self.width as f32;
                 let cell_height = rect.height() / self.height as f32;
                 egui::Rect::from_min_size(
@@ -181,6 +212,8 @@ impl Grid<DeltaTotalEnergy> {
 
 struct Optim {
     meta: GridMeta,
+    pitches: Grid<Pitch>,
+    delta_energies: Grid<DeltaTotalEnergy>,
 }
 
 fn delta_total_energy_for_vel_at_pitch(vel: Vel3, pitch: Pitch) -> DeltaTotalEnergy {

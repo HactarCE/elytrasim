@@ -40,6 +40,8 @@ fn main() -> eframe::Result {
 
     let mut grid_width = 100;
 
+    // let mut fixed_pitch_grid =
+
     // const Y_VEL_LO: f64 = -3.;
     // const Y_VEL_HI: f64 = 3.;
     // const Z_VEL_LO: f64 = 0.;
@@ -52,8 +54,9 @@ fn main() -> eframe::Result {
     // const Z_VEL_LO: f64 = 0.;
     // const Z_VEL_HI: f64 = 8.;
 
+    const Y_VEL_MID: f64 = 0.;
     const Z_VEL_LO: f64 = 0.;
-    let mut z_vel_hi = 4.;
+    let mut z_vel_hi = 5.;
 
     let mut mag_scale = 0.04;
     let mut arrow_scale = 0.6;
@@ -86,155 +89,123 @@ fn main() -> eframe::Result {
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
-            egui::Panel::left("left").show_inside(ui, |ui| {
-                ui.group(|ui| {
-                    ui.label("Grid Width");
-                    ui.add(
-                        egui::Slider::new(&mut grid_width, 1..=500)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-
-                    ui.label("Max Z Vel");
-                    ui.add(
-                        egui::Slider::new(&mut z_vel_hi, 0.0..=8.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-
-                    ui.label("Mag Scale");
-                    ui.add(
-                        egui::Slider::new(&mut mag_scale, 0.01..=100.0)
-                            .clamping(egui::SliderClamping::Never)
-                            .logarithmic(true),
-                    );
-
-                    ui.label("Arrow Scale");
-                    ui.add(
-                        egui::Slider::new(&mut arrow_scale, 0.0..=2.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-
-                    ui.label("Arrow Thickness");
-                    ui.add(
-                        egui::Slider::new(&mut arrow_thickness, 0.0..=5.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-
-                    // draw_arrow_type
-                    ui.label("Draw Arrow Type");
-                    egui::ComboBox::from_id_salt("Draw Arrow Type")
-                        .selected_text(match draw_arrow_type {
-                            DrawArrowType::FixedPitch => "Global Pitch",
-                            DrawArrowType::OptimalPitch => "Optimal Pitch",
-                            DrawArrowType::OptimalDeltaVel => "Optimal Delta Vel",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut draw_arrow_type,
-                                DrawArrowType::FixedPitch,
-                                "Global Pitch",
+            egui::Panel::left("left")
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.group(|ui| {
+                            ui.label("Grid Width");
+                            ui.add(
+                                egui::Slider::new(&mut grid_width, 1..=500)
+                                    .clamping(egui::SliderClamping::Never),
                             );
-                            ui.selectable_value(
-                                &mut draw_arrow_type,
-                                DrawArrowType::OptimalPitch,
-                                "Optimal Pitch",
+
+                            ui.label("Max Z Vel");
+                            ui.add(
+                                egui::Slider::new(&mut z_vel_hi, 0.0..=8.0)
+                                    .clamping(egui::SliderClamping::Never),
                             );
-                            ui.selectable_value(
-                                &mut draw_arrow_type,
-                                DrawArrowType::OptimalDeltaVel,
-                                "Optimal Delta Vel",
+
+                            ui.label("Mag Scale");
+                            ui.add(
+                                egui::Slider::new(&mut mag_scale, 0.001..=100.0)
+                                    .clamping(egui::SliderClamping::Never)
+                                    .logarithmic(true),
                             );
+
+                            ui.label("Arrow Scale");
+                            ui.add(
+                                egui::Slider::new(&mut arrow_scale, 0.0..=2.0)
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+
+                            ui.label("Arrow Thickness");
+                            ui.add(
+                                egui::Slider::new(&mut arrow_thickness, 0.0..=5.0)
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+
+                            // draw_arrow_type
+                            ui.label("Draw Arrow Type");
+                            egui::ComboBox::from_id_salt("Draw Arrow Type")
+                                .selected_text(match draw_arrow_type {
+                                    DrawArrowType::FixedPitch => "Global Pitch",
+                                    DrawArrowType::OptimalPitch => "Optimal Pitch",
+                                    DrawArrowType::OptimalDeltaVel => "Optimal Delta Vel",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::FixedPitch,
+                                        "Global Pitch",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::OptimalPitch,
+                                        "Optimal Pitch",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::OptimalDeltaVel,
+                                        "Optimal Delta Vel",
+                                    );
+                                });
                         });
-                });
-                ui.group(|ui| {
-                    ui.strong("Rotation");
-                    ui.label("Pitch");
+                        ui.group(|ui| {
+                            ui.strong("Rotation");
+                            ui.label("Pitch");
 
-                    ui.add(
-                        egui::Slider::new(&mut rot.x, -90.0..=90.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-                    ui.label("Yaw");
-                    ui.add(
-                        egui::Slider::new(&mut rot.y, -90.0..=90.0)
-                            .clamping(egui::SliderClamping::Never),
-                    );
-                    ui.allocate_ui(egui::vec2(50., 50.), |ui| {
-                        ui.painter().arrow(
-                            ui.available_rect_before_wrap().left_top(),
-                            40. * egui::Vec2::angled(rot.x * std::f32::consts::PI / 180.),
-                            (3., egui::Color32::from_rgb(252, 3, 198)),
-                        );
-                    });
-                });
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        let mut changed = ui
-                            .add(egui::Slider::new(
-                                &mut state_index,
-                                // TODO: should this be 0..=replay_states.len() - 2,
-                                0..=replay_states.len() - 1,
-                            ))
-                            .changed();
-                        if ui.button("-").clicked() {
-                            state_index = state_index.saturating_sub(1);
-                            changed = true;
-                        }
-                        if ui.button("+").clicked() {
-                            state_index = std::cmp::min(state_index + 1, replay_states.len() - 1);
-                            changed = true;
-                        }
-                        if changed {
-                            rot.x = REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()];
-                        }
+                            ui.add(
+                                egui::Slider::new(&mut rot.x, -90.0..=90.0)
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                            ui.label("Yaw");
+                            ui.add(
+                                egui::Slider::new(&mut rot.y, -90.0..=90.0)
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                            ui.allocate_ui(egui::vec2(50., 50.), |ui| {
+                                ui.painter().arrow(
+                                    ui.available_rect_before_wrap().left_top(),
+                                    40. * egui::Vec2::angled(rot.x * std::f32::consts::PI / 180.),
+                                    (3., egui::Color32::from_rgb(252, 3, 198)),
+                                );
+                            });
+                        });
+                        ui.group(|ui| {
+                            ui.label("Replay Progress");
+                            ui.horizontal(|ui| {
+                                let mut changed = ui
+                                    .add(egui::Slider::new(
+                                        &mut state_index,
+                                        // TODO: should this be 0..=replay_states.len() - 2,
+                                        0..=replay_states.len() - 1,
+                                    ))
+                                    .changed();
+                                if ui.button("-").clicked() {
+                                    state_index = state_index.saturating_sub(1);
+                                    changed = true;
+                                }
+                                if ui.button("+").clicked() {
+                                    state_index =
+                                        std::cmp::min(state_index + 1, replay_states.len() - 1);
+                                    changed = true;
+                                }
+                                if changed {
+                                    rot.x = REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()];
+                                }
+                            })
+                        })
                     })
-                })
-            });
+                });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
 
-                // let y_vel_hi = z_vel_hi * (rect.height() / rect.width()) as f64;
-                // let y_vel_lo = -y_vel_hi;
+                let grid_meta =
+                    GridMeta::new_uniform(grid_width, Y_VEL_MID, Z_VEL_LO, z_vel_hi, rect);
 
-                // let grid_to_vel = |(x, y): (usize, usize)| Vec3 {
-                //     x: 0.,
-                //     y: lerp_f64(
-                //         y_vel_lo,
-                //         y_vel_hi,
-                //         1.0 - inv_lerp_f64(
-                //             0.,
-                //             grid_width as f64 * (rect.height() / rect.width()) as f64,
-                //             y as f64,
-                //         ),
-                //     ),
-                //     z: lerp_f64(
-                //         Z_VEL_LO,
-                //         z_vel_hi,
-                //         inv_lerp_f64(0., grid_width as f64, x as f64),
-                //     ),
-                // };
-
-                // let vel_to_grid = move |vel: Vec3| {
-                //     assert_eq!(vel.x, 0., "not a hard error, but probably should have this");
-                //     (
-                //         lerp_f64(
-                //             0.,
-                //             grid_width as f64,
-                //             inv_lerp_f64(Z_VEL_LO, z_vel_hi, vel.z),
-                //         ) as f32,
-                //         lerp_f64(
-                //             0.,
-                //             grid_width as f64 * (rect.height() / rect.width()) as f64,
-                //             1.0 - inv_lerp_f64(y_vel_lo, y_vel_hi, vel.y),
-                //         ) as f32,
-                //     )
-                // };
-
-                let grid_meta = GridMeta::new_uniform(grid_width, 0.0, 0.0, z_vel_hi, rect);
-
-                // let grid_height = (grid_width as f32 * rect.height() / rect.width()) as usize;
-
-                let step = rect.width() / grid_width as f32;
+                let step = grid_meta.egui_step(rect);
 
                 let color_of_energy = |delta_energy: f64| {
                     // fade to slightly different purples to show off 0
@@ -331,6 +302,8 @@ fn main() -> eframe::Result {
                             }
                         }
 
+                        // TODO: just show this on the left, also we can use the exact hover coords and not snap to grid
+
                         // show tooltip on hover, toggle clicked cell on click
                         if ui
                             .allocate_rect(
@@ -380,8 +353,9 @@ fn main() -> eframe::Result {
                     const PATH_LEN: usize = 10;
                     for _ in 0..PATH_LEN {
                         state = state.ticked(rot);
-                        let (x, y) = grid_meta.vel_to_grid_row_col_float(state.vel);
-                        let end = rect.left_top() + egui::vec2(x, y) * step;
+                        // let (row, col) = grid_meta.vel_to_grid_row_col_float(state.vel);
+                        // let end = rect.left_top() + egui::vec2(x, y) * step;
+                        let end = grid_meta.vel_to_egui_pos2(state.vel, rect);
                         ui.painter()
                             .line_segment([start, end], (3., egui::Color32::GOLD));
                         ui.painter().circle_filled(end, 4., egui::Color32::GOLD);
