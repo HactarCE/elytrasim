@@ -2,8 +2,9 @@ use super::*;
 
 type GridCoord = f32;
 // type Grid<T> = Box<[Box<[T]>]>;
-struct Grid<T>(Box<[Box<[T]>]>);
+pub struct Grid<T>(pub Box<[Box<[T]>]>);
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct GridMeta {
     pub width: usize,
     pub height: usize,
@@ -140,6 +141,13 @@ impl GridMeta {
         rect.left_top() + egui::vec2(col, row) * self.egui_step(rect)
     }
 
+    pub fn egui_pos2_to_vel(&self, pos: egui::Pos2, rect: egui::Rect) -> Vel3 {
+        let egui_step = self.egui_step(rect);
+        let col = (pos.x - rect.left()) / egui_step;
+        let row = (pos.y - rect.top()) / egui_step;
+        self.row_col_float_to_vel((row, col))
+    }
+
     pub fn row_col_float_to_egui_pos2(
         &self,
         (row, col): (GridCoord, GridCoord),
@@ -161,16 +169,12 @@ impl GridMeta {
         &self,
         rect: egui::Rect,
     ) -> impl Iterator<Item = impl Iterator<Item = egui::Rect>> {
-        (0..self.height).map(move |col| {
-            (0..self.width).map(move |row| {
-                let cell_width = rect.width() / self.width as f32;
-                let cell_height = rect.height() / self.height as f32;
-                egui::Rect::from_min_size(
-                    egui::pos2(
-                        rect.left() + col as f32 * cell_width,
-                        rect.top() + row as f32 * cell_height,
-                    ),
-                    egui::vec2(cell_width, cell_height),
+        let step = self.egui_step(rect);
+        (0..self.height).map(move |row| {
+            (0..self.width).map(move |col| {
+                egui::Rect::from_center_size(
+                    rect.left_top() + egui::vec2(col as f32, row as f32) * step,
+                    egui::Vec2::splat(step),
                 )
             })
         })
@@ -178,7 +182,7 @@ impl GridMeta {
 }
 
 impl Grid<DeltaTotalEnergy> {
-    fn from_fixed_pitch(meta: &GridMeta, pitch: Pitch) -> Self {
+    pub fn from_fixed_pitch(meta: &GridMeta, pitch: Pitch) -> Self {
         Self(
             (0..meta.height)
                 .map(|row| {
@@ -192,22 +196,38 @@ impl Grid<DeltaTotalEnergy> {
                 .collect(),
         )
     }
+}
 
-    fn from_optimal_pitch(meta: &GridMeta) -> Self {
-        Self(
-            (0..meta.height)
-                .map(|row| {
-                    (0..meta.width)
-                        .map(|col| {
-                            let vel = meta.row_col_usize_to_vel((row, col));
-                            let optimal_pitch = argmax_over_pitch_of_delta_energy(vel);
-                            delta_total_energy_for_vel_at_pitch(vel, optimal_pitch)
-                        })
-                        .collect()
-                })
-                .collect(),
-        )
-    }
+pub fn new_grid_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
+    let pitches = Grid(
+        (0..meta.height)
+            .map(|row| {
+                (0..meta.width)
+                    .map(|col| {
+                        let vel = meta.row_col_usize_to_vel((row, col));
+                        argmax_over_pitch_of_delta_energy(vel)
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    let energies = Grid(
+        pitches
+            .0
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                line.iter()
+                    .enumerate()
+                    .map(|(col, &pitch)| {
+                        let vel = meta.row_col_usize_to_vel((row, col));
+                        delta_total_energy_for_vel_at_pitch(vel, pitch)
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    (pitches, energies)
 }
 
 struct Optim {

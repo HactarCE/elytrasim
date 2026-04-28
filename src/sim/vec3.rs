@@ -33,6 +33,12 @@ impl Vec3 {
     }
 }
 
+impl Vel3 {
+    pub fn yz_to_egui_vec2(self) -> egui::Vec2 {
+        egui::vec2(self.z as f32, -self.y as f32)
+    }
+}
+
 impl AddAssign for Vec3 {
     fn add_assign(&mut self, rhs: Self) {
         self.x += rhs.x;
