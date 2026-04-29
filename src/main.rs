@@ -2,8 +2,6 @@ mod energy_grid;
 mod replay_pitches;
 mod sim;
 
-use std::sync::atomic::Ordering;
-
 use crate::energy_grid::*;
 use crate::sim::*;
 
@@ -68,9 +66,11 @@ fn main() -> eframe::Result {
     //     energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
     // let mut deep_optim = DeepOptim::new(grid_meta.clone());
     const Y_POS_INIT: Pos = 0.;
-    let mut dp = DP::base(DPMeta::from_grid_meta(&grid_meta, -100.0, 30.0, 40));
-    let mut deep_optimizer_running = false;
-    let mut deep_optimizer_steps_per_frame = 1;
+    // let mut dp = DP::new_base(DPMeta::from_grid_meta(&grid_meta, -100.0, 30.0, 40));
+    let mut dp = DP::empty();
+    let mut dp_tick: usize = 0;
+    // let mut deep_optimizer_running = false;
+    // let mut deep_optimizer_steps_per_frame = 1;
 
     let mut clicked_cell = None;
     let mut hovered_vel = Vel3::ZERO;
@@ -211,40 +211,54 @@ fn main() -> eframe::Result {
                             //     deep_optimal_energies = new_deep_optimal_energies;
                             // };
 
-                            if ui.button("Step Back").clicked() {
-                                // deep_optim.step();
-                                dp.step();
-                            }
+                            // if ui.button("Step Back").clicked() {
+                            //     // deep_optim.step();
+                            //     // dp.step();
+                            //     dp_tick += 1;
+                            // }
 
-                            ui.checkbox(&mut deep_optimizer_running, "Deep Optimizer Running");
+                            // ui.checkbox(&mut deep_optimizer_running, "Deep Optimizer Running");
 
-                            ui.label("Deep Optimizer Steps Per Frame");
-                            ui.add(
-                                egui::Slider::new(&mut deep_optimizer_steps_per_frame, 1..=1000)
-                                    .logarithmic(true)
-                                    .clamping(egui::SliderClamping::Never),
-                            );
+                            // ui.label("Deep Optimizer Steps Per Frame");
+                            // ui.add(
+                            //     egui::Slider::new(&mut deep_optimizer_steps_per_frame, 1..=1000)
+                            //         .logarithmic(true)
+                            //         .clamping(egui::SliderClamping::Never),
+                            // );
 
-                            if deep_optimizer_running {
-                                for _ in 0..deep_optimizer_steps_per_frame {
-                                    // deep_optim.step();
-                                    dp.step();
+                            // if deep_optimizer_running {
+                            //     for _ in 0..deep_optimizer_steps_per_frame {
+                            //         // deep_optim.step();
+                            //         dp.step();
+                            //     }
+                            // }
+
+                            // {
+                            //     let mut lookahead = LOOKAHEAD.load(Ordering::Relaxed);
+                            //     ui.label("Lookahead");
+                            //     if ui
+                            //         .add(
+                            //             egui::Slider::new(&mut lookahead, 1..=20)
+                            //                 .clamping(egui::SliderClamping::Never),
+                            //         )
+                            //         .changed()
+                            //     {
+                            //         LOOKAHEAD.store(lookahead, Ordering::Relaxed);
+                            //     }
+                            // }
+                            ui.label("DP Tick");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Slider::new(&mut dp_tick, 0..=100)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+                                if ui.button("-").clicked() {
+                                    dp_tick = dp_tick.saturating_sub(1);
                                 }
-                            }
-
-                            {
-                                let mut lookahead = LOOKAHEAD.load(Ordering::Relaxed);
-                                ui.label("Lookahead");
-                                if ui
-                                    .add(
-                                        egui::Slider::new(&mut lookahead, 1..=20)
-                                            .clamping(egui::SliderClamping::Never),
-                                    )
-                                    .changed()
-                                {
-                                    LOOKAHEAD.store(lookahead, Ordering::Relaxed);
+                                if ui.button("+").clicked() {
+                                    dp_tick += 1;
                                 }
-                            }
+                            });
                         });
                         ui.group(|ui| {
                             ui.label("Replay Progress");
@@ -269,7 +283,7 @@ fn main() -> eframe::Result {
                                     fixed_rot.x =
                                         REPLAY_PITCHES[state_index % REPLAY_PITCHES.len()];
                                 }
-                            })
+                            });
                         });
                         ui.group(|ui| {
                             let (row, col) = grid_meta.vel_to_grid_row_col_float(hovered_vel);
@@ -313,6 +327,18 @@ fn main() -> eframe::Result {
                                 ui.label(format!("dk: {:.09?}", optimal_delta_kinetic));
                                 ui.label(format!("dp: {:.09?}", optimal_delta_potential));
                                 ui.label(format!("de: {:.09?}", optimal_delta_energy));
+                                ui.label(format!(
+                                    "initial energy: {:.09?}",
+                                    init_state.total_energy()
+                                ));
+                                ui.label(format!(
+                                    "final energy: {:.09?}",
+                                    optimal_new_state.total_energy()
+                                ));
+                                ui.label(format!(
+                                    "delta energy: {:.09?}",
+                                    optimal_new_state.total_energy() - init_state.total_energy()
+                                ));
                             });
                             // ui.group(|ui| {
                             //     // stuff for argmax_{pitch} (delta_energy) grid
@@ -379,16 +405,28 @@ fn main() -> eframe::Result {
                                     y: y_vel,
                                     z: z_vel,
                                 } = hovered_vel;
-                                if let Some((pitch, goodness)) =
-                                    dp.trilinear_from_vals((Y_POS_INIT, y_vel, z_vel))
-                                {
-                                    ui.label("dp");
-                                    ui.label(format!("pitch: {:.09?} deg", pitch));
-                                    ui.label(format!("Y_POS_INIT: {:.09?}", Y_POS_INIT));
-                                    ui.label(format!("goodness: {:.09?}", goodness));
-                                } else {
-                                    ui.label("deep optimal pitch grid is None");
-                                }
+                                let key = DPKey::from_yz_vel(y_vel, z_vel);
+                                let DPValue { pitch, goodness } = dp.get(dp_tick, key);
+                                // if let Some((pitch, goodness)) =
+                                //     dp.trilinear_from_vals((Y_POS_INIT, y_vel, z_vel))
+                                // {
+                                // dp.tree_of_tick(dp_tick).
+                                ui.label("dp");
+                                ui.label(format!("pitch: {:.09?} deg", pitch));
+                                // ui.label(format!("Y_POS_INIT: {:.09?}", Y_POS_INIT));
+                                // ui.label(format!("goodness: {:.09?}", goodness));
+                                ui.label(format!(
+                                    "initial goodness: {:.09?}",
+                                    key.base_case().goodness
+                                ));
+                                ui.label(format!("final goodness: {:.09?}", goodness));
+                                ui.label(format!(
+                                    "delta goodness: {:.09?}",
+                                    goodness - key.base_case().goodness
+                                ));
+                                // } else {
+                                //     ui.label("deep optimal pitch grid is None");
+                                // }
                             });
                         });
                     })
@@ -410,7 +448,7 @@ fn main() -> eframe::Result {
                         // (deep_optimal_pitches, deep_optimal_energies) =
                         //     energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
                         // deep_optim = DeepOptim::new(grid_meta.clone());
-                        dp = DP::base(DPMeta::from_grid_meta(&grid_meta, -100.0, 30.0, 40));
+                        // dp = DP::new_base(DPMeta::from_grid_meta(&grid_meta, -100.0, 30.0, 40));
                     }
                 }
 
@@ -553,23 +591,39 @@ fn main() -> eframe::Result {
                             DrawArrowType::DeepOptimalPitch => {
                                 // optimal pitch (colored by delta energy)
 
+                                // let Vel3 {
+                                //     x: _,
+                                //     y: y_vel,
+                                //     z: z_vel,
+                                // } = grid_meta.row_col_usize_to_vel((row, col));
+                                // if let Some((pitch, goodness)) =
+                                //     dp.trilinear_from_vals((Y_POS_INIT, y_vel, z_vel))
+                                // {
+                                //     let color = color_of_goodness(goodness);
+                                //     ui.painter().arrow(
+                                //         cen,
+                                //         egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
+                                //             * arrow_scale
+                                //             * step,
+                                //         egui::Stroke::new(0.2 * step, color),
+                                //     );
+                                // }
+
                                 let Vel3 {
                                     x: _,
                                     y: y_vel,
                                     z: z_vel,
                                 } = grid_meta.row_col_usize_to_vel((row, col));
-                                if let Some((pitch, goodness)) =
-                                    dp.trilinear_from_vals((Y_POS_INIT, y_vel, z_vel))
-                                {
-                                    let color = color_of_goodness(goodness);
-                                    ui.painter().arrow(
-                                        cen,
-                                        egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
-                                            * arrow_scale
-                                            * step,
-                                        egui::Stroke::new(0.2 * step, color),
-                                    );
-                                }
+                                let key = DPKey::from_yz_vel(y_vel, z_vel);
+                                let DPValue { pitch, goodness } = dp.get(dp_tick, key);
+                                let color = color_of_goodness(goodness);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
                             }
                             // DrawArrowType::DeepOptimalPitch => {
                             //     let pitch = 0.0;

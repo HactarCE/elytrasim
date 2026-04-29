@@ -1,5 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use itertools::Itertools;
+use kdtree::KdTree;
+
 use super::*;
 
 pub type GridCoord = f32;
@@ -354,182 +357,384 @@ impl DPMeta {
     // }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DPKey {
+    pub y_pos: Pos,
+    pub y_vel: Vel,
+    pub z_vel: Vel,
+}
+impl DPKey {
+    pub fn from_yz_vel(y_vel: Vel, z_vel: Vel) -> Self {
+        const Y_POS_INIT: Pos = 0.;
+        Self {
+            y_pos: Y_POS_INIT,
+            y_vel,
+            z_vel,
+        }
+    }
+
+    fn from_array([y_pos, y_vel, z_vel]: [f64; 3]) -> Self {
+        Self {
+            y_pos,
+            y_vel,
+            z_vel,
+        }
+    }
+
+    fn to_array(self) -> [f64; 3] {
+        [self.y_pos, self.y_vel, self.z_vel]
+    }
+
+    pub fn into_state(self) -> State {
+        State {
+            pos: Vec3 {
+                x: 0.,
+                y: self.y_pos,
+                z: 0.,
+            },
+            vel: Vec3 {
+                x: 0.,
+                y: self.y_vel,
+                z: self.z_vel,
+            },
+        }
+    }
+
+    pub fn from_state(state: State) -> Self {
+        let State {
+            pos:
+                Pos3 {
+                    x: x_pos,
+                    y: y_pos,
+                    z: z_pos,
+                },
+            vel:
+                Vel3 {
+                    x: x_vel,
+                    y: y_vel,
+                    z: z_vel,
+                },
+        } = state;
+        assert_eq!(x_pos, 0.);
+        // assert_eq!(z_pos, 0.);
+        assert_eq!(x_vel, 0.);
+        Self {
+            y_pos,
+            y_vel,
+            z_vel,
+        }
+    }
+
+    pub fn base_case(self) -> DPValue {
+        const INIT_PITCH: Pitch = 0.;
+        DPValue {
+            pitch: INIT_PITCH,
+            goodness: self.into_state().total_energy(),
+        }
+    }
+}
+// // impl KdPoint for DPKey {
+// //     type Scalar = f64;
+// //     type Dim = typenum::U3;
+
+// //     fn at(&self, i: usize) -> Self::Scalar {
+// //         self.to_array()[i]
+// //     }
+// // }
+// // impl std::cmp::PartialOrd for DPKey {
+// //     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+// //         const WEIGHTS: [f64; 3] = [1., 1., 1.];
+// //         let self_dot = self.to_array().iter().zip(WEIGHTS).map(|(v, w)| v * w).sum::<f64>();
+// //         let other_dot = other.to_array().iter().zip(WEIGHTS).map(|(v, w)| v * w).sum::<f64>();
+// //         self_dot.partial_cmp(&other_dot)
+// //     }
+// // }
+// impl AsRef<[f64; 3]> for DPKey {
+//     fn as_ref(&self) -> &[f64; 3] {
+//         &self.to_array()
+//     }
+// }
+
+type DPKeyInner = [f64; 3];
+// type DPKey = [Pos, Vel, Vel];
+
+// #[derive(Debug, Clone, Copy, PartialEq)]
+// struct DPItem {
+//     key: DPKey,
+//     value: DPValue,
+// }
+// impl KdPoint for DPItem {
+//     type Scalar = f64;
+//     type Dim = typenum::U3;
+
+//     fn at(&self, i: usize) -> Self::Scalar {
+//         self.key.to_array()[i]
+//     }
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DPValue {
+    pub pitch: Pitch,
+    pub goodness: Goodness,
+}
+
+#[derive(Debug, Clone)]
+struct GoodnessAtTick(pub KdTree<f64, DPValue, DPKeyInner>);
+impl GoodnessAtTick {
+    fn empty() -> Self {
+        Self(KdTree::new(3))
+    }
+
+    // fn add(&mut self, point: DPKey, data: DPValue) {
+    // }
+    // fn nearest()
+}
+
+const DISTANCE_METRIC: fn(&[f64], &[f64]) -> f64 = kdtree::distance::squared_euclidean::<f64>;
+
 /// don't enforce uniform scaling
 #[derive(Debug, Clone)]
 pub struct DP {
-    meta: DPMeta,
-    arr: Box<[Box<[Box<[(Pitch, Goodness)]>]>]>,
+    // meta: DPMeta,
+    // arr: Box<[Box<[Box<[(Pitch, Goodness)]>]>]>,
+    /// indexed by tick
+    trees: Vec<GoodnessAtTick>,
 }
 impl DP {
-    pub fn base(meta: DPMeta) -> Self {
-        pub fn goodness_base((y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> Goodness {
-            let state = State {
-                pos: Vec3 {
-                    x: 0.,
-                    y: y_pos,
-                    z: 0.,
-                },
-                vel: Vec3 {
-                    x: 0.,
-                    y: y_vel,
-                    z: z_vel,
-                },
-            };
-            state.total_energy()
-        }
+    pub fn empty() -> Self {
+        // pub fn goodness_base((y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> Goodness {
+        //     let state = State {
+        //         pos: Vec3 {
+        //             x: 0.,
+        //             y: y_pos,
+        //             z: 0.,
+        //         },
+        //         vel: Vec3 {
+        //             x: 0.,
+        //             y: y_vel,
+        //             z: z_vel,
+        //         },
+        //     };
+        //     state.total_energy()
+        // }
 
+        // Self {
+        //     arr: (0..meta.y_pos_width)
+        //         .map(|y_pos_i| {
+        //             (0..meta.y_vel_width)
+        //                 .map(|y_vel_i| {
+        //                     (0..meta.z_vel_width)
+        //                         .map(|z_vel_i| {
+        //                             (
+        //                                 0.0,
+        //                                 goodness_base(
+        //                                     meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
+        //                                 ),
+        //                             )
+        //                         })
+        //                         .collect()
+        //                 })
+        //                 .collect()
+        //         })
+        //         .collect(),
+        //     meta,
+        // }
         Self {
-            arr: (0..meta.y_pos_width)
-                .map(|y_pos_i| {
-                    (0..meta.y_vel_width)
-                        .map(|y_vel_i| {
-                            (0..meta.z_vel_width)
-                                .map(|z_vel_i| {
-                                    (
-                                        0.0,
-                                        goodness_base(
-                                            meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
-                                        ),
-                                    )
-                                })
-                                .collect()
-                        })
-                        .collect()
-                })
-                .collect(),
-            meta,
+            trees: vec![],
+            // meta,
         }
     }
 
-    pub fn stepped(&self) -> Self {
-        fn goodness_step(dp: &DP, (y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> (Pitch, Goodness) {
-            let state = State {
-                pos: Vec3 {
-                    x: 0.,
-                    y: y_pos,
-                    z: 0.,
-                },
-                vel: Vec3 {
-                    x: 0.,
-                    y: y_vel,
-                    z: z_vel,
-                },
+    /// inserts an empty tree if there isn't one for this tick.
+    pub fn tree_of_tick(&mut self, tick: usize) -> &mut GoodnessAtTick {
+        while self.trees.len() <= tick {
+            self.trees.push(GoodnessAtTick::empty());
+        }
+        self.trees.get_mut(tick).unwrap()
+    }
+
+    // TODO: problem with get order mattering for what values are cached.
+    pub fn get(&mut self, tick: usize, key: DPKey) -> DPValue {
+        let key_inner = key.to_array();
+        let query_state = key.into_state();
+
+        // if the key is close enough to a value in the cache, return the cached value.
+        // const REQUIRED_SQUARE_DISTANCE: f64 = 1.;
+        // const REQUIRED_SQUARE_DISTANCE: f64 = 0.1;
+        const REQUIRED_SQUARE_DISTANCE: f64 = 0.001;
+        if let Ok(it) = self
+            .tree_of_tick(tick)
+            .0
+            .nearest(&key_inner, 1, &DISTANCE_METRIC)
+            && let Some((squared_distance, nearest_value)) = it.into_iter().next()
+            && squared_distance < REQUIRED_SQUARE_DISTANCE
+        {
+            return *nearest_value;
+        }
+
+        // if tick == 0, compute and insert and return the base case.
+        if tick == 0 {
+            let exact_value = key.base_case();
+            self.tree_of_tick(0).0.add(key_inner, exact_value).unwrap();
+            return exact_value;
+        }
+
+        // else, compute and insert and return argmax over pitch of get(tick - 1, ticked_key).
+        let mut best_value = DPValue {
+            pitch: 0.,
+            goodness: f64::NEG_INFINITY,
+        };
+        for pitch in (-90..=90).step_by(3) {
+            let rot = Rot {
+                x: pitch as Pitch,
+                y: 0.,
             };
-            let mut best_pitch = 0.;
-            let mut best_goodness = f64::NEG_INFINITY;
-            for pitch in -90..=90 {
-                let rot = Rot {
-                    x: pitch as Pitch,
-                    y: 0.,
+            let ticked_state = query_state.ticked(rot);
+            let ticked_key = DPKey::from_state(ticked_state);
+            let value = self.get(tick - 1, ticked_key);
+            if value.goodness > best_value.goodness {
+                best_value = DPValue {
+                    pitch: pitch as Pitch,
+                    goodness: value.goodness,
                 };
-                let new_state = state.ticked(rot);
-                // let (y_pos, y_vel, z_vel) = dp.meta.vals_to_index_float((
-                //     new_state.pos.y,
-                //     new_state.vel.y,
-                //     new_state.vel.z,
-                // ));
-                let goodness = dp
-                    .trilinear_from_vals((new_state.pos.y, new_state.vel.y, new_state.vel.z))
-                    .map(|(_, goodness)| goodness)
-                    .unwrap_or(f64::NEG_INFINITY);
-                if goodness > best_goodness {
-                    best_goodness = goodness;
-                    best_pitch = pitch as Pitch;
-                }
             }
-            (best_pitch, best_goodness)
         }
-
-        let arr = (0..self.meta.y_pos_width)
-            .map(|y_pos_i| {
-                (0..self.meta.y_vel_width)
-                    .map(|y_vel_i| {
-                        (0..self.meta.z_vel_width)
-                            .map(|z_vel_i| {
-                                goodness_step(
-                                    self,
-                                    self.meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
-                                )
-                            })
-                            .collect()
-                    })
-                    .collect()
-            })
-            .collect();
-
-        Self {
-            arr,
-            meta: self.meta.clone(),
-        }
+        self.tree_of_tick(tick)
+            .0
+            .add(key_inner, best_value)
+            .unwrap();
+        best_value
     }
 
-    pub fn trilinear_from_indexes(
-        &self,
-        (y_pos_i_f, y_vel_i_f, z_vel_i_f): (GridCoord, GridCoord, GridCoord),
-    ) -> Option<(Pitch, Goodness)> {
-        let y_pos_i_lo = y_pos_i_f.floor() as usize;
-        let y_vel_i_lo = y_vel_i_f.floor() as usize;
-        let z_vel_i_lo = z_vel_i_f.floor() as usize;
-        let y_pos_i_hi = y_pos_i_lo + 1;
-        let y_vel_i_hi = y_vel_i_lo + 1;
-        let z_vel_i_hi = z_vel_i_lo + 1;
-        let y_pos_frac = y_pos_i_f - y_pos_i_lo as GridCoord;
-        let y_vel_frac = y_vel_i_f - y_vel_i_lo as GridCoord;
-        let z_vel_frac = z_vel_i_f - z_vel_i_lo as GridCoord;
+    // pub fn stepped(&self) -> Self {
+    //     fn goodness_step(dp: &DP, (y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> (Pitch, Goodness) {
+    //         let state = State {
+    //             pos: Vec3 {
+    //                 x: 0.,
+    //                 y: y_pos,
+    //                 z: 0.,
+    //             },
+    //             vel: Vec3 {
+    //                 x: 0.,
+    //                 y: y_vel,
+    //                 z: z_vel,
+    //             },
+    //         };
+    //         let mut best_pitch = 0.;
+    //         let mut best_goodness = f64::NEG_INFINITY;
+    //         for pitch in -90..=90 {
+    //             let rot = Rot {
+    //                 x: pitch as Pitch,
+    //                 y: 0.,
+    //             };
+    //             let new_state = state.ticked(rot);
+    //             // let (y_pos, y_vel, z_vel) = dp.meta.vals_to_index_float((
+    //             //     new_state.pos.y,
+    //             //     new_state.vel.y,
+    //             //     new_state.vel.z,
+    //             // ));
+    //             let goodness = dp
+    //                 .trilinear_from_vals((new_state.pos.y, new_state.vel.y, new_state.vel.z))
+    //                 .map(|(_, goodness)| goodness)
+    //                 .unwrap_or(f64::NEG_INFINITY);
+    //             if goodness > best_goodness {
+    //                 best_goodness = goodness;
+    //                 best_pitch = pitch as Pitch;
+    //             }
+    //         }
+    //         (best_pitch, best_goodness)
+    //     }
 
-        // get the 8 surrounding values
-        let (p000, g000) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
-        let (p001, g001) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
-        let (p010, g010) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
-        let (p011, g011) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
-        let (p100, g100) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
-        let (p101, g101) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
-        let (p110, g110) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
-        let (p111, g111) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+    //     let arr = (0..self.meta.y_pos_width)
+    //         .map(|y_pos_i| {
+    //             (0..self.meta.y_vel_width)
+    //                 .map(|y_vel_i| {
+    //                     (0..self.meta.z_vel_width)
+    //                         .map(|z_vel_i| {
+    //                             goodness_step(
+    //                                 self,
+    //                                 self.meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
+    //                             )
+    //                         })
+    //                         .collect()
+    //                 })
+    //                 .collect()
+    //         })
+    //         .collect();
 
-        // trilinear interpolation
-        Some((
-            lerp_f32(
-                lerp_f32(
-                    lerp_f32(p000, p001, z_vel_frac as f32),
-                    lerp_f32(p010, p011, z_vel_frac as f32),
-                    y_vel_frac as f32,
-                ),
-                lerp_f32(
-                    lerp_f32(p100, p101, z_vel_frac as f32),
-                    lerp_f32(p110, p111, z_vel_frac as f32),
-                    y_vel_frac as f32,
-                ),
-                y_pos_frac as f32,
-            ),
-            lerp_f64(
-                lerp_f64(
-                    lerp_f64(g000, g001, z_vel_frac as f64),
-                    lerp_f64(g010, g011, z_vel_frac as f64),
-                    y_vel_frac as f64,
-                ),
-                lerp_f64(
-                    lerp_f64(g100, g101, z_vel_frac as f64),
-                    lerp_f64(g110, g111, z_vel_frac as f64),
-                    y_vel_frac as f64,
-                ),
-                y_pos_frac as f64,
-            ),
-        ))
-    }
+    //     Self {
+    //         arr,
+    //         meta: self.meta.clone(),
+    //     }
+    // }
 
-    pub fn trilinear_from_vals(
-        &self,
-        (y_pos, y_vel, z_vel): (Pos, Vel, Vel),
-    ) -> Option<(Pitch, Goodness)> {
-        let (y_pos_i_f, y_vel_i_f, z_vel_i_f) =
-            self.meta.vals_to_index_float((y_pos, y_vel, z_vel));
-        self.trilinear_from_indexes((y_pos_i_f, y_vel_i_f, z_vel_i_f))
-    }
+    // pub fn trilinear_from_indexes(
+    //     &self,
+    //     (y_pos_i_f, y_vel_i_f, z_vel_i_f): (GridCoord, GridCoord, GridCoord),
+    // ) -> Option<(Pitch, Goodness)> {
+    //     let y_pos_i_lo = y_pos_i_f.floor() as usize;
+    //     let y_vel_i_lo = y_vel_i_f.floor() as usize;
+    //     let z_vel_i_lo = z_vel_i_f.floor() as usize;
+    //     let y_pos_i_hi = y_pos_i_lo + 1;
+    //     let y_vel_i_hi = y_vel_i_lo + 1;
+    //     let z_vel_i_hi = z_vel_i_lo + 1;
+    //     let y_pos_frac = y_pos_i_f - y_pos_i_lo as GridCoord;
+    //     let y_vel_frac = y_vel_i_f - y_vel_i_lo as GridCoord;
+    //     let z_vel_frac = z_vel_i_f - z_vel_i_lo as GridCoord;
 
-    pub fn step(&mut self) {
-        *self = self.stepped();
-    }
+    //     // get the 8 surrounding values
+    //     let (p000, g000) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
+    //     let (p001, g001) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
+    //     let (p010, g010) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
+    //     let (p011, g011) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+    //     let (p100, g100) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
+    //     let (p101, g101) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
+    //     let (p110, g110) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
+    //     let (p111, g111) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+
+    //     // trilinear interpolation
+    //     Some((
+    //         lerp_f32(
+    //             lerp_f32(
+    //                 lerp_f32(p000, p001, z_vel_frac as f32),
+    //                 lerp_f32(p010, p011, z_vel_frac as f32),
+    //                 y_vel_frac as f32,
+    //             ),
+    //             lerp_f32(
+    //                 lerp_f32(p100, p101, z_vel_frac as f32),
+    //                 lerp_f32(p110, p111, z_vel_frac as f32),
+    //                 y_vel_frac as f32,
+    //             ),
+    //             y_pos_frac as f32,
+    //         ),
+    //         lerp_f64(
+    //             lerp_f64(
+    //                 lerp_f64(g000, g001, z_vel_frac as f64),
+    //                 lerp_f64(g010, g011, z_vel_frac as f64),
+    //                 y_vel_frac as f64,
+    //             ),
+    //             lerp_f64(
+    //                 lerp_f64(g100, g101, z_vel_frac as f64),
+    //                 lerp_f64(g110, g111, z_vel_frac as f64),
+    //                 y_vel_frac as f64,
+    //             ),
+    //             y_pos_frac as f64,
+    //         ),
+    //     ))
+    // }
+
+    // pub fn trilinear_from_vals(
+    //     &self,
+    //     (y_pos, y_vel, z_vel): (Pos, Vel, Vel),
+    // ) -> Option<(Pitch, Goodness)> {
+    //     let (y_pos_i_f, y_vel_i_f, z_vel_i_f) =
+    //         self.meta.vals_to_index_float((y_pos, y_vel, z_vel));
+    //     self.trilinear_from_indexes((y_pos_i_f, y_vel_i_f, z_vel_i_f))
+    // }
+
+    // pub fn step(&mut self) {
+    //     *self = self.stepped();
+    // }
 }
 
 pub fn goodness_for_vel_y_after_ticks(
