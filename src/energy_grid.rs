@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use egui::ahash::AHashMap;
 use itertools::Itertools;
-use kdtree::KdTree;
 
 use super::*;
 
@@ -30,6 +30,11 @@ impl GridMeta {
         z_vel_hi: Vel,
         rect: egui::Rect,
     ) -> Self {
+        assert!(
+            max_width_height > 0,
+            "max_width_height must be positive, got {}",
+            max_width_height
+        );
         let scale = rect.height() / rect.width();
         assert!(
             scale > 0.,
@@ -45,6 +50,8 @@ impl GridMeta {
             let width = ((max_width_height as f32 / scale).round() as usize).max(1);
             (width, height)
         };
+        let width = width.max(1);
+        let height = height.max(1);
         assert!(
             width > 0 && height > 0,
             "width and height must be positive, got width: {}, height: {}. rect: {:?}",
@@ -373,19 +380,34 @@ impl DPKey {
         }
     }
 
-    fn from_array([y_pos, y_vel, z_vel]: [f64; 3]) -> Self {
-        Self {
-            y_pos,
-            y_vel,
-            z_vel,
-        }
+    pub fn to_representative(self) -> DPKeyRepresentative {
+        // const Y_POS_STEP: f64 = 0.5;
+        // const Z_VEL_STEP: f64 = 0.4;
+        // const Y_VEL_STEP: f64 = 0.4;
+        const Y_POS_STEP: f64 = 0.02;
+        const Z_VEL_STEP: f64 = 0.01;
+        const Y_VEL_STEP: f64 = 0.01;
+
+        DPKeyRepresentative(DPKey {
+            y_pos: (self.y_pos / Y_POS_STEP).round() * Y_POS_STEP,
+            y_vel: (self.y_vel / Y_VEL_STEP).round() * Y_VEL_STEP,
+            z_vel: (self.z_vel / Z_VEL_STEP).round() * Z_VEL_STEP,
+        })
     }
 
-    fn to_array(self) -> [f64; 3] {
-        [self.y_pos, self.y_vel, self.z_vel]
-    }
+    // fn from_array([y_pos, y_vel, z_vel]: [f64; 3]) -> Self {
+    //     Self {
+    //         y_pos,
+    //         y_vel,
+    //         z_vel,
+    //     }
+    // }
 
-    pub fn into_state(self) -> State {
+    // fn to_array(self) -> [f64; 3] {
+    //     [self.y_pos, self.y_vel, self.z_vel]
+    // }
+
+    pub fn to_state(self) -> State {
         State {
             pos: Vec3 {
                 x: 0.,
@@ -400,8 +422,8 @@ impl DPKey {
         }
     }
 
-    pub fn from_state(state: State) -> Self {
-        let State {
+    pub fn from_state(state: &State) -> Self {
+        let &State {
             pos:
                 Pos3 {
                     x: x_pos,
@@ -425,64 +447,90 @@ impl DPKey {
         }
     }
 
-    pub fn base_case(self) -> DPValue {
-        const INIT_PITCH: Pitch = 0.;
-        DPValue {
-            pitch: INIT_PITCH,
-            goodness: self.into_state().total_energy(),
+    // pub fn base_case(self) -> DPValue {
+    //     // const INIT_PITCH: Pitch = 0.;
+    //     DPValue {
+    //         // pitch: INIT_PITCH,
+    //         pitch: None,
+    //         goodness: self.to_state().total_energy(),
+    //     }
+    // }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DPKeyRepresentative(pub DPKey);
+impl DPKeyRepresentative {
+    fn to_array(self) -> [u64; 3] {
+        let arr_f = [self.0.y_pos, self.0.y_vel, self.0.z_vel];
+        arr_f.map(|f| f.to_bits())
+    }
+
+    pub fn to_state(self) -> State {
+        State {
+            pos: Vec3 {
+                x: 0.,
+                y: self.0.y_pos,
+                z: 0.,
+            },
+            vel: Vec3 {
+                x: 0.,
+                y: self.0.y_vel,
+                z: self.0.z_vel,
+            },
         }
     }
+
+    // pub fn from_state(state: State) -> Self {
+    //     let State {
+    //         pos:
+    //             Pos3 {
+    //                 x: x_pos,
+    //                 y: y_pos,
+    //                 z: z_pos,
+    //             },
+    //         vel:
+    //             Vel3 {
+    //                 x: x_vel,
+    //                 y: y_vel,
+    //                 z: z_vel,
+    //             },
+    //     } = state;
+    //     assert_eq!(x_pos, 0.);
+    //     // assert_eq!(z_pos, 0.);
+    //     assert_eq!(x_vel, 0.);
+    //     Self(DPKey {
+    //         y_pos,
+    //         y_vel,
+    //         z_vel,
+    //     })
+    // }
 }
-// // impl KdPoint for DPKey {
-// //     type Scalar = f64;
-// //     type Dim = typenum::U3;
-
-// //     fn at(&self, i: usize) -> Self::Scalar {
-// //         self.to_array()[i]
-// //     }
-// // }
-// // impl std::cmp::PartialOrd for DPKey {
-// //     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-// //         const WEIGHTS: [f64; 3] = [1., 1., 1.];
-// //         let self_dot = self.to_array().iter().zip(WEIGHTS).map(|(v, w)| v * w).sum::<f64>();
-// //         let other_dot = other.to_array().iter().zip(WEIGHTS).map(|(v, w)| v * w).sum::<f64>();
-// //         self_dot.partial_cmp(&other_dot)
-// //     }
-// // }
-// impl AsRef<[f64; 3]> for DPKey {
-//     fn as_ref(&self) -> &[f64; 3] {
-//         &self.to_array()
-//     }
-// }
-
-type DPKeyInner = [f64; 3];
-// type DPKey = [Pos, Vel, Vel];
-
-// #[derive(Debug, Clone, Copy, PartialEq)]
-// struct DPItem {
-//     key: DPKey,
-//     value: DPValue,
-// }
-// impl KdPoint for DPItem {
-//     type Scalar = f64;
-//     type Dim = typenum::U3;
-
-//     fn at(&self, i: usize) -> Self::Scalar {
-//         self.key.to_array()[i]
-//     }
-// }
+impl std::cmp::PartialEq for DPKeyRepresentative {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_array() == other.to_array()
+    }
+}
+impl std::cmp::Eq for DPKeyRepresentative {}
+impl std::hash::Hash for DPKeyRepresentative {
+    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        let arr_u = self.to_array();
+        arr_u.hash(hasher);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DPValue {
-    pub pitch: Pitch,
+    /// `None` for tick 0
+    pub pitch: Option<Pitch>,
     pub goodness: Goodness,
 }
 
 #[derive(Debug, Clone)]
-struct GoodnessAtTick(pub KdTree<f64, DPValue, DPKeyInner>);
+// struct GoodnessAtTick(pub KdTree<f64, DPValue, DPKeyInner>);
+struct GoodnessAtTick(pub AHashMap<DPKeyRepresentative, DPValue>);
 impl GoodnessAtTick {
     fn empty() -> Self {
-        Self(KdTree::new(3))
+        Self(AHashMap::new())
     }
 
     // fn add(&mut self, point: DPKey, data: DPValue) {
@@ -490,7 +538,7 @@ impl GoodnessAtTick {
     // fn nearest()
 }
 
-const DISTANCE_METRIC: fn(&[f64], &[f64]) -> f64 = kdtree::distance::squared_euclidean::<f64>;
+// const DISTANCE_METRIC: fn(&[f64], &[f64]) -> f64 = kdtree::distance::squared_euclidean::<f64>;
 
 /// don't enforce uniform scaling
 #[derive(Debug, Clone)]
@@ -498,90 +546,66 @@ pub struct DP {
     // meta: DPMeta,
     // arr: Box<[Box<[Box<[(Pitch, Goodness)]>]>]>,
     /// indexed by tick
-    trees: Vec<GoodnessAtTick>,
+    caches: Vec<GoodnessAtTick>,
+    // goodnesses: Vec<AHashMap<DPKeyRepresentative, Goodness>>,
+    // pitches: Vec<AHashMap<DPKeyRepresentative, Pitch>>,
 }
 impl DP {
     pub fn empty() -> Self {
-        // pub fn goodness_base((y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> Goodness {
-        //     let state = State {
-        //         pos: Vec3 {
-        //             x: 0.,
-        //             y: y_pos,
-        //             z: 0.,
-        //         },
-        //         vel: Vec3 {
-        //             x: 0.,
-        //             y: y_vel,
-        //             z: z_vel,
-        //         },
-        //     };
-        //     state.total_energy()
-        // }
-
-        // Self {
-        //     arr: (0..meta.y_pos_width)
-        //         .map(|y_pos_i| {
-        //             (0..meta.y_vel_width)
-        //                 .map(|y_vel_i| {
-        //                     (0..meta.z_vel_width)
-        //                         .map(|z_vel_i| {
-        //                             (
-        //                                 0.0,
-        //                                 goodness_base(
-        //                                     meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
-        //                                 ),
-        //                             )
-        //                         })
-        //                         .collect()
-        //                 })
-        //                 .collect()
-        //         })
-        //         .collect(),
-        //     meta,
-        // }
-        Self {
-            trees: vec![],
-            // meta,
-        }
+        Self { caches: vec![] }
     }
 
-    /// inserts an empty tree if there isn't one for this tick.
-    pub fn tree_of_tick(&mut self, tick: usize) -> &mut GoodnessAtTick {
-        while self.trees.len() <= tick {
-            self.trees.push(GoodnessAtTick::empty());
+    // /// inserts an empty `GoodnessAtTick` if there isn't one for this tick.
+    // pub fn goodnesses_of_tick(&mut self, tick: usize) -> &GoodnessAtTick {
+    //     while self.trees.len() <= tick {
+    //         self.trees.push(GoodnessAtTick::empty());
+    //     }
+    //     self.trees.get(tick).unwrap()
+    // }
+
+    /// inserts an empty `GoodnessAtTick` if there isn't one for this tick.
+    fn goodnesses_of_tick_mut(&mut self, tick: usize) -> &mut GoodnessAtTick {
+        while self.caches.len() <= tick {
+            self.caches.push(GoodnessAtTick::empty());
         }
-        self.trees.get_mut(tick).unwrap()
+        self.caches.get_mut(tick).unwrap()
     }
 
-    // TODO: problem with get order mattering for what values are cached.
-    pub fn get(&mut self, tick: usize, key: DPKey) -> DPValue {
-        let key_inner = key.to_array();
-        let query_state = key.into_state();
+    /// the largest goodness we can obtain starting from key_query and ticking for tick ticks.
+    /// the pitch is the pitch we should apply now to get that goodness.
+    pub fn get(&mut self, tick: usize, key_query: DPKey) -> DPValue {
+        let key_representative = key_query.to_representative();
 
         // if the key is close enough to a value in the cache, return the cached value.
         // const REQUIRED_SQUARE_DISTANCE: f64 = 1.;
         // const REQUIRED_SQUARE_DISTANCE: f64 = 0.1;
-        const REQUIRED_SQUARE_DISTANCE: f64 = 0.001;
-        if let Ok(it) = self
-            .tree_of_tick(tick)
-            .0
-            .nearest(&key_inner, 1, &DISTANCE_METRIC)
-            && let Some((squared_distance, nearest_value)) = it.into_iter().next()
-            && squared_distance < REQUIRED_SQUARE_DISTANCE
+        // const REQUIRED_SQUARE_DISTANCE: f64 = 0.001;
+        if let Some(cache) = self.caches.get(tick)
+            && let Some(nearest_value) = cache.0.get(&key_representative)
         {
             return *nearest_value;
         }
 
         // if tick == 0, compute and insert and return the base case.
         if tick == 0 {
-            let exact_value = key.base_case();
-            self.tree_of_tick(0).0.add(key_inner, exact_value).unwrap();
+            let exact_goodness = key_representative.to_state().total_energy();
+            let exact_value = DPValue {
+                pitch: None,
+                goodness: exact_goodness,
+            };
+            self.goodnesses_of_tick_mut(0)
+                .0
+                .insert(key_representative, exact_value)
+                .ok_or(())
+                .unwrap_err();
             return exact_value;
         }
 
         // else, compute and insert and return argmax over pitch of get(tick - 1, ticked_key).
+        // let query_state = key.to_state();
+        let init_state = key_representative.to_state();
         let mut best_value = DPValue {
-            pitch: 0.,
+            pitch: None,
             goodness: f64::NEG_INFINITY,
         };
         for pitch in (-90..=90).step_by(3) {
@@ -589,20 +613,28 @@ impl DP {
                 x: pitch as Pitch,
                 y: 0.,
             };
-            let ticked_state = query_state.ticked(rot);
-            let ticked_key = DPKey::from_state(ticked_state);
-            let value = self.get(tick - 1, ticked_key);
-            if value.goodness > best_value.goodness {
+            let ticked_state = init_state.ticked(rot);
+            let ticked_key = DPKey::from_state(&ticked_state);
+            // let value = self.get(tick - 1, ticked_key);
+            // if value.goodness > best_value.goodness {
+            //     best_value = DPValue {
+            //         pitch: pitch as Pitch,
+            //         goodness: value.goodness,
+            //     };
+            // }
+            let goodness = self.get(tick - 1, ticked_key).goodness;
+            if goodness > best_value.goodness {
                 best_value = DPValue {
-                    pitch: pitch as Pitch,
-                    goodness: value.goodness,
+                    pitch: Some(pitch as Pitch),
+                    goodness,
                 };
             }
         }
-        self.tree_of_tick(tick)
+        self.goodnesses_of_tick_mut(tick)
             .0
-            .add(key_inner, best_value)
-            .unwrap();
+            .insert(key_representative, best_value)
+            .ok_or(())
+            .unwrap_err();
         best_value
     }
 
@@ -1098,6 +1130,36 @@ pub fn argmax_over_pitch_of_delta_energy(vel: Vel3) -> Pitch {
         let delta_energy = new_state.total_energy() - state.total_energy();
         if delta_energy > best_delta_energy {
             best_delta_energy = delta_energy;
+            best_pitch = pitch as f32;
+        }
+    }
+    best_pitch
+}
+
+pub fn argmax_over_pitch_of_energy(vel: Vel3) -> Pitch {
+    let mut best_pitch = 0.;
+    let mut best_energy = f64::NEG_INFINITY;
+    // for pitch in -40..=90 {
+    for pitch in -90..=90 {
+        let rot = Rot {
+            x: pitch as f32,
+            y: 0.,
+        };
+        let state = State {
+            pos: Vec3::ZERO,
+            vel,
+        };
+        let new_state = state.ticked(rot);
+        // let new_state = {
+        //     let mut new_state = state.clone();
+        //     for _ in 0..LOOKAHEAD.load(Ordering::Relaxed) {
+        //         new_state = new_state.ticked(rot)
+        //     }
+        //     new_state
+        // };
+        let energy = new_state.total_energy();
+        if energy > best_energy {
+            best_energy = energy;
             best_pitch = pitch as f32;
         }
     }

@@ -12,7 +12,7 @@ pub type DeltaTotalEnergy = f64;
 
 pub type DeltaState = State;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone,  PartialEq)]
 pub struct State {
     pub pos: Vec3,
     pub vel: Vec3,

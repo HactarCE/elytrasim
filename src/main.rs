@@ -49,7 +49,10 @@ fn main() -> eframe::Result {
     const Y_VEL_MID: f64 = 0.;
     const Z_VEL_LO: f64 = 0.;
     let mut z_vel_hi = 5.;
-    let mut grid_width = 100;
+    // let mut grid_width = 100;
+    // coprime with the to_representative multiples
+    // to avoid drawing the cache as though it's perfect
+    let mut grid_width = 93;
 
     let mut grid_meta = GridMeta::new_uniform(
         grid_width,
@@ -73,13 +76,17 @@ fn main() -> eframe::Result {
     // let mut deep_optimizer_steps_per_frame = 1;
 
     let mut clicked_cell = None;
-    let mut hovered_vel = Vel3::ZERO;
+    // let mut hovered_vel = Vel3::ZERO;
+    let mut hovered_state = State {
+        pos: Pos3::ZERO,
+        vel: Vel3::ZERO,
+    };
 
     let mut state_index: usize = 0;
     let replay_states = {
         let mut replay_states = vec![State {
-            pos: Vec3::ZERO,
-            vel: Vec3 {
+            pos: Pos3::ZERO,
+            vel: Vel3 {
                 x: 0.,
                 y: 0.167467,
                 z: 0.200887,
@@ -109,6 +116,7 @@ fn main() -> eframe::Result {
                                 egui::Slider::new(&mut grid_width, 1..=500)
                                     .clamping(egui::SliderClamping::Never),
                             );
+                            grid_width = grid_width.max(1);
 
                             ui.label("Max Z Vel");
                             ui.add(
@@ -286,30 +294,34 @@ fn main() -> eframe::Result {
                             });
                         });
                         ui.group(|ui| {
-                            let (row, col) = grid_meta.vel_to_grid_row_col_float(hovered_vel);
-                            let init_state = State {
-                                pos: Vec3::ZERO,
-                                vel: hovered_vel,
-                            };
+                            let (row, col) = grid_meta.vel_to_grid_row_col_float(hovered_state.vel);
+                            // let hovered_state = State {
+                            //     pos: Vec3::ZERO,
+                            //     vel: hovered_vel,
+                            // };
+
                             ui.group(|ui| {
-                                ui.label(format!("z vel: {:.09?} bpt", init_state.vel.z));
-                                ui.label(format!("y vel: {:.09?} bpt", init_state.vel.y));
+                                ui.label(format!("y vel: {:.09?} bpt", hovered_state.vel.y));
+                                ui.label(format!("z vel: {:.09?} bpt", hovered_state.vel.z));
                             });
+
                             ui.group(|ui| {
-                                let new_state = init_state.ticked(fixed_rot);
-                                let delta_vel = new_state.vel - init_state.vel;
+                                let new_state = hovered_state.ticked(fixed_rot);
+                                let delta_vel = new_state.vel - hovered_state.vel;
                                 let delta_kinetic =
-                                    new_state.kinetic_energy() - init_state.kinetic_energy();
+                                    new_state.kinetic_energy() - hovered_state.kinetic_energy();
                                 let delta_potential =
-                                    new_state.potential_energy() - init_state.potential_energy();
+                                    new_state.potential_energy() - hovered_state.potential_energy();
                                 let delta_energy =
-                                    new_state.total_energy() - init_state.total_energy();
+                                    new_state.total_energy() - hovered_state.total_energy();
                                 ui.label(format!("fixed pitch: {:.09?} deg", fixed_rot.x));
                                 ui.label(format!("|dv|: {:.09?}", delta_vel.length()));
                                 ui.label(format!("dk: {:.09?}", delta_kinetic));
                                 ui.label(format!("dp: {:.09?}", delta_potential));
                                 ui.label(format!("de: {:.09?}", delta_energy));
                             });
+
+                            #[cfg(false)]
                             ui.group(|ui| {
                                 // stuff for argmax_{pitch} (delta_energy) oracle
                                 let pitch = argmax_over_pitch_of_delta_energy(init_state.vel);
@@ -321,12 +333,68 @@ fn main() -> eframe::Result {
                                     - init_state.potential_energy();
                                 let optimal_delta_energy =
                                     optimal_new_state.total_energy() - init_state.total_energy();
-                                ui.label("immediate optimizer oracle");
+                                ui.label("immediate optimizer");
                                 ui.label(format!("pitch: {:.09?} deg", pitch));
                                 ui.label(format!("|dv|: {:.09?}", optimal_delta_vel.length()));
                                 ui.label(format!("dk: {:.09?}", optimal_delta_kinetic));
                                 ui.label(format!("dp: {:.09?}", optimal_delta_potential));
                                 ui.label(format!("de: {:.09?}", optimal_delta_energy));
+                            });
+
+                            ui.group(|ui| {
+                                // stuff for argmax_{pitch} (delta_energy)
+                                // but with formatting consistent with the deep optimizer
+                                let pitch = argmax_over_pitch_of_delta_energy(hovered_state.vel);
+                                let optimal_new_state =
+                                    hovered_state.ticked(Rot { x: pitch, y: 0. });
+                                ui.label("immediate delta energy");
+                                ui.label(format!("pitch: {:.09?} deg", pitch));
+                                ui.label(format!(
+                                    "initial energy: {:.09?}",
+                                    hovered_state.total_energy()
+                                ));
+                                ui.label(format!(
+                                    "final energy: {:.09?}",
+                                    optimal_new_state.total_energy()
+                                ));
+                                ui.label(format!(
+                                    "delta energy: {:.09?}",
+                                    optimal_new_state.total_energy() - hovered_state.total_energy()
+                                ));
+                            });
+
+                            ui.group(|ui| {
+                                // stuff for argmax_{pitch} (energy)
+                                // but with formatting consistent with the deep optimizer
+                                let pitch = argmax_over_pitch_of_energy(hovered_state.vel);
+                                let optimal_new_state =
+                                    hovered_state.ticked(Rot { x: pitch, y: 0. });
+                                ui.label("immediate energy");
+                                ui.label(format!("pitch: {:.09?} deg", pitch));
+                                ui.label(format!(
+                                    "initial energy: {:.09?}",
+                                    hovered_state.total_energy()
+                                ));
+                                ui.label(format!(
+                                    "final energy: {:.09?}",
+                                    optimal_new_state.total_energy()
+                                ));
+                                ui.label(format!(
+                                    "delta energy: {:.09?}",
+                                    optimal_new_state.total_energy() - hovered_state.total_energy()
+                                ));
+                            });
+
+                            ui.group(|ui| {
+                                // stuff for argmax_{pitch} (energy) from the representative
+                                let key_representative =
+                                    DPKey::from_state(&hovered_state).to_representative();
+                                let init_state = key_representative.to_state();
+                                let pitch = argmax_over_pitch_of_energy(init_state.vel);
+                                let optimal_new_state =
+                                    init_state.ticked(Rot { x: pitch, y: 0. });
+                                ui.label("immediate energy representative");
+                                ui.label(format!("pitch: {:.09?} deg", pitch));
                                 ui.label(format!(
                                     "initial energy: {:.09?}",
                                     init_state.total_energy()
@@ -340,93 +408,69 @@ fn main() -> eframe::Result {
                                     optimal_new_state.total_energy() - init_state.total_energy()
                                 ));
                             });
-                            // ui.group(|ui| {
-                            //     // stuff for argmax_{pitch} (delta_energy) grid
-                            //     if let Some(pitch) = immediate_optimal_pitches
-                            //         .f32_bilinear_from_row_col_float((row, col))
-                            //     {
-                            //         let optimal_new_state =
-                            //             init_state.ticked(Rot { x: pitch, y: 0. });
-                            //         let optimal_delta_vel = optimal_new_state.vel - init_state.vel;
-                            //         let optimal_delta_kinetic = optimal_new_state.kinetic_energy()
-                            //             - init_state.kinetic_energy();
-                            //         let optimal_delta_potential = optimal_new_state
-                            //             .potential_energy()
-                            //             - init_state.potential_energy();
-                            //         let optimal_delta_energy = optimal_new_state.total_energy()
-                            //             - init_state.total_energy();
-                            //         ui.label("immediate optimizer gird");
-                            //         ui.label(format!("pitch: {:.09?} deg", pitch));
-                            //         ui.label(format!("|dv|: {:.09?}", optimal_delta_vel.length()));
-                            //         ui.label(format!("dk: {:.09?}", optimal_delta_kinetic));
-                            //         ui.label(format!("dp: {:.09?}", optimal_delta_potential));
-                            //         ui.label(format!("de: {:.09?}", optimal_delta_energy));
-                            //     } else {
-                            //         ui.label("immediate optimal pitch grid is None");
-                            //     }
-                            // });
-                            // ui.group(|ui| {
-                            //     if let Some(pitch) = deep_optim
-                            //         .pitches
-                            //         .f32_bilinear_from_row_col_float((row, col))
-                            //     {
-                            //         let goodness = deep_optim
-                            //             .goodnesses
-                            //             .f64_bilinear_from_row_col_float((row, col))
-                            //             .unwrap_or(f64::NEG_INFINITY);
-                            //         let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
-                            //         let delta_vel = new_state.vel - init_state.vel;
-                            //         let kinetic_energy = new_state.kinetic_energy();
-                            //         let potential_energy = new_state.potential_energy();
-                            //         let total_energy = new_state.total_energy();
-                            //         // let delta_kinetic =
-                            //         //     new_state.kinetic_energy() - init_state.kinetic_energy();
-                            //         // let delta_potential = new_state.potential_energy()
-                            //         //     - init_state.potential_energy();
-                            //         // let delta_energy =
-                            //         //     new_state.total_energy() - init_state.total_energy();
-                            //         ui.label("deep optimizer");
-                            //         ui.label(format!("pitch: {:.09?} deg", pitch));
-                            //         ui.label(format!("goodness: {:.09?}", goodness));
-                            //         ui.label(format!("|dv|: {:.09?}", delta_vel.length()));
-                            //         // ui.label(format!("dk: {:.09?}", delta_kinetic));
-                            //         // ui.label(format!("dp: {:.09?}", delta_potential));
-                            //         // ui.label(format!("de: {:.09?}", delta_energy));
-                            //         ui.label(format!("k: {:.09?}", kinetic_energy));
-                            //         ui.label(format!("p: {:.09?}", potential_energy));
-                            //         ui.label(format!("e: {:.09?}", total_energy));
-                            //     } else {
-                            //         ui.label("deep optimal pitch grid is None");
-                            //     }
-                            // });
+
+                            // representative of the hovered vel
+                            #[cfg(false)]
                             ui.group(|ui| {
-                                let Vel3 {
-                                    x: _,
-                                    y: y_vel,
-                                    z: z_vel,
-                                } = hovered_vel;
-                                let key = DPKey::from_yz_vel(y_vel, z_vel);
-                                let DPValue { pitch, goodness } = dp.get(dp_tick, key);
-                                // if let Some((pitch, goodness)) =
-                                //     dp.trilinear_from_vals((Y_POS_INIT, y_vel, z_vel))
-                                // {
-                                // dp.tree_of_tick(dp_tick).
-                                ui.label("dp");
-                                ui.label(format!("pitch: {:.09?} deg", pitch));
-                                // ui.label(format!("Y_POS_INIT: {:.09?}", Y_POS_INIT));
-                                // ui.label(format!("goodness: {:.09?}", goodness));
+                                let key_representative =
+                                    DPKey::from_state(&hovered_state).to_representative();
+                                ui.label("dp representative");
+                                ui.label(format!("y_pos: {:.09?} b", key_representative.0.y_pos));
+                                ui.label(format!("y_vel: {:.09?} bpt", key_representative.0.y_vel));
+                                ui.label(format!("z_vel: {:.09?} bpt", key_representative.0.z_vel));
+                            });
+
+                            ui.group(|ui| {
+                                let key_query = DPKey::from_state(&hovered_state);
+                                let DPValue { pitch, goodness } = dp.get(dp_tick, key_query);
+                                ui.label("dp hovered");
+
+                                ui.label(format!("pitch: {:.09?} deg", pitch.unwrap_or(f32::NAN)));
                                 ui.label(format!(
                                     "initial goodness: {:.09?}",
-                                    key.base_case().goodness
+                                    hovered_state.total_energy()
                                 ));
                                 ui.label(format!("final goodness: {:.09?}", goodness));
                                 ui.label(format!(
                                     "delta goodness: {:.09?}",
-                                    goodness - key.base_case().goodness
+                                    goodness - hovered_state.total_energy()
                                 ));
-                                // } else {
-                                //     ui.label("deep optimal pitch grid is None");
-                                // }
+                                if let Some(pitch) = pitch {
+                                    let new_state = hovered_state.ticked(Rot { x: pitch, y: 0. });
+                                    // this should match, or maybe only from the representative
+                                    ui.label(format!(
+                                        "delta goodness: {:.09?}",
+                                        new_state.total_energy() - hovered_state.total_energy()
+                                    ));
+                                }
+                            });
+
+                            ui.group(|ui| {
+                                let key_representative =
+                                    DPKey::from_state(&hovered_state).to_representative();
+                                let init_state = key_representative.to_state();
+                                let DPValue { pitch, goodness } =
+                                    dp.get(dp_tick, key_representative.0);
+
+                                ui.label("dp representative");
+                                ui.label(format!("pitch: {:.09?} deg", pitch.unwrap_or(f32::NAN)));
+                                ui.label(format!(
+                                    "initial goodness: {:.09?}",
+                                    init_state.total_energy()
+                                ));
+                                ui.label(format!("final goodness: {:.09?}", goodness));
+                                ui.label(format!(
+                                    "delta goodness: {:.09?}",
+                                    goodness - init_state.total_energy()
+                                ));
+                                if let Some(pitch) = pitch {
+                                    let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
+                                    // this should match, or maybe only from the representative
+                                    ui.label(format!(
+                                        "delta goodness: {:.09?}",
+                                        new_state.total_energy() - init_state.total_energy()
+                                    ));
+                                }
                             });
                         });
                     })
@@ -453,7 +497,7 @@ fn main() -> eframe::Result {
                 }
 
                 if let Some(hovered_egui_pos2) = ui.input(|i| i.pointer.latest_pos()) {
-                    hovered_vel = grid_meta.egui_pos2_to_vel(hovered_egui_pos2, rect);
+                    hovered_state.vel = grid_meta.egui_pos2_to_vel(hovered_egui_pos2, rect);
                 }
 
                 let step = grid_meta.egui_step(rect);
@@ -483,6 +527,11 @@ fn main() -> eframe::Result {
                 let color_of_goodness = |goodness: Goodness| {
                     // TODO: does this work
                     color_of_delta_energy(goodness / 100.0)
+                };
+
+                let color_of_delta_goodness = |goodness: Goodness| {
+                    // TODO: does this work
+                    color_of_delta_energy(goodness)
                 };
 
                 for (row, line) in grid_meta.rects(rect).enumerate() {
@@ -614,13 +663,36 @@ fn main() -> eframe::Result {
                                     y: y_vel,
                                     z: z_vel,
                                 } = grid_meta.row_col_usize_to_vel((row, col));
-                                let key = DPKey::from_yz_vel(y_vel, z_vel);
-                                let DPValue { pitch, goodness } = dp.get(dp_tick, key);
-                                let color = color_of_goodness(goodness);
+                                let key_query = DPKey::from_yz_vel(y_vel, z_vel);
+                                let key_representative = key_query.to_representative();
+                                let DPValue { pitch, goodness } = dp.get(dp_tick, key_query);
+                                // let color = color_of_goodness(goodness);
+                                // let color =
+                                //     color_of_delta_goodness(goodness - key.base_case().goodness);
+                                let color = color_of_delta_goodness(
+                                    goodness - key_query.to_state().total_energy(),
+                                );
+                                // let color = color_of_delta_goodness(
+                                //     goodness - key_representative.to_state().total_energy(),
+                                // );
+                                // make the grains visible
+                                // let representative_hash = {
+                                //     use std::hash::{Hash, Hasher};
+                                //     let mut h = std::hash::DefaultHasher::new();
+                                //     key_representative.hash(&mut h);
+                                //     h.finish()
+                                // };
+                                // let color = egui::Color32::from_rgba_premultiplied(
+                                //     color.r(),
+                                //     color.g(),
+                                //     color.b(),
+                                //     127 + representative_hash as u8 / 2,
+                                // );
                                 ui.painter().arrow(
                                     cen,
-                                    egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
-                                        * arrow_scale
+                                    egui::Vec2::angled(
+                                        pitch.unwrap_or(-180.0) * std::f32::consts::PI / 180.,
+                                    ) * arrow_scale
                                         * step,
                                     egui::Stroke::new(0.2 * step, color),
                                 );
@@ -684,6 +756,18 @@ fn main() -> eframe::Result {
                             }
                         }
                     }
+                }
+
+                // draw the dot on the representative, if showing a dp arrow grid
+                if matches!(
+                    draw_arrow_type,
+                    DrawArrowType::DeepOptimalPitch | DrawArrowType::DeepOptimalDeltaVel
+                ) {
+                    let key_representative = DPKey::from_state(&hovered_state).to_representative();
+                    let rep_vel = key_representative.to_state().vel;
+                    let rep_egui_pos = grid_meta.vel_to_egui_pos2(rep_vel, rect);
+                    ui.painter()
+                        .circle_filled(rep_egui_pos, 3., egui::Color32::WHITE);
                 }
 
                 // draw the path from the clicked cell
