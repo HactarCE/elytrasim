@@ -385,14 +385,14 @@ fn main() -> eframe::Result {
                                 ));
                             });
 
+                            #[cfg(false)]
                             ui.group(|ui| {
                                 // stuff for argmax_{pitch} (energy) from the representative
                                 let key_representative =
                                     DPKey::from_state(&hovered_state).to_representative();
-                                let init_state = key_representative.to_state();
+                                let init_state = key_representative.0.to_state();
                                 let pitch = argmax_over_pitch_of_energy(init_state.vel);
-                                let optimal_new_state =
-                                    init_state.ticked(Rot { x: pitch, y: 0. });
+                                let optimal_new_state = init_state.ticked(Rot { x: pitch, y: 0. });
                                 ui.label("immediate energy representative");
                                 ui.label(format!("pitch: {:.09?} deg", pitch));
                                 ui.label(format!(
@@ -445,10 +445,11 @@ fn main() -> eframe::Result {
                                 }
                             });
 
+                            #[cfg(false)]
                             ui.group(|ui| {
                                 let key_representative =
                                     DPKey::from_state(&hovered_state).to_representative();
-                                let init_state = key_representative.to_state();
+                                let init_state = key_representative.0.to_state();
                                 let DPValue { pitch, goodness } =
                                     dp.get(dp_tick, key_representative.0);
 
@@ -664,7 +665,7 @@ fn main() -> eframe::Result {
                                     z: z_vel,
                                 } = grid_meta.row_col_usize_to_vel((row, col));
                                 let key_query = DPKey::from_yz_vel(y_vel, z_vel);
-                                let key_representative = key_query.to_representative();
+                                // let key_representative = key_query.to_representative();
                                 let DPValue { pitch, goodness } = dp.get(dp_tick, key_query);
                                 // let color = color_of_goodness(goodness);
                                 // let color =
@@ -673,7 +674,7 @@ fn main() -> eframe::Result {
                                     goodness - key_query.to_state().total_energy(),
                                 );
                                 // let color = color_of_delta_goodness(
-                                //     goodness - key_representative.to_state().total_energy(),
+                                //     goodness - key_representative.0.to_state().total_energy(),
                                 // );
                                 // make the grains visible
                                 // let representative_hash = {
@@ -759,12 +760,13 @@ fn main() -> eframe::Result {
                 }
 
                 // draw the dot on the representative, if showing a dp arrow grid
+                #[cfg(false)]
                 if matches!(
                     draw_arrow_type,
                     DrawArrowType::DeepOptimalPitch | DrawArrowType::DeepOptimalDeltaVel
                 ) {
                     let key_representative = DPKey::from_state(&hovered_state).to_representative();
-                    let rep_vel = key_representative.to_state().vel;
+                    let rep_vel = key_representative.0.to_state().vel;
                     let rep_egui_pos = grid_meta.vel_to_egui_pos2(rep_vel, rect);
                     ui.painter()
                         .circle_filled(rep_egui_pos, 3., egui::Color32::WHITE);

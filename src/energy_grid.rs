@@ -380,31 +380,99 @@ impl DPKey {
         }
     }
 
-    pub fn to_representative(self) -> DPKeyRepresentative {
-        // const Y_POS_STEP: f64 = 0.5;
-        // const Z_VEL_STEP: f64 = 0.4;
-        // const Y_VEL_STEP: f64 = 0.4;
-        const Y_POS_STEP: f64 = 0.02;
-        const Z_VEL_STEP: f64 = 0.01;
-        const Y_VEL_STEP: f64 = 0.01;
-
-        DPKeyRepresentative(DPKey {
-            y_pos: (self.y_pos / Y_POS_STEP).round() * Y_POS_STEP,
-            y_vel: (self.y_vel / Y_VEL_STEP).round() * Y_VEL_STEP,
-            z_vel: (self.z_vel / Z_VEL_STEP).round() * Z_VEL_STEP,
-        })
-    }
-
-    // fn from_array([y_pos, y_vel, z_vel]: [f64; 3]) -> Self {
-    //     Self {
-    //         y_pos,
-    //         y_vel,
-    //         z_vel,
-    //     }
+    // pub fn to_representative(self) -> DPKeyRepresentative {
+    //     DPKeyRepresentative(DPKey {
+    //         y_pos: (self.y_pos / DPKeyRepresentative::Y_POS_STEP).round()
+    //             * DPKeyRepresentative::Y_POS_STEP,
+    //         y_vel: (self.y_vel / DPKeyRepresentative::Y_VEL_STEP).round()
+    //             * DPKeyRepresentative::Y_VEL_STEP,
+    //         z_vel: (self.z_vel / DPKeyRepresentative::Z_VEL_STEP).round()
+    //             * DPKeyRepresentative::Z_VEL_STEP,
+    //     })
     // }
 
-    // fn to_array(self) -> [f64; 3] {
-    //     [self.y_pos, self.y_vel, self.z_vel]
+    // pub fn trilinear_from_indexes(
+    //     &self,
+    //     (y_pos_i_f, y_vel_i_f, z_vel_i_f): (GridCoord, GridCoord, GridCoord),
+    // ) -> Option<(Pitch, Goodness)> {
+    //     let y_pos_i_lo = y_pos_i_f.floor() as usize;
+    //     let y_vel_i_lo = y_vel_i_f.floor() as usize;
+    //     let z_vel_i_lo = z_vel_i_f.floor() as usize;
+    //     let y_pos_i_hi = y_pos_i_lo + 1;
+    //     let y_vel_i_hi = y_vel_i_lo + 1;
+    //     let z_vel_i_hi = z_vel_i_lo + 1;
+    //     let y_pos_frac = y_pos_i_f - y_pos_i_lo as GridCoord;
+    //     let y_vel_frac = y_vel_i_f - y_vel_i_lo as GridCoord;
+    //     let z_vel_frac = z_vel_i_f - z_vel_i_lo as GridCoord;
+
+    //     // get the 8 surrounding values
+    //     let (p000, g000) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
+    //     let (p001, g001) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
+    //     let (p010, g010) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
+    //     let (p011, g011) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+    //     let (p100, g100) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
+    //     let (p101, g101) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
+    //     let (p110, g110) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
+    //     let (p111, g111) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
+
+    //     // trilinear interpolation
+    // }
+
+    // pub fn to_representatives(self) -> ([DPKeyRepresentative; 8], [f64; 3]) {
+
+    //     // const RANGE: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    //     // RANGE.map(|i| {
+    //     //     let y_pos = if i & 4 == 0 { y_pos_lo } else { y_pos_hi };
+    //     //     let y_vel = if i & 2 == 0 { y_vel_lo } else { y_vel_hi };
+    //     //     let z_vel = if i & 1 == 0 { z_vel_lo } else { z_vel_hi };
+    //     //     DPKeyRepresentative(DPKey {
+    //     //         y_pos,
+    //     //         y_vel,
+    //     //         z_vel,
+    //     //     })
+    //     // })
+    //     [
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_lo,
+    //             y_vel: y_vel_lo,
+    //             z_vel: z_vel_lo,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_lo,
+    //             y_vel: y_vel_lo,
+    //             z_vel: z_vel_hi,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_lo,
+    //             y_vel: y_vel_hi,
+    //             z_vel: z_vel_lo,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_lo,
+    //             y_vel: y_vel_hi,
+    //             z_vel: z_vel_hi,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_hi,
+    //             y_vel: y_vel_lo,
+    //             z_vel: z_vel_lo,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_hi,
+    //             y_vel: y_vel_lo,
+    //             z_vel: z_vel_hi,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_hi,
+    //             y_vel: y_vel_hi,
+    //             z_vel: z_vel_lo,
+    //         }),
+    //         DPKeyRepresentative(DPKey {
+    //             y_pos: y_pos_hi,
+    //             y_vel: y_vel_hi,
+    //             z_vel: z_vel_hi,
+    //         }),
+    //     ]
     // }
 
     pub fn to_state(self) -> State {
@@ -446,64 +514,19 @@ impl DPKey {
             z_vel,
         }
     }
-
-    // pub fn base_case(self) -> DPValue {
-    //     // const INIT_PITCH: Pitch = 0.;
-    //     DPValue {
-    //         // pitch: INIT_PITCH,
-    //         pitch: None,
-    //         goodness: self.to_state().total_energy(),
-    //     }
-    // }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct DPKeyRepresentative(pub DPKey);
 impl DPKeyRepresentative {
+    const Y_POS_STEP: f64 = 0.02;
+    const Z_VEL_STEP: f64 = 0.01;
+    const Y_VEL_STEP: f64 = 0.01;
+
     fn to_array(self) -> [u64; 3] {
         let arr_f = [self.0.y_pos, self.0.y_vel, self.0.z_vel];
         arr_f.map(|f| f.to_bits())
     }
-
-    pub fn to_state(self) -> State {
-        State {
-            pos: Vec3 {
-                x: 0.,
-                y: self.0.y_pos,
-                z: 0.,
-            },
-            vel: Vec3 {
-                x: 0.,
-                y: self.0.y_vel,
-                z: self.0.z_vel,
-            },
-        }
-    }
-
-    // pub fn from_state(state: State) -> Self {
-    //     let State {
-    //         pos:
-    //             Pos3 {
-    //                 x: x_pos,
-    //                 y: y_pos,
-    //                 z: z_pos,
-    //             },
-    //         vel:
-    //             Vel3 {
-    //                 x: x_vel,
-    //                 y: y_vel,
-    //                 z: z_vel,
-    //             },
-    //     } = state;
-    //     assert_eq!(x_pos, 0.);
-    //     // assert_eq!(z_pos, 0.);
-    //     assert_eq!(x_vel, 0.);
-    //     Self(DPKey {
-    //         y_pos,
-    //         y_vel,
-    //         z_vel,
-    //     })
-    // }
 }
 impl std::cmp::PartialEq for DPKeyRepresentative {
     fn eq(&self, other: &Self) -> bool {
@@ -524,6 +547,20 @@ pub struct DPValue {
     pub pitch: Option<Pitch>,
     pub goodness: Goodness,
 }
+impl DPValue {
+    fn lerp(v0: DPValue, v1: DPValue, frac: f64) -> Self {
+        assert_eq!(v0.pitch.is_none(), v1.pitch.is_none());
+        let pitch = match (v0.pitch, v1.pitch) {
+            (None, None) => None,
+            (Some(p0), Some(p1)) => Some(lerp_f64(p0 as f64, p1 as f64, frac) as Pitch),
+            _ => unreachable!(),
+        };
+        Self {
+            pitch,
+            goodness: lerp_f64(v0.goodness, v1.goodness, frac),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 // struct GoodnessAtTick(pub KdTree<f64, DPValue, DPKeyInner>);
@@ -536,11 +573,82 @@ impl GoodnessAtTick {
     // fn add(&mut self, point: DPKey, data: DPValue) {
     // }
     // fn nearest()
+
+    /// `Err` contains the representatives we need to compute to get the value for this key.
+    fn get_trilinear(&self, key: DPKey) -> Result<DPValue, Vec<DPKeyRepresentative>> {
+        let y_pos_lo =
+            (key.y_pos / DPKeyRepresentative::Y_POS_STEP).floor() * DPKeyRepresentative::Y_POS_STEP;
+        let y_vel_lo =
+            (key.y_vel / DPKeyRepresentative::Y_VEL_STEP).floor() * DPKeyRepresentative::Y_VEL_STEP;
+        let z_vel_lo =
+            (key.z_vel / DPKeyRepresentative::Z_VEL_STEP).floor() * DPKeyRepresentative::Z_VEL_STEP;
+
+        let y_pos_hi = y_pos_lo + DPKeyRepresentative::Y_POS_STEP;
+        let y_vel_hi = y_vel_lo + DPKeyRepresentative::Y_VEL_STEP;
+        let z_vel_hi = z_vel_lo + DPKeyRepresentative::Z_VEL_STEP;
+
+        let y_pos_frac = (key.y_pos - y_pos_lo) / DPKeyRepresentative::Y_POS_STEP;
+        let y_vel_frac = (key.y_vel - y_vel_lo) / DPKeyRepresentative::Y_VEL_STEP;
+        let z_vel_frac = (key.z_vel - z_vel_lo) / DPKeyRepresentative::Z_VEL_STEP;
+
+        #[expect(unused_variables)]
+        let key = ();
+
+        const RANGE: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+        // let [k000, k001, k010, k011, k100, k101, k110, k111]
+        let keys = RANGE.map(|i| {
+            let y_pos = if i & 4 == 0 { y_pos_lo } else { y_pos_hi };
+            let y_vel = if i & 2 == 0 { y_vel_lo } else { y_vel_hi };
+            let z_vel = if i & 1 == 0 { z_vel_lo } else { z_vel_hi };
+            DPKeyRepresentative(DPKey {
+                y_pos,
+                y_vel,
+                z_vel,
+            })
+        });
+
+        let values = keys.map(|key| self.0.get(&key).copied());
+
+        // let values: Vec<DPValue> = values.into_iter().collect::<Option<Vec<_>>>()?;
+        // let values: [DPValue; 8] = values.try_into().ok()?;
+
+        let [
+            Some(v000),
+            Some(v001),
+            Some(v010),
+            Some(v011),
+            Some(v100),
+            Some(v101),
+            Some(v110),
+            Some(v111),
+        ] = values
+        else {
+            // note that collect has funny behavior
+            // return Err(keys.to_vec());
+            return Err(keys
+                .iter()
+                .zip(values.iter())
+                .filter_map(|(key, value)| match value {
+                    Some(_value) => None,
+                    None => Some(*key),
+                })
+                .collect());
+        };
+
+        let v00 = DPValue::lerp(v000, v001, z_vel_frac);
+        let v01 = DPValue::lerp(v010, v011, z_vel_frac);
+        let v10 = DPValue::lerp(v100, v101, z_vel_frac);
+        let v11 = DPValue::lerp(v110, v111, z_vel_frac);
+
+        let v0 = DPValue::lerp(v00, v01, y_vel_frac);
+        let v1 = DPValue::lerp(v10, v11, y_vel_frac);
+
+        let v = DPValue::lerp(v0, v1, y_pos_frac);
+
+        Ok(v)
+    }
 }
 
-// const DISTANCE_METRIC: fn(&[f64], &[f64]) -> f64 = kdtree::distance::squared_euclidean::<f64>;
-
-/// don't enforce uniform scaling
 #[derive(Debug, Clone)]
 pub struct DP {
     // meta: DPMeta,
@@ -563,79 +671,81 @@ impl DP {
     //     self.trees.get(tick).unwrap()
     // }
 
-    /// inserts an empty `GoodnessAtTick` if there isn't one for this tick.
-    fn goodnesses_of_tick_mut(&mut self, tick: usize) -> &mut GoodnessAtTick {
-        while self.caches.len() <= tick {
-            self.caches.push(GoodnessAtTick::empty());
-        }
-        self.caches.get_mut(tick).unwrap()
-    }
+    // /// inserts an empty `GoodnessAtTick` if there isn't one for this tick.
+    // fn goodnesses_of_tick_mut(&mut self, tick: usize) -> &mut GoodnessAtTick {
+    //     while self.caches.len() <= tick {
+    //         self.caches.push(GoodnessAtTick::empty());
+    //     }
+    //     self.caches.get_mut(tick).unwrap()
+    // }
 
     /// the largest goodness we can obtain starting from key_query and ticking for tick ticks.
     /// the pitch is the pitch we should apply now to get that goodness.
     pub fn get(&mut self, tick: usize, key_query: DPKey) -> DPValue {
-        let key_representative = key_query.to_representative();
-
-        // if the key is close enough to a value in the cache, return the cached value.
-        // const REQUIRED_SQUARE_DISTANCE: f64 = 1.;
-        // const REQUIRED_SQUARE_DISTANCE: f64 = 0.1;
-        // const REQUIRED_SQUARE_DISTANCE: f64 = 0.001;
-        if let Some(cache) = self.caches.get(tick)
-            && let Some(nearest_value) = cache.0.get(&key_representative)
-        {
-            return *nearest_value;
+        while self.caches.len() <= tick {
+            self.caches.push(GoodnessAtTick::empty());
         }
+
+        // if the key has all its representatives in the cache,
+        // return the interpolation of those values.
+        let representatives = match self.caches[tick].get_trilinear(key_query) {
+            Ok(value) => return value,
+            Err(representatives) => representatives,
+        };
 
         // if tick == 0, compute and insert and return the base case.
         if tick == 0 {
-            let exact_goodness = key_representative.to_state().total_energy();
-            let exact_value = DPValue {
-                pitch: None,
-                goodness: exact_goodness,
-            };
-            self.goodnesses_of_tick_mut(0)
-                .0
-                .insert(key_representative, exact_value)
-                .ok_or(())
-                .unwrap_err();
-            return exact_value;
+            for key_representative in representatives {
+                let exact_goodness = key_representative.0.to_state().total_energy();
+                let exact_value = DPValue {
+                    pitch: None,
+                    goodness: exact_goodness,
+                };
+                self.caches[tick]
+                    .0
+                    .insert(key_representative, exact_value)
+                    .ok_or(())
+                    .unwrap_err();
+            }
+            return self.caches[tick].get_trilinear(key_query).unwrap();
         }
 
         // else, compute and insert and return argmax over pitch of get(tick - 1, ticked_key).
-        // let query_state = key.to_state();
-        let init_state = key_representative.to_state();
-        let mut best_value = DPValue {
-            pitch: None,
-            goodness: f64::NEG_INFINITY,
-        };
-        for pitch in (-90..=90).step_by(3) {
-            let rot = Rot {
-                x: pitch as Pitch,
-                y: 0.,
+        for key_representative in representatives {
+            let init_state = key_representative.0.to_state();
+            let mut best_value = DPValue {
+                pitch: None,
+                goodness: f64::NEG_INFINITY,
             };
-            let ticked_state = init_state.ticked(rot);
-            let ticked_key = DPKey::from_state(&ticked_state);
-            // let value = self.get(tick - 1, ticked_key);
-            // if value.goodness > best_value.goodness {
-            //     best_value = DPValue {
-            //         pitch: pitch as Pitch,
-            //         goodness: value.goodness,
-            //     };
-            // }
-            let goodness = self.get(tick - 1, ticked_key).goodness;
-            if goodness > best_value.goodness {
-                best_value = DPValue {
-                    pitch: Some(pitch as Pitch),
-                    goodness,
+            for pitch in (-90..=90).step_by(3) {
+                let rot = Rot {
+                    x: pitch as Pitch,
+                    y: 0.,
                 };
+                let ticked_state = init_state.ticked(rot);
+                let ticked_key = DPKey::from_state(&ticked_state);
+                // let value = self.get(tick - 1, ticked_key);
+                // if value.goodness > best_value.goodness {
+                //     best_value = DPValue {
+                //         pitch: pitch as Pitch,
+                //         goodness: value.goodness,
+                //     };
+                // }
+                let goodness = self.get(tick - 1, ticked_key).goodness;
+                if goodness > best_value.goodness {
+                    best_value = DPValue {
+                        pitch: Some(pitch as Pitch),
+                        goodness,
+                    };
+                }
             }
+            self.caches[tick]
+                .0
+                .insert(key_representative, best_value)
+                .ok_or(())
+                .unwrap_err();
         }
-        self.goodnesses_of_tick_mut(tick)
-            .0
-            .insert(key_representative, best_value)
-            .ok_or(())
-            .unwrap_err();
-        best_value
+        self.caches[tick].get_trilinear(key_query).unwrap()
     }
 
     // pub fn stepped(&self) -> Self {
