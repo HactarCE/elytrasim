@@ -13,6 +13,8 @@ pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(
 const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_300;
 // const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_400;
 
+const PINK: egui::Color32 = egui::Color32::from_rgb(252, 3, 198);
+
 fn main() -> eframe::Result {
     #[cfg(false)]
     {
@@ -68,14 +70,14 @@ fn main() -> eframe::Result {
     // let (mut deep_optimal_pitches, mut deep_optimal_energies) =
     //     energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
     // let mut deep_optim = DeepOptim::new(grid_meta.clone());
-    const Y_POS_INIT: Pos = 0.;
+
     // let mut dp = DP::new_base(DPMeta::from_grid_meta(&grid_meta, -100.0, 30.0, 40));
     let mut dp = DP::empty();
     let mut dp_tick: usize = 0;
     // let mut deep_optimizer_running = false;
     // let mut deep_optimizer_steps_per_frame = 1;
 
-    let mut clicked_cell = None;
+    let mut clicked_state = None;
     // let mut hovered_vel = Vel3::ZERO;
     let mut hovered_state = State {
         pos: Pos3::ZERO,
@@ -204,7 +206,7 @@ fn main() -> eframe::Result {
                                     40. * egui::Vec2::angled(
                                         fixed_rot.x * std::f32::consts::PI / 180.,
                                     ),
-                                    (3., egui::Color32::from_rgb(252, 3, 198)),
+                                    (3., PINK),
                                 );
                             });
                         });
@@ -294,7 +296,7 @@ fn main() -> eframe::Result {
                             });
                         });
                         ui.group(|ui| {
-                            let (row, col) = grid_meta.vel_to_grid_row_col_float(hovered_state.vel);
+                            // let (row, col) = grid_meta.vel_to_grid_row_col_float(hovered_state.vel);
                             // let hovered_state = State {
                             //     pos: Vec3::ZERO,
                             //     vel: hovered_vel,
@@ -439,7 +441,7 @@ fn main() -> eframe::Result {
                                     let new_state = hovered_state.ticked(Rot { x: pitch, y: 0. });
                                     // this should match, or maybe only from the representative
                                     ui.label(format!(
-                                        "delta goodness: {:.09?}",
+                                        "immediate delta goodness: {:.09?}",
                                         new_state.total_energy() - hovered_state.total_energy()
                                     ));
                                 }
@@ -468,7 +470,7 @@ fn main() -> eframe::Result {
                                     let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
                                     // this should match, or maybe only from the representative
                                     ui.label(format!(
-                                        "delta goodness: {:.09?}",
+                                        "immediate delta goodness: {:.09?}",
                                         new_state.total_energy() - init_state.total_energy()
                                     ));
                                 }
@@ -497,8 +499,18 @@ fn main() -> eframe::Result {
                     }
                 }
 
-                if let Some(hovered_egui_pos2) = ui.input(|i| i.pointer.latest_pos()) {
+                // update hover_state and clicked_state
+                if let Some(hovered_egui_pos2) = ui.input(|i| i.pointer.latest_pos())
+                    && rect.contains(hovered_egui_pos2)
+                {
                     hovered_state.vel = grid_meta.egui_pos2_to_vel(hovered_egui_pos2, rect);
+                    if ui.input(|i| i.pointer.primary_clicked()) {
+                        clicked_state = if clicked_state.as_ref() == Some(&hovered_state) {
+                            None
+                        } else {
+                            Some(hovered_state.clone())
+                        };
+                    }
                 }
 
                 let step = grid_meta.egui_step(rect);
@@ -530,10 +542,8 @@ fn main() -> eframe::Result {
                     color_of_delta_energy(goodness / 100.0)
                 };
 
-                let color_of_delta_goodness = |goodness: Goodness| {
-                    // TODO: does this work
-                    color_of_delta_energy(goodness)
-                };
+                let color_of_delta_goodness =
+                    |delta_goodness: Goodness| color_of_delta_energy(delta_goodness);
 
                 for (row, line) in grid_meta.rects(rect).enumerate() {
                     for (col, cell_rect) in line.enumerate() {
@@ -748,14 +758,14 @@ fn main() -> eframe::Result {
                             DrawArrowType::DeepOptimalDeltaVel => {}
                         }
 
-                        // set/toggle clicked_cell on click
-                        if ui.allocate_rect(cell_rect, egui::Sense::CLICK).clicked() {
-                            if clicked_cell == Some((row, col)) {
-                                clicked_cell = None;
-                            } else {
-                                clicked_cell = Some((row, col));
-                            }
-                        }
+                        // // set/toggle clicked_cell on click
+                        // if ui.allocate_rect(cell_rect, egui::Sense::CLICK).clicked() {
+                        //     if clicked_cell == Some((row, col)) {
+                        //         clicked_cell = None;
+                        //     } else {
+                        //         clicked_cell = Some((row, col));
+                        //     }
+                        // }
                     }
                 }
 
@@ -773,36 +783,50 @@ fn main() -> eframe::Result {
                 }
 
                 // draw the path from the clicked cell
-                if let Some((row, col)) = clicked_cell {
-                    let mut start = grid_meta.row_col_usize_to_egui_pos2((row, col), rect);
-                    ui.painter().circle_filled(start, 4., egui::Color32::GOLD);
-                    let mut state = State {
-                        pos: Vec3::ZERO,
-                        vel: grid_meta.row_col_usize_to_vel((row, col)),
-                    };
+                // if let Some((row, col)) = clicked_cell {
+                if let Some(clicked_state) = &clicked_state {
+                    // let mut start = grid_meta.row_col_usize_to_egui_pos2((row, col), rect);
+                    let mut state = clicked_state.clone();
+                    ui.painter().circle_filled(
+                        grid_meta.vel_to_egui_pos2(state.vel, rect),
+                        4.,
+                        egui::Color32::GOLD,
+                    );
                     const PATH_LEN: usize = 10;
-                    for _ in 0..PATH_LEN {
-                        let (row, col) = grid_meta.vel_to_grid_row_col_float(state.vel);
+                    for tick in 0..PATH_LEN {
                         let pitch = match draw_arrow_type {
                             DrawArrowType::FixedDeltaVel => fixed_rot.x,
                             DrawArrowType::ImmediateOptimalPitch
                             | DrawArrowType::ImmediateOptimalDeltaVel => immediate_optimal_pitches
-                                .f32_bilinear_from_row_col_float((row, col))
+                                .f32_bilinear_from_row_col_float(
+                                    grid_meta.vel_to_grid_row_col_float(state.vel),
+                                )
                                 .unwrap_or(0.),
-                            // DrawArrowType::DeepOptimalPitch
-                            // | DrawArrowType::DeepOptimalDeltaVel => deep_optim
-                            //     .pitches
-                            //     .f32_bilinear_from_row_col_float((row, col))
-                            //     .unwrap_or(0.),
                             DrawArrowType::DeepOptimalPitch
-                            | DrawArrowType::DeepOptimalDeltaVel => 0.,
+                            | DrawArrowType::DeepOptimalDeltaVel => dp
+                                // the pitch displayed on the grid (for a constant tick)
+                                .get(dp_tick, DPKey::from_state(&state))
+                                .pitch
+                                .unwrap_or(0.),
+                            // the pitch as though we want to optimize our goodness after `PATH_LEN` ticks
+                            // .get(PATH_LEN - tick, DPKey::from_state(&state))
+                            // .pitch
+                            // .unwrap(),
                         };
+
+                        let start = grid_meta.vel_to_egui_pos2(state.vel, rect);
                         state = state.ticked(Rot { x: pitch, y: 0. });
                         let end = grid_meta.vel_to_egui_pos2(state.vel, rect);
+
+                        // pitch
+                        ui.painter().arrow(
+                            start,
+                            20. * egui::Vec2::angled(pitch * std::f32::consts::PI / 180.),
+                            (2., PINK),
+                        );
                         ui.painter()
                             .line_segment([start, end], (3., egui::Color32::GOLD));
                         ui.painter().circle_filled(end, 4., egui::Color32::GOLD);
-                        start = end;
                     }
                 }
 
@@ -838,7 +862,7 @@ fn main() -> eframe::Result {
                                 * std::f32::consts::PI
                                 / 180.,
                         ),
-                        (3., egui::Color32::from_rgb(252, 3, 198)),
+                        (3., PINK),
                     );
 
                     let vel_scale = 60.;

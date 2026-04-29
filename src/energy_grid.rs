@@ -418,63 +418,37 @@ impl DPKey {
     //     // trilinear interpolation
     // }
 
-    // pub fn to_representatives(self) -> ([DPKeyRepresentative; 8], [f64; 3]) {
+    /// returns (lo, hi, frac)
+    pub fn to_representatives(self) -> (DPKeyRepresentative, DPKeyRepresentative, [f64; 3]) {
+        let y_pos_lo = (self.y_pos / DPKeyRepresentative::Y_POS_STEP).floor()
+            * DPKeyRepresentative::Y_POS_STEP;
+        let y_vel_lo = (self.y_vel / DPKeyRepresentative::Y_VEL_STEP).floor()
+            * DPKeyRepresentative::Y_VEL_STEP;
+        let z_vel_lo = (self.z_vel / DPKeyRepresentative::Z_VEL_STEP).floor()
+            * DPKeyRepresentative::Z_VEL_STEP;
 
-    //     // const RANGE: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
-    //     // RANGE.map(|i| {
-    //     //     let y_pos = if i & 4 == 0 { y_pos_lo } else { y_pos_hi };
-    //     //     let y_vel = if i & 2 == 0 { y_vel_lo } else { y_vel_hi };
-    //     //     let z_vel = if i & 1 == 0 { z_vel_lo } else { z_vel_hi };
-    //     //     DPKeyRepresentative(DPKey {
-    //     //         y_pos,
-    //     //         y_vel,
-    //     //         z_vel,
-    //     //     })
-    //     // })
-    //     [
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_lo,
-    //             y_vel: y_vel_lo,
-    //             z_vel: z_vel_lo,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_lo,
-    //             y_vel: y_vel_lo,
-    //             z_vel: z_vel_hi,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_lo,
-    //             y_vel: y_vel_hi,
-    //             z_vel: z_vel_lo,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_lo,
-    //             y_vel: y_vel_hi,
-    //             z_vel: z_vel_hi,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_hi,
-    //             y_vel: y_vel_lo,
-    //             z_vel: z_vel_lo,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_hi,
-    //             y_vel: y_vel_lo,
-    //             z_vel: z_vel_hi,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_hi,
-    //             y_vel: y_vel_hi,
-    //             z_vel: z_vel_lo,
-    //         }),
-    //         DPKeyRepresentative(DPKey {
-    //             y_pos: y_pos_hi,
-    //             y_vel: y_vel_hi,
-    //             z_vel: z_vel_hi,
-    //         }),
-    //     ]
-    // }
+        let y_pos_hi = y_pos_lo + DPKeyRepresentative::Y_POS_STEP;
+        let y_vel_hi = y_vel_lo + DPKeyRepresentative::Y_VEL_STEP;
+        let z_vel_hi = z_vel_lo + DPKeyRepresentative::Z_VEL_STEP;
 
+        let y_pos_frac = (self.y_pos - y_pos_lo) / DPKeyRepresentative::Y_POS_STEP;
+        let y_vel_frac = (self.y_vel - y_vel_lo) / DPKeyRepresentative::Y_VEL_STEP;
+        let z_vel_frac = (self.z_vel - z_vel_lo) / DPKeyRepresentative::Z_VEL_STEP;
+
+        (
+            DPKeyRepresentative(DPKey {
+                y_pos: y_pos_lo,
+                y_vel: y_vel_lo,
+                z_vel: z_vel_lo,
+            }),
+            DPKeyRepresentative(DPKey {
+                y_pos: y_pos_hi,
+                y_vel: y_vel_hi,
+                z_vel: z_vel_hi,
+            }),
+            [y_pos_frac, y_vel_frac, z_vel_frac],
+        )
+    }
     pub fn to_state(self) -> State {
         State {
             pos: Vec3 {
@@ -519,9 +493,10 @@ impl DPKey {
 #[derive(Debug, Clone, Copy)]
 pub struct DPKeyRepresentative(pub DPKey);
 impl DPKeyRepresentative {
-    const Y_POS_STEP: f64 = 0.02;
-    const Z_VEL_STEP: f64 = 0.01;
-    const Y_VEL_STEP: f64 = 0.01;
+    // TODO: adaptive stuff
+    const Y_POS_STEP: f64 = 0.5;
+    const Z_VEL_STEP: f64 = 0.1;
+    const Y_VEL_STEP: f64 = 0.1;
 
     fn to_array(self) -> [u64; 3] {
         let arr_f = [self.0.y_pos, self.0.y_vel, self.0.z_vel];
@@ -570,26 +545,21 @@ impl GoodnessAtTick {
         Self(AHashMap::new())
     }
 
-    // fn add(&mut self, point: DPKey, data: DPValue) {
-    // }
-    // fn nearest()
-
     /// `Err` contains the representatives we need to compute to get the value for this key.
     fn get_trilinear(&self, key: DPKey) -> Result<DPValue, Vec<DPKeyRepresentative>> {
-        let y_pos_lo =
-            (key.y_pos / DPKeyRepresentative::Y_POS_STEP).floor() * DPKeyRepresentative::Y_POS_STEP;
-        let y_vel_lo =
-            (key.y_vel / DPKeyRepresentative::Y_VEL_STEP).floor() * DPKeyRepresentative::Y_VEL_STEP;
-        let z_vel_lo =
-            (key.z_vel / DPKeyRepresentative::Z_VEL_STEP).floor() * DPKeyRepresentative::Z_VEL_STEP;
-
-        let y_pos_hi = y_pos_lo + DPKeyRepresentative::Y_POS_STEP;
-        let y_vel_hi = y_vel_lo + DPKeyRepresentative::Y_VEL_STEP;
-        let z_vel_hi = z_vel_lo + DPKeyRepresentative::Z_VEL_STEP;
-
-        let y_pos_frac = (key.y_pos - y_pos_lo) / DPKeyRepresentative::Y_POS_STEP;
-        let y_vel_frac = (key.y_vel - y_vel_lo) / DPKeyRepresentative::Y_VEL_STEP;
-        let z_vel_frac = (key.z_vel - z_vel_lo) / DPKeyRepresentative::Z_VEL_STEP;
+        let (
+            DPKeyRepresentative(DPKey {
+                y_pos: y_pos_lo,
+                y_vel: y_vel_lo,
+                z_vel: z_vel_lo,
+            }),
+            DPKeyRepresentative(DPKey {
+                y_pos: y_pos_hi,
+                y_vel: y_vel_hi,
+                z_vel: z_vel_hi,
+            }),
+            [y_pos_frac, y_vel_frac, z_vel_frac],
+        ) = key.to_representatives();
 
         #[expect(unused_variables)]
         let key = ();
@@ -663,24 +633,9 @@ impl DP {
         Self { caches: vec![] }
     }
 
-    // /// inserts an empty `GoodnessAtTick` if there isn't one for this tick.
-    // pub fn goodnesses_of_tick(&mut self, tick: usize) -> &GoodnessAtTick {
-    //     while self.trees.len() <= tick {
-    //         self.trees.push(GoodnessAtTick::empty());
-    //     }
-    //     self.trees.get(tick).unwrap()
-    // }
-
-    // /// inserts an empty `GoodnessAtTick` if there isn't one for this tick.
-    // fn goodnesses_of_tick_mut(&mut self, tick: usize) -> &mut GoodnessAtTick {
-    //     while self.caches.len() <= tick {
-    //         self.caches.push(GoodnessAtTick::empty());
-    //     }
-    //     self.caches.get_mut(tick).unwrap()
-    // }
-
     /// the largest goodness we can obtain starting from key_query and ticking for tick ticks.
     /// the pitch is the pitch we should apply now to get that goodness.
+    // TODO: don't store y, infer potential_energy from delta y?
     pub fn get(&mut self, tick: usize, key_query: DPKey) -> DPValue {
         while self.caches.len() <= tick {
             self.caches.push(GoodnessAtTick::empty());
