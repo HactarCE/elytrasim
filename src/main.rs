@@ -50,7 +50,7 @@ fn main() -> eframe::Result {
 
     const Y_VEL_MID: f64 = 0.;
     const Z_VEL_LO: f64 = 0.;
-    let mut z_vel_hi = 5.;
+    let mut z_vel_hi = 3.;
     // let mut grid_width = 100;
     // coprime with the to_representative multiples
     // to avoid drawing the cache as though it's perfect
@@ -445,6 +445,18 @@ fn main() -> eframe::Result {
                                         new_state.total_energy() - hovered_state.total_energy()
                                     ));
                                 }
+
+                                {
+                                    let cycled_state = dp.cycle(dp_tick, &hovered_state);
+                                    ui.label(format!(
+                                        "final cycle goodness: {:.09?}",
+                                        cycled_state.total_energy()
+                                    ));
+                                    ui.label(format!(
+                                        "delta cycle goodness: {:.09?}",
+                                        cycled_state.total_energy() - hovered_state.total_energy()
+                                    ));
+                                }
                             });
 
                             #[cfg(false)]
@@ -474,6 +486,50 @@ fn main() -> eframe::Result {
                                         new_state.total_energy() - init_state.total_energy()
                                     ));
                                 }
+                            });
+
+                            ui.group(|ui| {
+                                ui.label("dp cache stats");
+                                ui.label(format!("ticks: {}", dp.caches.len()));
+                                ui.label(format!(
+                                    "size: {}",
+                                    dp.caches.iter().map(|cache| cache.0.len()).sum::<usize>()
+                                ));
+                                {
+                                    let mut lo = DPKey {
+                                        y_pos: f64::INFINITY,
+                                        y_vel: f64::INFINITY,
+                                        z_vel: f64::INFINITY,
+                                    };
+                                    let mut hi = DPKey {
+                                        y_pos: f64::NEG_INFINITY,
+                                        y_vel: f64::NEG_INFINITY,
+                                        z_vel: f64::NEG_INFINITY,
+                                    };
+                                    for cache in &dp.caches {
+                                        for key in cache.0.keys() {
+                                            lo.y_pos = lo.y_pos.min(key.0.y_pos);
+                                            hi.y_pos = hi.y_pos.max(key.0.y_pos);
+                                            lo.y_vel = lo.y_vel.min(key.0.y_vel);
+                                            hi.y_vel = hi.y_vel.max(key.0.y_vel);
+                                            lo.z_vel = lo.z_vel.min(key.0.z_vel);
+                                            hi.z_vel = hi.z_vel.max(key.0.z_vel);
+                                        }
+                                    }
+                                    ui.label(format!("y_pos_lo: {:.09?} b", lo.y_pos));
+                                    ui.label(format!("y_pos_hi: {:.09?} b", hi.y_pos));
+                                    ui.label(format!("y_vel_lo: {:.09?} bpt", lo.y_vel));
+                                    ui.label(format!("y_vel_hi: {:.09?} bpt", hi.y_vel));
+                                    ui.label(format!("z_vel_lo: {:.09?} bpt", lo.z_vel));
+                                    ui.label(format!("z_vel_hi: {:.09?} bpt", hi.z_vel));
+                                }
+                                ui.label(format!(
+                                    "each size: {:?}",
+                                    dp.caches
+                                        .iter()
+                                        .map(|cache| cache.0.len())
+                                        .collect::<Vec<_>>()
+                                ));
                             });
                         });
                     })
@@ -553,7 +609,8 @@ fn main() -> eframe::Result {
                             vel: init_vel,
                         };
 
-                        let cen = rect.left_top() + egui::vec2(col as f32, row as f32) * step;
+                        // let cen = rect.left_top() + egui::vec2(col as f32, row as f32) * step;
+                        let cen = grid_meta.row_col_usize_to_egui_pos2((row, col), rect);
                         let get_delta_vel = |pitch: f32| {
                             let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
                             new_state.vel - init_state.vel
@@ -563,10 +620,6 @@ fn main() -> eframe::Result {
                             let delta_energy = new_state.total_energy() - init_state.total_energy();
                             color_of_delta_energy(delta_energy)
                         };
-
-                        // let draw_pitch_arrow = |pitch, | {
-
-                        // };
 
                         match draw_arrow_type {
                             DrawArrowType::FixedDeltaVel => {

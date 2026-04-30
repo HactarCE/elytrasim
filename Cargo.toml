@@ -8,3 +8,19 @@ eframe = "0.34.1"
 egui = "0.34.1"
 itertools = "0.14.0"
 kdtree = "0.8.0"
+
+
+[features]
+# used for eg not inlining functions so they show up when profiling
+# #[cfg_attr(feature = "profiling", inline(never))]
+profiling = []
+
+[profile.dev]
+opt-level = 3
+
+[profile.profiling]
+# samply record cargo run --profile profiling --features profiling
+# cargo instruments -t time --profile profiling --features profiling
+inherits = "release"
+debug = true
+split-debuginfo = "packed"

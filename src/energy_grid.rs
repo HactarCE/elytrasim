@@ -539,7 +539,7 @@ impl DPValue {
 
 #[derive(Debug, Clone)]
 // struct GoodnessAtTick(pub KdTree<f64, DPValue, DPKeyInner>);
-struct GoodnessAtTick(pub AHashMap<DPKeyRepresentative, DPValue>);
+pub struct GoodnessAtTick(pub AHashMap<DPKeyRepresentative, DPValue>);
 impl GoodnessAtTick {
     fn empty() -> Self {
         Self(AHashMap::new())
@@ -578,9 +578,6 @@ impl GoodnessAtTick {
         });
 
         let values = keys.map(|key| self.0.get(&key).copied());
-
-        // let values: Vec<DPValue> = values.into_iter().collect::<Option<Vec<_>>>()?;
-        // let values: [DPValue; 8] = values.try_into().ok()?;
 
         let [
             Some(v000),
@@ -624,7 +621,7 @@ pub struct DP {
     // meta: DPMeta,
     // arr: Box<[Box<[Box<[(Pitch, Goodness)]>]>]>,
     /// indexed by tick
-    caches: Vec<GoodnessAtTick>,
+    pub caches: Vec<GoodnessAtTick>,
     // goodnesses: Vec<AHashMap<DPKeyRepresentative, Goodness>>,
     // pitches: Vec<AHashMap<DPKeyRepresentative, Pitch>>,
 }
@@ -633,9 +630,25 @@ impl DP {
         Self { caches: vec![] }
     }
 
+    // /// gradient of pitch wrt goodness.
+    // fn grad(&mut self, tick: usize, key_query: DPKey) -> f64 {}
+
+    /// applies `tick` pitches to key_query.
+    /// so if tick == 0, returns the same state.
+    /// this is rather than just getting the cached goodness.
+    pub fn cycle(&mut self, tick: usize, state: &State) -> State {
+        if tick == 0 {
+            return state.clone();
+        }
+        let DPValue { pitch, goodness: _ } = self.get(tick, DPKey::from_state(&state));
+        let pitch = pitch.expect("pitch should be Some for tick > 0");
+        self.cycle(tick - 1, &state.ticked(Rot { x: pitch, y: 0. }))
+    }
+
     /// the largest goodness we can obtain starting from key_query and ticking for tick ticks.
     /// the pitch is the pitch we should apply now to get that goodness.
-    // TODO: don't store y, infer potential_energy from delta y?
+    // TODO: don't store y, infer potential_energy from delta y? just cache pitches and apply O(n) of those?
+    // TODO: don't search things outside a window
     pub fn get(&mut self, tick: usize, key_query: DPKey) -> DPValue {
         while self.caches.len() <= tick {
             self.caches.push(GoodnessAtTick::empty());
@@ -673,19 +686,13 @@ impl DP {
                 goodness: f64::NEG_INFINITY,
             };
             for pitch in (-90..=90).step_by(3) {
+                // TODO: gradient descent
                 let rot = Rot {
                     x: pitch as Pitch,
                     y: 0.,
                 };
                 let ticked_state = init_state.ticked(rot);
                 let ticked_key = DPKey::from_state(&ticked_state);
-                // let value = self.get(tick - 1, ticked_key);
-                // if value.goodness > best_value.goodness {
-                //     best_value = DPValue {
-                //         pitch: pitch as Pitch,
-                //         goodness: value.goodness,
-                //     };
-                // }
                 let goodness = self.get(tick - 1, ticked_key).goodness;
                 if goodness > best_value.goodness {
                     best_value = DPValue {
@@ -702,136 +709,6 @@ impl DP {
         }
         self.caches[tick].get_trilinear(key_query).unwrap()
     }
-
-    // pub fn stepped(&self) -> Self {
-    //     fn goodness_step(dp: &DP, (y_pos, y_vel, z_vel): (Pos, Vel, Vel)) -> (Pitch, Goodness) {
-    //         let state = State {
-    //             pos: Vec3 {
-    //                 x: 0.,
-    //                 y: y_pos,
-    //                 z: 0.,
-    //             },
-    //             vel: Vec3 {
-    //                 x: 0.,
-    //                 y: y_vel,
-    //                 z: z_vel,
-    //             },
-    //         };
-    //         let mut best_pitch = 0.;
-    //         let mut best_goodness = f64::NEG_INFINITY;
-    //         for pitch in -90..=90 {
-    //             let rot = Rot {
-    //                 x: pitch as Pitch,
-    //                 y: 0.,
-    //             };
-    //             let new_state = state.ticked(rot);
-    //             // let (y_pos, y_vel, z_vel) = dp.meta.vals_to_index_float((
-    //             //     new_state.pos.y,
-    //             //     new_state.vel.y,
-    //             //     new_state.vel.z,
-    //             // ));
-    //             let goodness = dp
-    //                 .trilinear_from_vals((new_state.pos.y, new_state.vel.y, new_state.vel.z))
-    //                 .map(|(_, goodness)| goodness)
-    //                 .unwrap_or(f64::NEG_INFINITY);
-    //             if goodness > best_goodness {
-    //                 best_goodness = goodness;
-    //                 best_pitch = pitch as Pitch;
-    //             }
-    //         }
-    //         (best_pitch, best_goodness)
-    //     }
-
-    //     let arr = (0..self.meta.y_pos_width)
-    //         .map(|y_pos_i| {
-    //             (0..self.meta.y_vel_width)
-    //                 .map(|y_vel_i| {
-    //                     (0..self.meta.z_vel_width)
-    //                         .map(|z_vel_i| {
-    //                             goodness_step(
-    //                                 self,
-    //                                 self.meta.index_usize_to_vals((y_pos_i, y_vel_i, z_vel_i)),
-    //                             )
-    //                         })
-    //                         .collect()
-    //                 })
-    //                 .collect()
-    //         })
-    //         .collect();
-
-    //     Self {
-    //         arr,
-    //         meta: self.meta.clone(),
-    //     }
-    // }
-
-    // pub fn trilinear_from_indexes(
-    //     &self,
-    //     (y_pos_i_f, y_vel_i_f, z_vel_i_f): (GridCoord, GridCoord, GridCoord),
-    // ) -> Option<(Pitch, Goodness)> {
-    //     let y_pos_i_lo = y_pos_i_f.floor() as usize;
-    //     let y_vel_i_lo = y_vel_i_f.floor() as usize;
-    //     let z_vel_i_lo = z_vel_i_f.floor() as usize;
-    //     let y_pos_i_hi = y_pos_i_lo + 1;
-    //     let y_vel_i_hi = y_vel_i_lo + 1;
-    //     let z_vel_i_hi = z_vel_i_lo + 1;
-    //     let y_pos_frac = y_pos_i_f - y_pos_i_lo as GridCoord;
-    //     let y_vel_frac = y_vel_i_f - y_vel_i_lo as GridCoord;
-    //     let z_vel_frac = z_vel_i_f - z_vel_i_lo as GridCoord;
-
-    //     // get the 8 surrounding values
-    //     let (p000, g000) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
-    //     let (p001, g001) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
-    //     let (p010, g010) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
-    //     let (p011, g011) = *self.arr.get(y_pos_i_lo)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
-    //     let (p100, g100) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_lo)?;
-    //     let (p101, g101) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_lo)?.get(z_vel_i_hi)?;
-    //     let (p110, g110) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_lo)?;
-    //     let (p111, g111) = *self.arr.get(y_pos_i_hi)?.get(y_vel_i_hi)?.get(z_vel_i_hi)?;
-
-    //     // trilinear interpolation
-    //     Some((
-    //         lerp_f32(
-    //             lerp_f32(
-    //                 lerp_f32(p000, p001, z_vel_frac as f32),
-    //                 lerp_f32(p010, p011, z_vel_frac as f32),
-    //                 y_vel_frac as f32,
-    //             ),
-    //             lerp_f32(
-    //                 lerp_f32(p100, p101, z_vel_frac as f32),
-    //                 lerp_f32(p110, p111, z_vel_frac as f32),
-    //                 y_vel_frac as f32,
-    //             ),
-    //             y_pos_frac as f32,
-    //         ),
-    //         lerp_f64(
-    //             lerp_f64(
-    //                 lerp_f64(g000, g001, z_vel_frac as f64),
-    //                 lerp_f64(g010, g011, z_vel_frac as f64),
-    //                 y_vel_frac as f64,
-    //             ),
-    //             lerp_f64(
-    //                 lerp_f64(g100, g101, z_vel_frac as f64),
-    //                 lerp_f64(g110, g111, z_vel_frac as f64),
-    //                 y_vel_frac as f64,
-    //             ),
-    //             y_pos_frac as f64,
-    //         ),
-    //     ))
-    // }
-
-    // pub fn trilinear_from_vals(
-    //     &self,
-    //     (y_pos, y_vel, z_vel): (Pos, Vel, Vel),
-    // ) -> Option<(Pitch, Goodness)> {
-    //     let (y_pos_i_f, y_vel_i_f, z_vel_i_f) =
-    //         self.meta.vals_to_index_float((y_pos, y_vel, z_vel));
-    //     self.trilinear_from_indexes((y_pos_i_f, y_vel_i_f, z_vel_i_f))
-    // }
-
-    // pub fn step(&mut self) {
-    //     *self = self.stepped();
-    // }
 }
 
 pub fn goodness_for_vel_y_after_ticks(
