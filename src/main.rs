@@ -23,10 +23,10 @@ fn main() -> eframe::Result {
 
     let mut optimizer: Box<dyn Optimizer> = {
         // let pitches = Pitches::new_uniform(ticks, 0.0);
-        let pitches = Pitches::new_4040(ticks, 0.65);
+        // let pitches = Pitches::new_4040(ticks, 0.65);
         // let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
         // close to the optimal curve with four lines
-        #[cfg(false)]
+        // #[cfg(false)]
         let pitches = {
             let left_cut = 0.65;
             let right_cut = 0.70;
@@ -58,13 +58,13 @@ fn main() -> eframe::Result {
             )
         };
 
-        Box::new(OptimizerSteadyState::new(pitches))
+        // Box::new(OptimizerSteadyState::new(pitches))
 
-        // // let vel = Vel::ZERO;
+        let vel = Vel3::ZERO;
         // // the optimal steady state vel
-        // let vel = Vel::new(0.0, 0.17, 0.2);
+        // let vel = Vel3::new(0.0, 0.17, 0.2);
 
-        // OptimizerInitState::new(vel, pitches)
+        Box::new(OptimizerInitState::new(vel, pitches))
     };
 
     let mut optimization_strategy = OptimizationStrategy::GradientDescent;
@@ -165,8 +165,18 @@ fn main() -> eframe::Result {
                         )));
                     }
 
-                    if ui.button("print pitches").clicked() {
-                        println!("{:#?}", optimizer.pitches().0);
+                    // if ui.button("print pitches").clicked() {
+                    //     println!("{:#?}", optimizer.pitches().0);
+                    // }
+                    if ui.button("print speed pitches").clicked() {
+                        for tick in (0..optimizer.pitches().0.len()).step_by(5) {
+                            let state = Pitches(optimizer.pitches().0[..tick].to_owned())
+                                .after_cycle(optimizer.init_vel());
+                            let speed = state.vel.length();
+                            let pitch = optimizer.pitches().0[tick];
+                            // println!("tick: {}, speed: {:.06}, pitch: {:.06}", tick, 20.0*speed, pitch);
+                            println!("{}, {:.06}, {:.06}", tick, 20.0 * speed, pitch);
+                        }
                     }
                 });
 

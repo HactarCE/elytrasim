@@ -66,6 +66,28 @@ pub struct State {
     pub vel: Vel3,
 }
 impl State {
+    /// with min y
+    // #[cfg(false)]
+    pub fn ticked(&self, rot: Rot) -> Self {
+        const MIN_Y: f64 = -100.0;
+        let mut entity = Entity {
+            pos: self.pos,
+            vel: self.vel,
+            rot,
+        };
+        entity.travel();
+        let ret: State = entity.into();
+        if ret.pos.y <= MIN_Y {
+            Self {
+                pos: Vec3::new(ret.pos.x, MIN_Y + 0.1, ret.pos.z),
+                vel: Vec3::new(ret.vel.x, -self.vel.y * 0.1, -ret.vel.z * 0.1),
+            }
+        } else {
+            ret
+        }
+    }
+
+    #[cfg(false)]
     pub fn ticked(&self, rot: Rot) -> Self {
         let mut entity = Entity {
             pos: self.pos,
@@ -102,7 +124,14 @@ impl State {
         // self.pos.y / self.pos.z
         // z vel is only interesting for not steady state
         // self.vel.z
-        // self.pos.z
+        // self.pos.z / 100.0
+        // self.pos.z / 100.0
+        //     + if self.pos.y < 0.0 {
+        //         self.pos.y / 20.0
+        //     } else {
+        //         self.pos.y / 100.0
+        //     }
+        // self.total_energy() / 2.0 + 2.0 * self.vel.z
     }
 }
 impl From<Entity> for State {
@@ -189,7 +218,10 @@ impl Pitches {
     /// given this init velocity, return the state after applying the pitches.
     // /// `None` if we're empty.
     pub fn after_cycle(&self, init_vel: Vel3) -> State {
-        self.cycle(init_vel).last().expect("`Pitches` is empty")
+        self.cycle(init_vel).last().unwrap_or(State {
+            pos: Pos3::ZERO,
+            vel: init_vel,
+        })
     }
 
     /// init vel is a guess at the stead state velocity.
@@ -333,7 +365,12 @@ impl Pitches {
     ///
     /// &mut self bc we want to modify self in place instead of cloning,
     /// but we guarantee that we won't be different after return.
-    fn fixed_delta_at_tick(&mut self, init_vel: Vel3, delta: DeltaPitch, tick: usize) -> DeltaPitch {
+    fn fixed_delta_at_tick(
+        &mut self,
+        init_vel: Vel3,
+        delta: DeltaPitch,
+        tick: usize,
+    ) -> DeltaPitch {
         let cur_pitch = self.0[tick];
         // TODO: cache this
         let cur_goodness = goodness(&self.after_cycle(init_vel), self);
@@ -388,9 +425,8 @@ impl Pitches {
 
 /// linear combination of various goodnesses.
 fn goodness(state: &State, pitches: &Pitches) -> Goodness {
-    state.state_goodness()
-        - 0.01 * pitches.cyclic_pitch_deltas_abs_average() as Goodness
-        // - 0.01 * pitches.cyclic_pitch_deltas_deltas_abs_average() as Goodness
+    state.state_goodness() - 0.01 * pitches.cyclic_pitch_deltas_abs_average() as Goodness
+    // - 0.01 * pitches.cyclic_pitch_deltas_deltas_abs_average() as Goodness
 }
 
 /// optimize with the constraint that
