@@ -1,14 +1,17 @@
 mod optimizer;
 mod sim;
 
-use sim::*;
-
 use crate::optimizer::*;
 
 pub const TICKS_PER_SECOND: u8 = 20;
 pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
 
 fn main() -> eframe::Result {
+    let mut goodness_params = GoodnessParams {
+        energy_or_y: EnergyOrY::Energy,
+        y_z_blend: 0.0,
+    };
+
     // let ticks = 10;
     // let ticks = 20;
     // let ticks = 50;
@@ -16,94 +19,59 @@ fn main() -> eframe::Result {
     // let ticks = 150; // like 2 delta y
     // let ticks = 200; // like 12 delta y
     // let ticks = 250;
-    let ticks = 300; // like 21.5 delta y
+    let mut num_ticks = 300; // like 21.5 delta y
     // let ticks = 310; // like 21.65 delta y
     // let ticks = 400; // like 18 delta y
     // let ticks = 500;
 
-    let mut optimizer: Box<dyn Optimizer> = {
-        // let pitches = Pitches::new_uniform(ticks, 0.0);
-        // let pitches = Pitches::new_4040(ticks, 0.65);
-        // let pitches = Pitches::new_40zero40(ticks, 0.65, 0.70);
-        // close to the optimal curve with four lines
-        // #[cfg(false)]
-        let pitches = {
-            let left_cut = 0.65;
-            let right_cut = 0.70;
-            let right_right_cut = 0.80;
-            let left = (ticks as f64 * left_cut) as usize;
-            let right = (ticks as f64 * right_cut) as usize;
-            let right_right = (ticks as f64 * right_right_cut) as usize;
-            Pitches(
-                // Pitches::new_lerp(left_left, 0.0, 10.0)
-                //     .0
-                //     .iter()
-                //     .chain(Pitches::new_lerp(left - left_left, 10.0, 50.0).0.iter())
-                Pitches::new_lerp(left, 10.0, 50.0)
-                    .0
-                    .iter()
-                    .chain(Pitches::new_uniform(right - left, 0.0).0.iter())
-                    .chain(
-                        Pitches::new_lerp(right_right - right, -85.0, -30.0)
-                            .0
-                            .iter(),
-                    )
-                    .chain(
-                        Pitches::new_lerp(ticks - right_right, -30.0, -10.0)
-                            .0
-                            .iter(),
-                    )
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        };
+    // let pitches = PitchesUtil::new_uniform(ticks, 0.0);
+    // let pitches = PitchesUtil::new_4040(ticks, 0.65);
+    // let pitches = PitchesUtil::new_40zero40(ticks, 0.65, 0.70);
+    // close to the optimal curve with four lines
+    // #[cfg(false)]
+    let mut pitches = {
+        let left_cut = 0.65;
+        let right_cut = 0.70;
+        let right_right_cut = 0.80;
+        let left = (num_ticks as f64 * left_cut) as usize;
+        let right = (num_ticks as f64 * right_cut) as usize;
+        let right_right = (num_ticks as f64 * right_right_cut) as usize;
 
-        // Box::new(OptimizerSteadyState::new(pitches))
-
-        let vel = Vel3::ZERO;
-        // // the optimal steady state vel
-        // let vel = Vel3::new(0.0, 0.17, 0.2);
-
-        Box::new(OptimizerInitState::new(vel, pitches))
+        // PitchesUtil::new_lerp(left_left, 0.0, 10.0)
+        //     .iter()
+        //     .chain(PitchesUtil::new_lerp(left - left_left, 10.0, 50.0).0.iter())
+        PitchesUtil::new_lerp(left, 10.0, 50.0)
+            .iter()
+            .chain(PitchesUtil::new_constant(right - left, 0.0).iter())
+            .chain(PitchesUtil::new_lerp(right_right - right, -85.0, -30.0).iter())
+            .chain(PitchesUtil::new_lerp(num_ticks - right_right, -30.0, -10.0).iter())
+            .cloned()
+            .collect::<Vec<_>>()
     };
 
-    let mut optimization_strategy = OptimizationStrategy::GradientDescent;
-    // for the gradient descent strategy
-    let mut learning_rate = 500.0;
-    // for the fixed delta strategy
-    let mut fixed_delta = 0.1;
+    // TODO: put this in the ui
+    let mut init_vel = Vel3::ZERO;
+    // // the optimal steady state vel
+    // let init_vel = Vel3::new(0.0, 0.17, 0.2);
 
+    let mut draw_without_jitter = false;
+
+    let mut jitter_params = JitterParams {
+        init_vel_y_std: Some(0.1),
+        init_vel_z_std: Some(0.1),
+        poses_y_std: Some(0.1),
+        poses_z_std: Some(0.1),
+        vels_y_std: Some(0.01),
+        vels_z_std: Some(0.01),
+        pitches_std: Some(0.0),
+    };
+
+    // this is just to plot against, it's not used in the optimizer
+    let mut jitter = Jitter::new(&jitter_params, num_ticks);
+
+    let mut learning_rate = 500.0;
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
-
-    fn get_neighboring_optimizers<const N: usize>(
-        base_vel: Vel3,
-        base_pitches: &Pitches,
-        delta_vel: f64,
-    ) -> [[OptimizerInitState; N]; N] {
-        (0..N)
-            .map(|i| {
-                let delta_y = (i as f64 - (N as f64 - 1.0) / 2.0) * delta_vel;
-                (0..N)
-                    .map(|j| {
-                        let delta_z = (j as f64 - (N as f64 - 1.0) / 2.0) * delta_vel;
-                        let vel = base_vel + Vel3::new(0.0, delta_y, delta_z);
-                        OptimizerInitState::new(vel, base_pitches.clone())
-                    })
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap()
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap()
-    }
-
-    // OptimizerInitState in a grid around the optimal steady state vel, for comparison
-    const N: usize = 3;
-    // const N: usize = 5;
-    let mut neighboring_delta_vel = 0.5;
-    let mut neighboring_optimizers: Option<[[OptimizerInitState; N]; N]> = None;
 
     eframe::run_ui_native(
         "Elytra Sim",
@@ -111,174 +79,213 @@ fn main() -> eframe::Result {
         move |ui, _frame| {
             ui.request_repaint();
             egui::Panel::left("side_panel").show_inside(ui, |ui| {
-                // increase / decrease ticks (and perhaps other parameters later)
-                ui.group(|ui| {
-                    // increase / decrease ticks
-                    ui.horizontal(|ui| {
-                        let mul = if ui.ctx().input(|i| i.modifiers.shift) {
-                            10
-                        } else {
-                            1
-                        };
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // goodness
+                    ui.group(|ui| {
+                        egui::ComboBox::from_id_salt(egui::Id::new("energy or y"))
+                            .selected_text(match goodness_params.energy_or_y {
+                                EnergyOrY::Energy => "energy",
+                                EnergyOrY::Y => "y",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut goodness_params.energy_or_y,
+                                    EnergyOrY::Energy,
+                                    "energy",
+                                );
+                                ui.selectable_value(
+                                    &mut goodness_params.energy_or_y,
+                                    EnergyOrY::Y,
+                                    "y",
+                                );
+                            });
 
-                        ui.label(format!("ticks: {}", optimizer.pitches().0.len()));
-                        if ui.button("-").on_hover_text("hold shift for 10x").clicked() {
-                            for _ in 0..mul {
-                                optimizer.pitches_mut().0.pop();
-                                if let Some(optimizers) = neighboring_optimizers.as_mut() {
-                                    for line in optimizers.iter_mut() {
-                                        for optimizer in line.iter_mut() {
-                                            optimizer.pitches_mut().0.pop();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if ui.button("+").on_hover_text("hold shift for 10x").clicked() {
-                            for _ in 0..mul {
-                                {
-                                    let last = *optimizer.pitches().0.last().unwrap_or(&0.0);
-                                    optimizer.pitches_mut().0.push(last);
-                                }
-                                if let Some(optimizers) = neighboring_optimizers.as_mut() {
-                                    for line in optimizers.iter_mut() {
-                                        for optimizer in line.iter_mut() {
-                                            let last =
-                                                *optimizer.pitches().0.last().unwrap_or(&0.0);
-                                            optimizer.pitches_mut().0.push(last);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        ui.add(egui::Slider::new(&mut goodness_params.y_z_blend, 0.0..=1.0));
                     });
 
-                    if ui.button("double").clicked() {
-                        optimizer = Box::new(OptimizerSteadyState::new(Pitches(
-                            optimizer
-                                .pitches()
-                                .0
-                                .iter()
-                                .chain(optimizer.pitches().0.iter())
-                                .cloned()
-                                .collect(),
-                        )));
-                    }
+                    // init_vel
+                    ui.group(|ui| {
+                        ui.label(format!("init vel.y: {:.06}", init_vel.y));
+                        ui.add(vel_slider(&mut init_vel.y));
+                        ui.label(format!("init vel.z: {:.06}", init_vel.z));
+                        ui.add(vel_slider(&mut init_vel.z));
+                    });
 
-                    // if ui.button("print pitches").clicked() {
-                    //     println!("{:#?}", optimizer.pitches().0);
-                    // }
-                    if ui.button("print speed pitches").clicked() {
-                        for tick in (0..optimizer.pitches().0.len()).step_by(5) {
-                            let state = Pitches(optimizer.pitches().0[..tick].to_owned())
-                                .after_cycle(optimizer.init_vel());
-                            let speed = state.vel.length();
-                            let pitch = optimizer.pitches().0[tick];
-                            // println!("tick: {}, speed: {:.06}, pitch: {:.06}", tick, 20.0*speed, pitch);
-                            println!("{}, {:.06}, {:.06}", tick, 20.0 * speed, pitch);
+                    // num_ticks
+                    ui.group(|ui| {
+                        assert_eq!(num_ticks, pitches.len());
+                        assert_eq!(num_ticks, jitter.num_ticks());
+
+                        // increase / decrease num_ticks
+                        ui.horizontal(|ui| {
+                            ui.label(format!("num ticks: {}", num_ticks));
+
+                            let mul = if ui.ctx().input(|i| i.modifiers.shift) {
+                                10
+                            } else {
+                                1
+                            };
+
+                            let mut changed = false;
+                            if ui.button("-").on_hover_text("hold shift for 10x").clicked() {
+                                changed |= true;
+                                num_ticks = num_ticks.saturating_sub(mul);
+                            }
+                            if ui.button("+").on_hover_text("hold shift for 10x").clicked() {
+                                changed |= true;
+                                num_ticks += mul;
+                            }
+                            if changed {
+                                pitches.resize(num_ticks, pitches.last().copied().unwrap_or(0.0));
+                                jitter.resize(&jitter_params, num_ticks);
+                            }
+                        });
+                    });
+
+                    // pitches
+                    ui.group(|ui| {
+                        ui.label("pitches stuff");
+
+                        if ui.button("duplicate").clicked() {
+                            num_ticks *= 2;
+                            pitches = pitches.iter().chain(pitches.iter()).cloned().collect();
+                            jitter.resize(&jitter_params, num_ticks);
                         }
-                    }
-                });
 
-                // neighboring optimizers
-                ui.group(|ui| {
-                    if ui.button("set neighboring optimizers").clicked() {
-                        neighboring_optimizers = Some(get_neighboring_optimizers::<N>(
-                            optimizer.init_vel(),
-                            optimizer.pitches(),
-                            neighboring_delta_vel,
-                        ));
-                    }
-                    if ui.button("clear neighboring optimizers").clicked() {
-                        neighboring_optimizers = None;
-                    }
-                    ui.label("neighboring optimizers delta vel:");
-                    ui.add(egui::Slider::new(&mut neighboring_delta_vel, 0.0..=1.0));
-                });
+                        if ui.button("random uniform").clicked() {
+                            pitches = PitchesUtil::new_rand_uniform(num_ticks);
+                        }
 
-                // optimizer parameters
-                ui.group(|ui| {
-                    ui.label("optimization strategy:");
-                    egui::ComboBox::from_id_salt(egui::Id::new("optimization strategy"))
-                        .selected_text(match optimization_strategy {
-                            OptimizationStrategy::GradientDescent => "gradient descent",
-                            OptimizationStrategy::FixedDelta => "fixed delta",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut optimization_strategy,
-                                OptimizationStrategy::GradientDescent,
-                                "gradient descent",
-                            );
-                            ui.selectable_value(
-                                &mut optimization_strategy,
-                                OptimizationStrategy::FixedDelta,
-                                "fixed delta",
-                            );
+                        if ui.button("random walk").clicked() {
+                            pitches = PitchesUtil::new_rand_walk(num_ticks, 10.0);
+                        }
+
+                        // if ui.button("print pitches").clicked() {
+                        //     println!("{:#?}", pitches);
+                        // }
+                        // if ui.button("print speed pitches").clicked() {
+                        //     for tick in (0..pitches.len()).step_by(5) {
+                        //         let state = Pitches(pitches[..tick].to_owned())
+                        //             .after_cycle(init_vel);
+                        //         let speed = state.vel.length();
+                        //         let pitch = pitches[tick];
+                        //         // println!("tick: {}, speed: {:.06}, pitch: {:.06}", tick, 20.0*speed, pitch);
+                        //         println!("{}, {:.06}, {:.06}", tick, 20.0 * speed, pitch);
+                        //     }
+                        // }
+                    });
+
+                    // jitter
+                    egui::CollapsingHeader::new("jitter stuff")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            /// returns whether it should be resampled
+                            fn f(ui: &mut egui::Ui, value: &mut Option<f64>, hi: f64) -> bool {
+                                let mut v = value.unwrap_or(0.0);
+                                let r = ui.add(
+                                    egui::Slider::new(&mut v, 0.0..=hi)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+                                if r.changed() {
+                                    *value = Some(v);
+                                }
+                                r.changed()
+                            }
+
+                            ui.checkbox(&mut draw_without_jitter, "draw without jitter");
+
+                            {
+                                let mut undo_jitter_vel =
+                                    UNDO_JITTER_VEL.load(std::sync::atomic::Ordering::Relaxed);
+                                ui.checkbox(&mut undo_jitter_vel, "undo jitter vel");
+                                UNDO_JITTER_VEL
+                                    .store(undo_jitter_vel, std::sync::atomic::Ordering::Relaxed);
+                            }
+
+                            if ui.button("resample all").clicked() {
+                                jitter.resample_all(&jitter_params);
+                            }
+
+                            ui.label("init_vel_y std:");
+                            if f(ui, &mut jitter_params.init_vel_y_std, 1.0) {
+                                jitter.resample_init_vel_y(jitter_params.init_vel_y_std);
+                            }
+                            ui.label("init_vel_z std:");
+                            if f(ui, &mut jitter_params.init_vel_z_std, 1.0) {
+                                jitter.resample_init_vel_z(jitter_params.init_vel_z_std);
+                            }
+                            ui.label("poses_y std:");
+                            if f(ui, &mut jitter_params.poses_y_std, 1.0) {
+                                jitter.resample_poses_y(jitter_params.poses_y_std);
+                            }
+                            ui.label("poses_z std:");
+                            if f(ui, &mut jitter_params.poses_z_std, 1.0) {
+                                jitter.resample_poses_z(jitter_params.poses_z_std);
+                            }
+                            ui.label("vels_y std:");
+                            if f(ui, &mut jitter_params.vels_y_std, 1.0) {
+                                jitter.resample_vels_y(jitter_params.vels_y_std);
+                            }
+                            ui.label("vels_z std:");
+                            if f(ui, &mut jitter_params.vels_z_std, 1.0) {
+                                jitter.resample_vels_z(jitter_params.vels_z_std);
+                            }
+                            ui.label("pitches std:");
+                            if f(ui, &mut jitter_params.pitches_std, 1.0) {
+                                jitter.resample_pitches(jitter_params.pitches_std);
+                            }
                         });
 
-                    ui.label("learning rate:");
-                    ui.add(egui::Slider::new(&mut learning_rate, 10.0..=10000.0).logarithmic(true));
-
-                    ui.label("fixed delta:");
-                    ui.add(egui::Slider::new(&mut fixed_delta, 0.0..=1.0));
-                });
-
-                // optimization on / off
-                {
-                    let mut do_optimization_step = || match optimization_strategy {
-                        OptimizationStrategy::GradientDescent => {
-                            optimizer.gradient_descent_step(learning_rate);
-                            if let Some(optimizers) = neighboring_optimizers.as_mut() {
-                                for line in optimizers.iter_mut() {
-                                    for optimizer in line.iter_mut() {
-                                        optimizer.gradient_descent_step(learning_rate);
-                                    }
-                                }
-                            }
-                        }
-                        OptimizationStrategy::FixedDelta => {
-                            optimizer.fixed_delta_step(fixed_delta);
-                            if let Some(optimizers) = neighboring_optimizers.as_mut() {
-                                for line in optimizers.iter_mut() {
-                                    for optimizer in line.iter_mut() {
-                                        optimizer.fixed_delta_step(fixed_delta);
-                                    }
-                                }
-                            }
-                        }
-                    };
-
-                    // optimization on / off
+                    // optimizer
                     ui.group(|ui| {
+                        ui.label("learning rate:");
+                        ui.add(
+                            egui::Slider::new(&mut learning_rate, 10.0..=10000.0).logarithmic(true),
+                        );
+
+                        // optimization on / off
+                        let mut do_optimization_step = || {
+                            // TODO: avoid this allocation
+                            let jitter = Jitter::new(&jitter_params, num_ticks);
+                            gradient_descent_step(
+                                goodness_params.build(),
+                                init_vel,
+                                &mut pitches,
+                                &jitter,
+                                learning_rate,
+                            );
+                        };
+
+                        // optimization on / off
+                        ui.label(" tep:");
                         if ui.button("optimization step").clicked() {
                             do_optimization_step();
                         }
                         ui.checkbox(&mut optimizing, "optimizing");
-                        ui.label("optimization steps per frame:");
+                        ui.label("steps per frame:");
                         ui.add(egui::Slider::new(
                             &mut optimization_steps_per_frame,
                             0..=100,
                         ));
+
+                        // do the optimization steps
+                        if optimizing {
+                            for _ in 0..optimization_steps_per_frame {
+                                do_optimization_step();
+                            }
+                        }
                     });
 
-                    // do the optimization steps
-                    if optimizing {
-                        for _ in 0..optimization_steps_per_frame {
-                            do_optimization_step();
-                        }
-                    }
-                }
-
-                ui.group(|ui| {
-                    let init_vel = optimizer.init_vel();
-                    ui.label(format!("before vel.y: {:.06}", init_vel.y));
-                    ui.label(format!("before vel.z: {:.06}", init_vel.z));
-                    let after = optimizer.pitches().after_cycle(init_vel);
-                    ui.label(format!("after vel.y: {:.06}", after.vel.y));
-                    ui.label(format!("after vel.z: {:.06}", after.vel.z));
-                    ui.strong(format!("after pos.y: {:.06}", after.pos.y));
-                    ui.label(format!("after pos.z: {:.06}", after.pos.z));
+                    // state before and after
+                    ui.group(|ui| {
+                        ui.label(format!("before vel.y: {:.06}", init_vel.y));
+                        ui.label(format!("before vel.z: {:.06}", init_vel.z));
+                        let after = forward(init_vel, &pitches, &jitter).last().unwrap();
+                        ui.label(format!("after vel.y: {:.06}", after.vel.y));
+                        ui.label(format!("after vel.z: {:.06}", after.vel.z));
+                        ui.strong(format!("after pos.y: {:.06}", after.pos.y));
+                        ui.label(format!("after pos.z: {:.06}", after.pos.z));
+                    });
                 });
             });
 
@@ -296,11 +303,10 @@ fn main() -> eframe::Result {
 
                 // vertical lines for seconds
                 {
-                    let seconds = optimizer.pitches().0.len() as f32 / TICKS_PER_SECOND as f32;
+                    let seconds = pitches.len() as f32 / TICKS_PER_SECOND as f32;
                     for second in 0..=seconds.ceil() as usize {
                         let x = rect.left()
-                            + (second as f32 * TICKS_PER_SECOND as f32
-                                / optimizer.pitches().0.len() as f32)
+                            + (second as f32 * TICKS_PER_SECOND as f32 / pitches.len() as f32)
                                 * rect.width();
                         ui.painter().line_segment(
                             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
@@ -309,23 +315,30 @@ fn main() -> eframe::Result {
                     }
                 }
 
-                // show all the stuff for the main optimizer
-                show_optimizer(ui, optimizer.as_ref(), 4.0);
-
-                // show the optimizer grid
-                if let Some(optimizers) = neighboring_optimizers.as_mut() {
-                    for line in optimizers.iter() {
-                        for optimizer in line.iter() {
-                            show_optimizer(ui, optimizer, 2.0);
-                        }
-                    }
+                show_optimizer(ui, &goodness_params, init_vel, &pitches, &jitter, 4.0);
+                if draw_without_jitter {
+                    show_optimizer(
+                        ui,
+                        &goodness_params,
+                        init_vel,
+                        &pitches,
+                        &Jitter::zero(num_ticks),
+                        4.0,
+                    );
                 }
             });
         },
     )
 }
 
-fn show_optimizer(ui: &mut egui::Ui, optimizer: &dyn Optimizer, rad: f32) {
+fn show_optimizer(
+    ui: &mut egui::Ui,
+    goodness_params: &GoodnessParams,
+    init_vel: Vel3,
+    pitches: &[Pitch],
+    jitter: &Jitter,
+    rad: f32,
+) {
     let rect = ui.available_rect_before_wrap();
 
     let value_to_y = |value: f32, approx_max_value: f32| {
@@ -340,85 +353,65 @@ fn show_optimizer(ui: &mut egui::Ui, optimizer: &dyn Optimizer, rad: f32) {
         r
     };
 
-    for (tick, (state, pitch)) in optimizer
-        .pitches()
-        .cycle(optimizer.init_vel())
-        .zip(optimizer.pitches().0.iter())
+    for (tick, (state, pitch)) in forward(init_vel, pitches, jitter)
+        .zip(pitches.iter())
         .enumerate()
     {
-        let x = rect.left() + (tick as f32 / optimizer.pitches().0.len() as f32) * rect.width();
+        let x = rect.left() + (tick as f32 / pitches.len() as f32) * rect.width();
 
         // pitch (pink)
         {
             let y = value_to_y(-*pitch, 90.0);
-            dot_at(x, y, egui::Color32::from_rgb(252, 3, 198)).on_hover_text(format!(
-                "tick: {}, pitch: {}, init_vel: {:?}",
-                tick,
-                pitch,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(252, 3, 198))
+                .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
         }
 
         // pitch gradient (purple)
         // actually this just goes to zero, so it's not very interesting
-        #[cfg(false)]
+        // #[cfg(false)]
         {
             // this is for the ui, just clone it.
-            let mut pitches = optimizer.pitches().clone();
-            let grad = pitches.grad_at_tick(optimizer.init_vel(), tick);
+            let mut pitches = pitches.to_owned();
+            let grad = grad_at_tick(
+                goodness_params.build(),
+                init_vel,
+                &mut pitches,
+                jitter,
+                tick,
+            );
             let approx_max_grad = 0.01;
             let grad = grad.clamp(-approx_max_grad, approx_max_grad);
             let y = value_to_y(-grad, approx_max_grad);
-            dot_at(x, y, egui::Color32::from_rgb(128, 0, 128)).on_hover_text(format!(
-                "tick: {}, pitch gradient: {}, init_vel: {:?}",
-                tick,
-                grad,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(128, 0, 128))
+                .on_hover_text(format!("tick: {}, pitch gradient: {}", tick, grad));
         }
 
         // pos.y (dark green)
         {
             let y = value_to_y(state.pos.y as f32, 100.0);
-            dot_at(x, y, egui::Color32::from_rgb(0, 100, 0)).on_hover_text(format!(
-                "tick: {}, pos.y: {}, init_vel: {:?}",
-                tick,
-                state.pos.y,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(0, 100, 0))
+                .on_hover_text(format!("tick: {}, pos.y: {}", tick, state.pos.y));
         }
 
         // pos.z (dark blue)
         {
             let y = value_to_y(state.pos.z as f32, 100.0);
-            dot_at(x, y, egui::Color32::from_rgb(52, 61, 235)).on_hover_text(format!(
-                "tick: {}, pos.z: {}, init_vel: {:?}",
-                tick,
-                state.pos.z,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(52, 61, 235))
+                .on_hover_text(format!("tick: {}, pos.z: {}", tick, state.pos.z));
         }
 
         // vel.y (light green)
         {
             let y = value_to_y(state.vel.y as f32, 5.0);
-            dot_at(x, y, egui::Color32::from_rgb(144, 238, 144)).on_hover_text(format!(
-                "tick: {}, vel.y: {}, init_vel: {:?}",
-                tick,
-                state.vel.y,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(144, 238, 144))
+                .on_hover_text(format!("tick: {}, vel.y: {}", tick, state.vel.y));
         }
 
         // vel.z (light blue)
         {
             let y = value_to_y(state.vel.z as f32, 5.0);
-            dot_at(x, y, egui::Color32::from_rgb(52, 165, 235)).on_hover_text(format!(
-                "tick: {}, vel.z: {}, init_vel: {:?}",
-                tick,
-                state.vel.z,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(52, 165, 235))
+                .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
         }
 
         let approx_max_energy = 4.0;
@@ -426,36 +419,24 @@ fn show_optimizer(ui: &mut egui::Ui, optimizer: &dyn Optimizer, rad: f32) {
         {
             let ke = state.kinetic_energy();
             let y = value_to_y(ke as f32, approx_max_energy);
-            dot_at(x, y, egui::Color32::from_rgb(235, 214, 52)).on_hover_text(format!(
-                "tick: {}, kinetic energy: {}, init_vel: {:?}",
-                tick,
-                ke,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(235, 214, 52))
+                .on_hover_text(format!("tick: {}, kinetic energy: {}", tick, ke));
         }
 
         // potential energy (red)
         {
             let pe = state.potential_energy();
             let y = value_to_y(pe as f32, approx_max_energy);
-            dot_at(x, y, egui::Color32::from_rgb(255, 0, 0)).on_hover_text(format!(
-                "tick: {}, potential energy: {}, init_vel: {:?}",
-                tick,
-                pe,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(255, 0, 0))
+                .on_hover_text(format!("tick: {}, potential energy: {}", tick, pe));
         }
 
         // total energy (orange)
         {
             let energy = state.total_energy();
             let y = value_to_y(energy as f32, approx_max_energy);
-            dot_at(x, y, egui::Color32::from_rgb(235, 143, 52)).on_hover_text(format!(
-                "tick: {}, total energy: {}, init_vel: {:?}",
-                tick,
-                energy,
-                optimizer.init_vel()
-            ));
+            dot_at(x, y, egui::Color32::from_rgb(235, 143, 52))
+                .on_hover_text(format!("tick: {}, total energy: {}", tick, energy));
         }
     }
 }
@@ -540,4 +521,32 @@ pub fn pos_slider(value: &mut f64) -> egui::Slider<'_> {
 
 pub fn vel_slider(value: &mut f64) -> egui::Slider<'_> {
     egui::Slider::new(value, -5.0..=5.0).clamping(egui::SliderClamping::Never)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnergyOrY {
+    Energy,
+    Y,
+}
+
+struct GoodnessParams {
+    energy_or_y: EnergyOrY,
+    y_z_blend: f64,
+}
+
+impl GoodnessParams {
+    fn build(&self) -> impl Fn(State) -> Goodness {
+        let Self {
+            energy_or_y,
+            y_z_blend,
+        } = self;
+        move |state: State| {
+            let goodness_left = match energy_or_y {
+                EnergyOrY::Energy => state.total_energy(),
+                EnergyOrY::Y => state.pos.y,
+            };
+            let goodness_right = state.pos.z;
+            goodness_left * (1.0 - y_z_blend) + goodness_right * y_z_blend
+        }
+    }
 }
