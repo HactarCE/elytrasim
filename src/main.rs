@@ -43,7 +43,8 @@ fn main() -> eframe::Result {
     let mut resample_jitter_on_optimization_step = true;
 
     let mut jitter_params = JitterParams {
-        time_rad: 0.2,
+        // time_rad: 0.2,
+        time_rad: 0.0,
         init_vel_y_std: 0.1,
         init_vel_z_std: 0.1,
         // vels_y_std: 0.01,
@@ -185,10 +186,12 @@ fn main() -> eframe::Result {
                                     pitches = PitchesUtil::new_rand_walk(num_ticks, 10.0);
                                 }
 
+                                ui.label("pitch idx:");
                                 ui.add(egui::Slider::new(
                                     &mut pitch_idx,
                                     0..=num_ticks.saturating_sub(1),
                                 ));
+                                ui.label("pitch:");
                                 ui.add(egui::Slider::new(&mut pitches[pitch_idx], -90.0..=90.0));
 
                                 // if ui.button("print pitches").clicked() {
@@ -243,11 +246,8 @@ fn main() -> eframe::Result {
 
                                 ui.label("time:");
                                 ui.add(
-                                    egui::Slider::new(
-                                        &mut jitter.time,
-                                        -jitter_params.time_rad..=jitter_params.time_rad,
-                                    )
-                                    .clamping(egui::SliderClamping::Never),
+                                    egui::Slider::new(&mut jitter.time, -0.5..=0.5)
+                                        .clamping(egui::SliderClamping::Never),
                                 );
 
                                 ui.label("time rad:");
