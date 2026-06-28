@@ -41,14 +41,12 @@ fn main() -> eframe::Result {
     let mut resample_jitter_on_optimization_step = true;
 
     let mut jitter_params = JitterParams {
-        time_rad: Some(0.2),
-        init_vel_y_std: Some(0.1),
-        init_vel_z_std: Some(0.1),
-        poses_y_std: Some(0.1),
-        poses_z_std: Some(0.1),
-        vels_y_std: Some(0.01),
-        vels_z_std: Some(0.01),
-        pitches_std: Some(0.0),
+        time_rad: 0.2,
+        init_vel_y_std: 0.1,
+        init_vel_z_std: 0.1,
+        vels_y_std: 0.01,
+        vels_z_std: 0.01,
+        pitches_std: 0.0,
     };
 
     let mut jitter = Jitter::new(&jitter_params, num_ticks);
@@ -203,15 +201,11 @@ fn main() -> eframe::Result {
                             .default_open(true)
                             .show(ui, |ui| {
                                 /// returns whether it should be resampled
-                                fn f(ui: &mut egui::Ui, value: &mut Option<f64>, hi: f64) -> bool {
-                                    let mut v = value.unwrap_or(0.0);
+                                fn f(ui: &mut egui::Ui, value: &mut f64, hi: f64) -> bool {
                                     let r = ui.add(
-                                        egui::Slider::new(&mut v, 0.0..=hi)
+                                        egui::Slider::new(value, 0.0..=hi)
                                             .clamping(egui::SliderClamping::Never),
                                     );
-                                    if r.changed() {
-                                        *value = Some(v);
-                                    }
                                     r.changed()
                                 }
 
@@ -247,14 +241,6 @@ fn main() -> eframe::Result {
                                 ui.label("init_vel_z std:");
                                 if f(ui, &mut jitter_params.init_vel_z_std, 0.2) {
                                     jitter.resample_init_vel_z(jitter_params.init_vel_z_std);
-                                }
-                                ui.label("poses_y std:");
-                                if f(ui, &mut jitter_params.poses_y_std, 1.0) {
-                                    jitter.resample_poses_y(jitter_params.poses_y_std);
-                                }
-                                ui.label("poses_z std:");
-                                if f(ui, &mut jitter_params.poses_z_std, 1.0) {
-                                    jitter.resample_poses_z(jitter_params.poses_z_std);
                                 }
                                 ui.label("vels_y std:");
                                 if f(ui, &mut jitter_params.vels_y_std, 0.05) {

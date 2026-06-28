@@ -154,31 +154,27 @@ impl State {
 // TODO: these probably shouldn't be options
 #[derive(Debug, Clone)]
 pub struct JitterParams {
-    pub time_rad: Option<f64>,
-    pub init_vel_y_std: Option<f64>,
-    pub init_vel_z_std: Option<f64>,
-    pub poses_y_std: Option<f64>,
-    pub poses_z_std: Option<f64>,
-    pub vels_y_std: Option<f64>,
-    pub vels_z_std: Option<f64>,
+    pub time_rad: f64,
+    pub init_vel_y_std: f64,
+    pub init_vel_z_std: f64,
+    pub vels_y_std: f64,
+    pub vels_z_std: f64,
     // this really should be a `Pitch` ie `f32`,
     // but that's annoying to deal with.
-    pub pitches_std: Option<f64>,
+    pub pitches_std: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Jitter {
     time: f64,
     init_vel: Vel3,
-    poses: Vec<Vec3>,
     vels: Vec<Vel3>,
     pitches: Vec<Pitch>,
 }
 
 impl Jitter {
     pub fn num_ticks(&self) -> usize {
-        let ret = self.poses.len();
-        assert_eq!(ret, self.vels.len());
+        let ret = self.vels.len();
         assert_eq!(ret, self.pitches.len());
         ret
     }
@@ -187,7 +183,6 @@ impl Jitter {
         let mut ret = Self {
             time: 0.0,
             init_vel: Vel3::ZERO,
-            poses: Vec::new(),
             vels: Vec::new(),
             pitches: Vec::new(),
         };
@@ -202,7 +197,6 @@ impl Jitter {
         Self {
             time: 0.0,
             init_vel: Vel3::ZERO,
-            poses: vec![Vec3::ZERO; num_ticks],
             vels: vec![Vec3::ZERO; num_ticks],
             pitches: vec![0.0; num_ticks],
         }
@@ -211,19 +205,8 @@ impl Jitter {
     pub fn resize(&mut self, params: &JitterParams, num_ticks: usize) {
         let old_ticks = self.num_ticks();
 
-        self.poses.resize(num_ticks, Vec3::ZERO);
         self.vels.resize(num_ticks, Vec3::ZERO);
         self.pitches.resize(num_ticks, 0.0);
-
-        for (old, (new_y, new_z)) in self
-            .poses
-            .iter_mut()
-            .skip(old_ticks)
-            .zip(Self::sample(params.poses_y_std).zip(Self::sample(params.poses_z_std)))
-        {
-            old.y = new_y;
-            old.z = new_z;
-        }
 
         for (old, (new_y, new_z)) in self
             .vels
@@ -239,7 +222,7 @@ impl Jitter {
             .pitches
             .iter_mut()
             .skip(old_ticks)
-            .zip(Self::sample(params.pitches_std.map(|x| x as f64)))
+            .zip(Self::sample(params.pitches_std))
         {
             *old = new as Pitch;
         }
@@ -249,69 +232,53 @@ impl Jitter {
         self.resample_time(params.time_rad);
         self.resample_init_vel_y(params.init_vel_y_std);
         self.resample_init_vel_z(params.init_vel_z_std);
-        self.resample_poses_y(params.poses_y_std);
-        self.resample_poses_z(params.poses_z_std);
         self.resample_vels_y(params.vels_y_std);
         self.resample_vels_z(params.vels_z_std);
-        self.resample_pitches(params.pitches_std.map(|x| x as f64));
+        self.resample_pitches(params.pitches_std);
     }
 
-    pub fn resample_time(&mut self, time_rad: Option<f64>) {
-        match time_rad {
-            Some(time_rad) => {
-                self.time = rand::rng().random_range(-time_rad..time_rad);
-            }
-            None => {
-                self.time = 0.0;
-            }
+    pub fn resample_time(&mut self, time_rad: f64) {
+        assert!(time_rad >= 0.0);
+        if time_rad > 0.0 {
+            self.time = rand::rng().random_range(-time_rad..time_rad);
+        } else {
+            self.time = 0.0;
         }
     }
 
-    pub fn resample_init_vel_y(&mut self, std: Option<f64>) {
+    pub fn resample_init_vel_y(&mut self, std: f64) {
         self.init_vel.y = Self::sample(std).next().unwrap();
     }
 
-    pub fn resample_init_vel_z(&mut self, std: Option<f64>) {
+    pub fn resample_init_vel_z(&mut self, std: f64) {
         self.init_vel.z = Self::sample(std).next().unwrap();
     }
 
-    pub fn resample_poses_y(&mut self, std: Option<f64>) {
-        for (old, new) in self.poses.iter_mut().zip(Self::sample(std)) {
-            old.y = new;
-        }
-    }
-
-    pub fn resample_poses_z(&mut self, std: Option<f64>) {
-        for (old, new) in self.poses.iter_mut().zip(Self::sample(std)) {
-            old.z = new;
-        }
-    }
-
-    pub fn resample_vels_y(&mut self, std: Option<f64>) {
+    pub fn resample_vels_y(&mut self, std: f64) {
         for (old, new) in self.vels.iter_mut().zip(Self::sample(std)) {
             old.y = new;
         }
     }
 
-    pub fn resample_vels_z(&mut self, std: Option<f64>) {
+    pub fn resample_vels_z(&mut self, std: f64) {
         for (old, new) in self.vels.iter_mut().zip(Self::sample(std)) {
             old.z = new;
         }
     }
 
-    pub fn resample_pitches(&mut self, std: Option<f64>) {
+    pub fn resample_pitches(&mut self, std: f64) {
         for (old, new) in self.pitches.iter_mut().zip(Self::sample(std)) {
             *old = new as Pitch;
         }
     }
 
-    fn sample(std: Option<f64>) -> impl Iterator<Item = f64> {
-        match std {
-            Some(std) => {
-                let distr = rand_distr::Normal::new(0.0, std).unwrap();
-                Box::new(rand::rng().sample_iter(distr)) as Box<dyn Iterator<Item = f64>>
-            }
-            None => Box::new(std::iter::repeat(0.0)) as Box<dyn Iterator<Item = f64>>,
+    fn sample(std: f64) -> impl Iterator<Item = f64> {
+        assert!(std >= 0.0);
+        if std > 0.0 {
+            let distr = rand_distr::Normal::new(0.0, std).unwrap();
+            Box::new(rand::rng().sample_iter(distr)) as Box<dyn Iterator<Item = f64>>
+        } else {
+            Box::new(std::iter::repeat(0.0)) as Box<dyn Iterator<Item = f64>>
         }
     }
 }
@@ -342,12 +309,11 @@ pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Itera
         };
 
         let mut state = State {
-            pos: jitter.poses[tick],
+            pos: Vec3::ZERO,
             vel: vel.elementwise_mul(Vec3::ONE + jitter.vels[tick]),
         }
         .ticked(pitch * (1.0 + jitter.pitches[tick]));
 
-        state.pos -= jitter.poses[tick];
         if UNDO_JITTER_VEL.load(atomic::Ordering::Relaxed) {
             state.vel = state.vel.elementwise_div(Vec3::ONE + jitter.vels[tick]);
         }
