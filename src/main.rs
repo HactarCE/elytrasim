@@ -3,6 +3,7 @@ mod sim;
 
 use egui::NumExt;
 use itertools::Itertools;
+use rand::RngExt;
 use rayon::prelude::*;
 
 use crate::optimizer::*;
@@ -40,6 +41,7 @@ fn main() -> eframe::Result {
     let mut resample_jitter_on_optimization_step = true;
 
     let mut jitter_params = JitterParams {
+        time_rad: Some(0.2),
         init_vel_y_std: Some(0.1),
         init_vel_z_std: Some(0.1),
         poses_y_std: Some(0.1),
@@ -234,6 +236,10 @@ fn main() -> eframe::Result {
                                     jitter.resample_all(&jitter_params);
                                 }
 
+                                ui.label("time rad:");
+                                if f(ui, &mut jitter_params.time_rad, 0.5) {
+                                    jitter.resample_time(jitter_params.time_rad);
+                                }
                                 ui.label("init_vel_y std:");
                                 if f(ui, &mut jitter_params.init_vel_y_std, 0.2) {
                                     jitter.resample_init_vel_y(jitter_params.init_vel_y_std);
@@ -312,6 +318,7 @@ fn main() -> eframe::Result {
                                     // }
 
                                     // pick a random direction in pitch space and do a derivative step along that direction
+                                    #[cfg(false)]
                                     {
                                         let dir = rand_pitches_dir(num_ticks);
                                         let deriv = if resample_jitter_on_optimization_step {
@@ -359,7 +366,7 @@ fn main() -> eframe::Result {
                                     }
 
                                     // gradient descent
-                                    #[cfg(false)]
+                                    // #[cfg(false)]
                                     {
                                         let grad = if resample_jitter_on_optimization_step {
                                             // one of the jitters must be the one shown in the ui
@@ -375,6 +382,11 @@ fn main() -> eframe::Result {
                                             let grads = jitters
                                                 .into_par_iter()
                                                 .map(|jitter| {
+                                                    // let mut pitches = PitchesUtil::lerp_between(
+                                                    //     &pitches,
+                                                    //     jitter.time as f32,
+                                                    // )
+                                                    // .collect_vec();
                                                     let mut pitches = pitches.clone();
                                                     get_grad(
                                                         &goodness,
@@ -526,8 +538,8 @@ fn main() -> eframe::Result {
             });
 
             egui::Window::new("pareto frontier")
-                .default_pos(egui::pos2(300.0, 50.0))
-                .default_size(egui::vec2(300.0, 300.0))
+                .default_pos(egui::pos2(230.0, 20.0))
+                .default_size(egui::vec2(100.0, 100.0))
                 .show(ui, |ui| {
                     // let rect = ui.content_rect();
                     // let rect = ui.max_rect();

@@ -85,6 +85,25 @@ impl PitchesUtil {
             })
             .collect()
     }
+
+    // /// inserts a duplicate pitch so `ret` has the same length as `pitches`.
+    // /// if t < 0.0, inserts a duplicate of the first pitch at the start.
+    // /// if t > 0.0, inserts a duplicate of the last pitch at the end.
+    // /// if t == 0.0, returns the original pitches.
+    // /// TODO: instead of duplicating, do a linear interpolation.
+    // pub fn lerp_between(pitches: &[Pitch], t: f32) -> impl Iterator<Item = Pitch> {
+    //     assert!((-1.0..=1.0).contains(&t));
+    //     pitches
+    //         .first()
+    //         .into_iter()
+    //         .chain(pitches.iter().chain(pitches.iter().last()))
+    //         .array_windows::<3>()
+    //         .map(move |[left, mid, right]| match t.total_cmp(&0.0) {
+    //             std::cmp::Ordering::Less => mid * (1.0 + t) + left * -t,
+    //             std::cmp::Ordering::Equal => *mid,
+    //             std::cmp::Ordering::Greater => mid * (1.0 - t) + right * t,
+    //         })
+    // }
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +154,7 @@ impl State {
 // TODO: these probably shouldn't be options
 #[derive(Debug, Clone)]
 pub struct JitterParams {
+    pub time_rad: Option<f64>,
     pub init_vel_y_std: Option<f64>,
     pub init_vel_z_std: Option<f64>,
     pub poses_y_std: Option<f64>,
@@ -148,6 +168,7 @@ pub struct JitterParams {
 
 #[derive(Debug, Clone)]
 pub struct Jitter {
+    time: f64,
     init_vel: Vel3,
     poses: Vec<Vec3>,
     vels: Vec<Vel3>,
@@ -164,11 +185,13 @@ impl Jitter {
 
     pub fn new(params: &JitterParams, num_ticks: usize) -> Self {
         let mut ret = Self {
+            time: 0.0,
             init_vel: Vel3::ZERO,
             poses: Vec::new(),
             vels: Vec::new(),
             pitches: Vec::new(),
         };
+        ret.resample_time(params.time_rad);
         ret.resample_init_vel_y(params.init_vel_y_std);
         ret.resample_init_vel_z(params.init_vel_z_std);
         ret.resize(params, num_ticks);
@@ -177,6 +200,7 @@ impl Jitter {
 
     pub fn zero(num_ticks: usize) -> Self {
         Self {
+            time: 0.0,
             init_vel: Vel3::ZERO,
             poses: vec![Vec3::ZERO; num_ticks],
             vels: vec![Vec3::ZERO; num_ticks],
@@ -222,6 +246,7 @@ impl Jitter {
     }
 
     pub fn resample_all(&mut self, params: &JitterParams) {
+        self.resample_time(params.time_rad);
         self.resample_init_vel_y(params.init_vel_y_std);
         self.resample_init_vel_z(params.init_vel_z_std);
         self.resample_poses_y(params.poses_y_std);
@@ -229,6 +254,17 @@ impl Jitter {
         self.resample_vels_y(params.vels_y_std);
         self.resample_vels_z(params.vels_z_std);
         self.resample_pitches(params.pitches_std.map(|x| x as f64));
+    }
+
+    pub fn resample_time(&mut self, time_rad: Option<f64>) {
+        match time_rad {
+            Some(time_rad) => {
+                self.time = rand::rng().random_range(-time_rad..time_rad);
+            }
+            None => {
+                self.time = 0.0;
+            }
+        }
     }
 
     pub fn resample_init_vel_y(&mut self, std: Option<f64>) {
@@ -289,11 +325,27 @@ pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Itera
     let mut vel = init_vel + jitter.init_vel;
 
     (0..jitter.num_ticks()).map(move |tick| {
+        //  if t < 0.0, inserts a duplicate of the first pitch at the start.
+        //  if t > 0.0, inserts a duplicate of the last pitch at the end.
+        //  if t == 0.0, returns the original pitch.
+        //  TODO: instead of duplicating, do a linear interpolation.
+        let pitch = {
+            let left = pitches[tick.saturating_sub(1)];
+            let mid = pitches[tick];
+            let right = pitches[(tick + 1).min(pitches.len() - 1)];
+            let t = jitter.time as f32;
+            match t.total_cmp(&0.0) {
+                std::cmp::Ordering::Less => mid * (1.0 + t) + left * -t,
+                std::cmp::Ordering::Equal => mid,
+                std::cmp::Ordering::Greater => mid * (1.0 - t) + right * t,
+            }
+        };
+
         let mut state = State {
             pos: jitter.poses[tick],
             vel: vel.elementwise_mul(Vec3::ONE + jitter.vels[tick]),
         }
-        .ticked(pitches[tick] * (1.0 + jitter.pitches[tick]));
+        .ticked(pitch * (1.0 + jitter.pitches[tick]));
 
         state.pos -= jitter.poses[tick];
         if UNDO_JITTER_VEL.load(atomic::Ordering::Relaxed) {
@@ -525,3 +577,25 @@ mod decay {
         pitches.copy_from_slice(&new_pitches);
     }
 }
+
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn test_lerp_between_pos() {
+//         let pitches = vec![10.0, 20.0, 30.0];
+//         let t = 0.1;
+//         let oracle = vec![11.0, 21.0, 30.0];
+//         let actual = PitchesUtil::lerp_between(&pitches, t).collect_vec();
+//         assert_eq!(oracle, actual);
+//     }
+
+//     #[test]
+//     fn test_lerp_between_neg() {
+//         let pitches = vec![10.0, 20.0, 30.0];
+//         let t = -0.1;
+//         let oracle = vec![10.0, 19.0, 29.0];
+//         let actual = PitchesUtil::lerp_between(&pitches, t).collect_vec();
+//         assert_eq!(oracle, actual);
+//     }
+// }
