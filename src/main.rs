@@ -1,6 +1,9 @@
 mod optimizer;
 mod sim;
 
+use itertools::Itertools;
+use rayon::prelude::*;
+
 use crate::optimizer::*;
 
 pub const TICKS_PER_SECOND: u8 = 20;
@@ -24,37 +27,16 @@ fn main() -> eframe::Result {
     // let ticks = 400; // like 18 delta y
     // let ticks = 500;
 
-    // let pitches = PitchesUtil::new_uniform(ticks, 0.0);
-    // let pitches = PitchesUtil::new_4040(ticks, 0.65);
-    // let pitches = PitchesUtil::new_40zero40(ticks, 0.65, 0.70);
-    // close to the optimal curve with four lines
-    // #[cfg(false)]
-    let mut pitches = {
-        let left_cut = 0.65;
-        let right_cut = 0.70;
-        let right_right_cut = 0.80;
-        let left = (num_ticks as f64 * left_cut) as usize;
-        let right = (num_ticks as f64 * right_cut) as usize;
-        let right_right = (num_ticks as f64 * right_right_cut) as usize;
+    let mut pitches = default_pitches(num_ticks);
 
-        // PitchesUtil::new_lerp(left_left, 0.0, 10.0)
-        //     .iter()
-        //     .chain(PitchesUtil::new_lerp(left - left_left, 10.0, 50.0).0.iter())
-        PitchesUtil::new_lerp(left, 10.0, 50.0)
-            .iter()
-            .chain(PitchesUtil::new_constant(right - left, 0.0).iter())
-            .chain(PitchesUtil::new_lerp(right_right - right, -85.0, -30.0).iter())
-            .chain(PitchesUtil::new_lerp(num_ticks - right_right, -30.0, -10.0).iter())
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-
-    // TODO: put this in the ui
     let mut init_vel = Vel3::ZERO;
-    // // the optimal steady state vel
-    // let init_vel = Vel3::new(0.0, 0.17, 0.2);
+    // the optimal steady state vel
+    // let mut init_vel = Vel3::new(0.0, 0.17, 0.2);
 
     let mut draw_without_jitter = false;
+    // disabling this should show overfitting
+    // TODO: check that happens
+    let mut resample_jitter_on_optimization_step = true;
 
     let mut jitter_params = JitterParams {
         init_vel_y_std: Some(0.1),
@@ -66,10 +48,12 @@ fn main() -> eframe::Result {
         pitches_std: Some(0.0),
     };
 
-    // this is just to plot against, it's not used in the optimizer
     let mut jitter = Jitter::new(&jitter_params, num_ticks);
 
     let mut learning_rate = 500.0;
+    // this has no effect if resample_jitter_on_optimization_step is disabled
+    let mut batch_size = 8;
+    let mut decay = 0.0;
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
 
@@ -78,219 +62,326 @@ fn main() -> eframe::Result {
         eframe::NativeOptions::default(),
         move |ui, _frame| {
             ui.request_repaint();
-            egui::Panel::left("side_panel").show_inside(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    // goodness
-                    ui.group(|ui| {
-                        egui::ComboBox::from_id_salt(egui::Id::new("energy or y"))
-                            .selected_text(match goodness_params.energy_or_y {
-                                EnergyOrY::Energy => "energy",
-                                EnergyOrY::Y => "y",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut goodness_params.energy_or_y,
-                                    EnergyOrY::Energy,
-                                    "energy",
-                                );
-                                ui.selectable_value(
-                                    &mut goodness_params.energy_or_y,
-                                    EnergyOrY::Y,
-                                    "y",
-                                );
+            egui::Panel::left("side_panel")
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // goodness
+                        egui::CollapsingHeader::new("goodness function")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                egui::ComboBox::from_id_salt(egui::Id::new("energy or y"))
+                                    .selected_text(match goodness_params.energy_or_y {
+                                        EnergyOrY::Energy => "energy",
+                                        EnergyOrY::Y => "y",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut goodness_params.energy_or_y,
+                                            EnergyOrY::Energy,
+                                            "energy",
+                                        );
+                                        ui.selectable_value(
+                                            &mut goodness_params.energy_or_y,
+                                            EnergyOrY::Y,
+                                            "y",
+                                        );
+                                    });
+
+                                ui.label("y/z blend:");
+                                ui.add(egui::Slider::new(
+                                    &mut goodness_params.y_z_blend,
+                                    0.0..=1.0,
+                                ));
                             });
 
-                        ui.add(egui::Slider::new(&mut goodness_params.y_z_blend, 0.0..=1.0));
-                    });
+                        // init_vel
+                        egui::CollapsingHeader::new("init vel")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                if ui.button("zero").clicked() {
+                                    init_vel = Vel3::ZERO;
+                                }
+                                if ui.button("steady state").clicked() {
+                                    init_vel = Vel3::new(0.0, 0.17, 0.2);
+                                }
+                                ui.label("init vel.y:");
+                                ui.add(vel_slider(&mut init_vel.y));
+                                ui.label("init vel.z:");
+                                ui.add(vel_slider(&mut init_vel.z));
+                            });
 
-                    // init_vel
-                    ui.group(|ui| {
-                        ui.label(format!("init vel.y: {:.06}", init_vel.y));
-                        ui.add(vel_slider(&mut init_vel.y));
-                        ui.label(format!("init vel.z: {:.06}", init_vel.z));
-                        ui.add(vel_slider(&mut init_vel.z));
-                    });
+                        // num_ticks
+                        egui::CollapsingHeader::new("num ticks")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                assert_eq!(num_ticks, pitches.len());
+                                assert_eq!(num_ticks, jitter.num_ticks());
 
-                    // num_ticks
-                    ui.group(|ui| {
-                        assert_eq!(num_ticks, pitches.len());
-                        assert_eq!(num_ticks, jitter.num_ticks());
+                                // increase / decrease num_ticks
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("num ticks: {}", num_ticks));
 
-                        // increase / decrease num_ticks
-                        ui.horizontal(|ui| {
-                            ui.label(format!("num ticks: {}", num_ticks));
+                                    let mul = if ui.ctx().input(|i| i.modifiers.shift) {
+                                        10
+                                    } else {
+                                        1
+                                    };
 
-                            let mul = if ui.ctx().input(|i| i.modifiers.shift) {
-                                10
-                            } else {
-                                1
-                            };
+                                    let mut changed = false;
+                                    if ui.button("-").on_hover_text("hold shift for 10x").clicked()
+                                    {
+                                        changed |= true;
+                                        num_ticks = num_ticks.saturating_sub(mul);
+                                    }
+                                    if ui.button("+").on_hover_text("hold shift for 10x").clicked()
+                                    {
+                                        changed |= true;
+                                        num_ticks += mul;
+                                    }
+                                    if changed {
+                                        pitches.resize(
+                                            num_ticks,
+                                            pitches.last().copied().unwrap_or(0.0),
+                                        );
+                                        jitter.resize(&jitter_params, num_ticks);
+                                    }
+                                });
+                            });
 
-                            let mut changed = false;
-                            if ui.button("-").on_hover_text("hold shift for 10x").clicked() {
-                                changed |= true;
-                                num_ticks = num_ticks.saturating_sub(mul);
-                            }
-                            if ui.button("+").on_hover_text("hold shift for 10x").clicked() {
-                                changed |= true;
-                                num_ticks += mul;
-                            }
-                            if changed {
-                                pitches.resize(num_ticks, pitches.last().copied().unwrap_or(0.0));
-                                jitter.resize(&jitter_params, num_ticks);
-                            }
-                        });
-                    });
+                        // pitches
+                        egui::CollapsingHeader::new("pitches stuff")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                if ui.button("duplicate").clicked() {
+                                    num_ticks *= 2;
+                                    pitches =
+                                        pitches.iter().chain(pitches.iter()).cloned().collect();
+                                    jitter.resize(&jitter_params, num_ticks);
+                                }
 
-                    // pitches
-                    ui.group(|ui| {
-                        ui.label("pitches stuff");
+                                if ui.button("default").clicked() {
+                                    pitches = default_pitches(num_ticks);
+                                }
 
-                        if ui.button("duplicate").clicked() {
-                            num_ticks *= 2;
-                            pitches = pitches.iter().chain(pitches.iter()).cloned().collect();
-                            jitter.resize(&jitter_params, num_ticks);
-                        }
+                                if ui.button("random uniform").clicked() {
+                                    pitches = PitchesUtil::new_rand_uniform(num_ticks);
+                                }
 
-                        if ui.button("random uniform").clicked() {
-                            pitches = PitchesUtil::new_rand_uniform(num_ticks);
-                        }
+                                if ui.button("random walk").clicked() {
+                                    pitches = PitchesUtil::new_rand_walk(num_ticks, 10.0);
+                                }
 
-                        if ui.button("random walk").clicked() {
-                            pitches = PitchesUtil::new_rand_walk(num_ticks, 10.0);
-                        }
+                                // if ui.button("print pitches").clicked() {
+                                //     println!("{:#?}", pitches);
+                                // }
+                                // if ui.button("print speed pitches").clicked() {
+                                //     for tick in (0..pitches.len()).step_by(5) {
+                                //         let state = Pitches(pitches[..tick].to_owned())
+                                //             .after_cycle(init_vel);
+                                //         let speed = state.vel.length();
+                                //         let pitch = pitches[tick];
+                                //         // println!("tick: {}, speed: {:.06}, pitch: {:.06}", tick, 20.0*speed, pitch);
+                                //         println!("{}, {:.06}, {:.06}", tick, 20.0 * speed, pitch);
+                                //     }
+                                // }
+                            });
 
-                        // if ui.button("print pitches").clicked() {
-                        //     println!("{:#?}", pitches);
-                        // }
-                        // if ui.button("print speed pitches").clicked() {
-                        //     for tick in (0..pitches.len()).step_by(5) {
-                        //         let state = Pitches(pitches[..tick].to_owned())
-                        //             .after_cycle(init_vel);
-                        //         let speed = state.vel.length();
-                        //         let pitch = pitches[tick];
-                        //         // println!("tick: {}, speed: {:.06}, pitch: {:.06}", tick, 20.0*speed, pitch);
-                        //         println!("{}, {:.06}, {:.06}", tick, 20.0 * speed, pitch);
-                        //     }
-                        // }
-                    });
+                        // jitter
+                        egui::CollapsingHeader::new("jitter stuff")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                /// returns whether it should be resampled
+                                fn f(ui: &mut egui::Ui, value: &mut Option<f64>, hi: f64) -> bool {
+                                    let mut v = value.unwrap_or(0.0);
+                                    let r = ui.add(
+                                        egui::Slider::new(&mut v, 0.0..=hi)
+                                            .clamping(egui::SliderClamping::Never),
+                                    );
+                                    if r.changed() {
+                                        *value = Some(v);
+                                    }
+                                    r.changed()
+                                }
 
-                    // jitter
-                    egui::CollapsingHeader::new("jitter stuff")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            /// returns whether it should be resampled
-                            fn f(ui: &mut egui::Ui, value: &mut Option<f64>, hi: f64) -> bool {
-                                let mut v = value.unwrap_or(0.0);
-                                let r = ui.add(
-                                    egui::Slider::new(&mut v, 0.0..=hi)
+                                ui.checkbox(&mut draw_without_jitter, "draw without jitter");
+
+                                {
+                                    let mut undo_jitter_vel =
+                                        UNDO_JITTER_VEL.load(std::sync::atomic::Ordering::Relaxed);
+                                    ui.checkbox(&mut undo_jitter_vel, "undo jitter vel");
+                                    UNDO_JITTER_VEL.store(
+                                        undo_jitter_vel,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                }
+
+                                ui.checkbox(
+                                    &mut resample_jitter_on_optimization_step,
+                                    "resample jitter on optimization step",
+                                );
+
+                                if ui.button("resample all").clicked() {
+                                    jitter.resample_all(&jitter_params);
+                                }
+
+                                ui.label("init_vel_y std:");
+                                if f(ui, &mut jitter_params.init_vel_y_std, 0.2) {
+                                    jitter.resample_init_vel_y(jitter_params.init_vel_y_std);
+                                }
+                                ui.label("init_vel_z std:");
+                                if f(ui, &mut jitter_params.init_vel_z_std, 0.2) {
+                                    jitter.resample_init_vel_z(jitter_params.init_vel_z_std);
+                                }
+                                ui.label("poses_y std:");
+                                if f(ui, &mut jitter_params.poses_y_std, 1.0) {
+                                    jitter.resample_poses_y(jitter_params.poses_y_std);
+                                }
+                                ui.label("poses_z std:");
+                                if f(ui, &mut jitter_params.poses_z_std, 1.0) {
+                                    jitter.resample_poses_z(jitter_params.poses_z_std);
+                                }
+                                ui.label("vels_y std:");
+                                if f(ui, &mut jitter_params.vels_y_std, 0.05) {
+                                    jitter.resample_vels_y(jitter_params.vels_y_std);
+                                }
+                                ui.label("vels_z std:");
+                                if f(ui, &mut jitter_params.vels_z_std, 0.05) {
+                                    jitter.resample_vels_z(jitter_params.vels_z_std);
+                                }
+                                ui.label("pitches std:");
+                                if f(ui, &mut jitter_params.pitches_std, 1.0) {
+                                    jitter.resample_pitches(jitter_params.pitches_std);
+                                }
+                            });
+
+                        // optimizer
+                        egui::CollapsingHeader::new("optimizer stuff")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                ui.label("learning rate:");
+                                ui.add(
+                                    egui::Slider::new(&mut learning_rate, 10.0..=10000.0)
+                                        .logarithmic(true)
                                         .clamping(egui::SliderClamping::Never),
                                 );
-                                if r.changed() {
-                                    *value = Some(v);
+
+                                ui.label("batch size:");
+                                ui.add(
+                                    egui::Slider::new(&mut batch_size, 1..=20)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
+                                ui.label("decay:");
+                                ui.add(
+                                    egui::Slider::new(&mut decay, 0.0..=0.01)
+                                        .logarithmic(true)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
+                                let goodness = goodness_params.build();
+                                let mut do_optimization_step = || {
+                                    let grad = if resample_jitter_on_optimization_step {
+                                        // one of the jitters must be the one shown in the ui
+                                        // so that with a batch size of 1, you see exactly what's happening.
+                                        // TODO: really all of these should be shown on the ui. like the average gradient of them.
+                                        let jitters =
+                                            std::iter::once(jitter.clone())
+                                                .chain((1..batch_size).map(|_| {
+                                                    Jitter::new(&jitter_params, num_ticks)
+                                                }))
+                                                .collect_vec();
+                                        jitter.resample_all(&jitter_params);
+
+                                        let grads = jitters
+                                            .into_par_iter()
+                                            .map(|jitter| {
+                                                let mut pitches = pitches.clone();
+                                                get_grad(&goodness, init_vel, &mut pitches, &jitter)
+                                                    .collect_vec()
+                                            })
+                                            .collect::<Vec<_>>();
+
+                                        grads
+                                            .into_iter()
+                                            .reduce(|a, b| {
+                                                a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
+                                            })
+                                            .unwrap()
+                                            .into_iter()
+                                            .map(|g| g / batch_size as f32)
+                                            .collect_vec()
+                                    } else {
+                                        get_grad(&goodness, init_vel, &mut pitches, &jitter)
+                                            .collect_vec()
+                                    };
+
+                                    // TODO: batched gradients
+
+                                    apply_grad(&mut pitches, &grad, learning_rate);
+
+                                    // let before = pitches.clone();
+                                    apply_decay(&mut pitches, 1.0 - decay);
+                                    // dbg!(before.iter().zip(&pitches).map(|(b, p)| (b, p, b - p)).collect_vec());
+                                    // if decay == 0.0 {
+                                    //     for (b, p) in before.iter().zip(&pitches) {
+                                    //         assert!(
+                                    //             (b - p).abs() < 1e-3,
+                                    //             "before: {}, after: {}, diff: {}",
+                                    //             b,
+                                    //             p,
+                                    //             b - p
+                                    //         );
+                                    //     }
+                                    // }
+                                };
+
+                                // optimization on / off
+                                if ui.button("optimization step").clicked() {
+                                    do_optimization_step();
                                 }
-                                r.changed()
-                            }
+                                ui.checkbox(&mut optimizing, "optimizing");
+                                ui.label("steps per frame:");
+                                ui.add(egui::Slider::new(
+                                    &mut optimization_steps_per_frame,
+                                    0..=100,
+                                ));
 
-                            ui.checkbox(&mut draw_without_jitter, "draw without jitter");
+                                // do the optimization steps
+                                if optimizing {
+                                    for _ in 0..optimization_steps_per_frame {
+                                        do_optimization_step();
+                                    }
+                                }
+                            });
 
+                        // state before and after
+                        ui.group(|ui| {
+                            ui.label(format!("before vel.y: {:.06}", init_vel.y));
+                            ui.label(format!("before vel.z: {:.06}", init_vel.z));
                             {
-                                let mut undo_jitter_vel =
-                                    UNDO_JITTER_VEL.load(std::sync::atomic::Ordering::Relaxed);
-                                ui.checkbox(&mut undo_jitter_vel, "undo jitter vel");
-                                UNDO_JITTER_VEL
-                                    .store(undo_jitter_vel, std::sync::atomic::Ordering::Relaxed);
-                            }
-
-                            if ui.button("resample all").clicked() {
-                                jitter.resample_all(&jitter_params);
-                            }
-
-                            ui.label("init_vel_y std:");
-                            if f(ui, &mut jitter_params.init_vel_y_std, 1.0) {
-                                jitter.resample_init_vel_y(jitter_params.init_vel_y_std);
-                            }
-                            ui.label("init_vel_z std:");
-                            if f(ui, &mut jitter_params.init_vel_z_std, 1.0) {
-                                jitter.resample_init_vel_z(jitter_params.init_vel_z_std);
-                            }
-                            ui.label("poses_y std:");
-                            if f(ui, &mut jitter_params.poses_y_std, 1.0) {
-                                jitter.resample_poses_y(jitter_params.poses_y_std);
-                            }
-                            ui.label("poses_z std:");
-                            if f(ui, &mut jitter_params.poses_z_std, 1.0) {
-                                jitter.resample_poses_z(jitter_params.poses_z_std);
-                            }
-                            ui.label("vels_y std:");
-                            if f(ui, &mut jitter_params.vels_y_std, 1.0) {
-                                jitter.resample_vels_y(jitter_params.vels_y_std);
-                            }
-                            ui.label("vels_z std:");
-                            if f(ui, &mut jitter_params.vels_z_std, 1.0) {
-                                jitter.resample_vels_z(jitter_params.vels_z_std);
-                            }
-                            ui.label("pitches std:");
-                            if f(ui, &mut jitter_params.pitches_std, 1.0) {
-                                jitter.resample_pitches(jitter_params.pitches_std);
+                                let after = forward(init_vel, &pitches, &jitter).last().unwrap();
+                                ui.label("with jitter:");
+                                ui.label(format!("after vel.y: {:.06}", after.vel.y));
+                                ui.label(format!("after vel.z: {:.06}", after.vel.z));
+                                ui.strong(format!("after pos.y: {:.06}", after.pos.y));
+                                ui.label(format!("after pos.z: {:.06}", after.pos.z));
+                                {}
+                                let after = forward(init_vel, &pitches, &Jitter::zero(num_ticks))
+                                    .last()
+                                    .unwrap();
+                                ui.label("without jitter:");
+                                ui.label(format!("after vel.y: {:.06}", after.vel.y));
+                                ui.label(format!("after vel.z: {:.06}", after.vel.z));
+                                ui.strong(format!("after pos.y: {:.06}", after.pos.y));
+                                ui.label(format!("after pos.z: {:.06}", after.pos.z));
                             }
                         });
-
-                    // optimizer
-                    ui.group(|ui| {
-                        ui.label("learning rate:");
-                        ui.add(
-                            egui::Slider::new(&mut learning_rate, 10.0..=10000.0).logarithmic(true),
-                        );
-
-                        // optimization on / off
-                        let mut do_optimization_step = || {
-                            // TODO: avoid this allocation
-                            let jitter = Jitter::new(&jitter_params, num_ticks);
-                            gradient_descent_step(
-                                goodness_params.build(),
-                                init_vel,
-                                &mut pitches,
-                                &jitter,
-                                learning_rate,
-                            );
-                        };
-
-                        // optimization on / off
-                        ui.label(" tep:");
-                        if ui.button("optimization step").clicked() {
-                            do_optimization_step();
-                        }
-                        ui.checkbox(&mut optimizing, "optimizing");
-                        ui.label("steps per frame:");
-                        ui.add(egui::Slider::new(
-                            &mut optimization_steps_per_frame,
-                            0..=100,
-                        ));
-
-                        // do the optimization steps
-                        if optimizing {
-                            for _ in 0..optimization_steps_per_frame {
-                                do_optimization_step();
-                            }
-                        }
-                    });
-
-                    // state before and after
-                    ui.group(|ui| {
-                        ui.label(format!("before vel.y: {:.06}", init_vel.y));
-                        ui.label(format!("before vel.z: {:.06}", init_vel.z));
-                        let after = forward(init_vel, &pitches, &jitter).last().unwrap();
-                        ui.label(format!("after vel.y: {:.06}", after.vel.y));
-                        ui.label(format!("after vel.z: {:.06}", after.vel.z));
-                        ui.strong(format!("after pos.y: {:.06}", after.pos.y));
-                        ui.label(format!("after pos.z: {:.06}", after.pos.z));
                     });
                 });
-            });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                let rect = ui.available_rect_before_wrap();
+                let rect = ui.max_rect();
 
                 // horizontal center line
                 ui.painter().line_segment(
@@ -315,10 +406,19 @@ fn main() -> eframe::Result {
                     }
                 }
 
-                show_optimizer(ui, &goodness_params, init_vel, &pitches, &jitter, 4.0);
+                show_optimizer(
+                    ui,
+                    &rect,
+                    &goodness_params,
+                    init_vel,
+                    &pitches,
+                    &jitter,
+                    4.0,
+                );
                 if draw_without_jitter {
                     show_optimizer(
                         ui,
+                        &rect,
                         &goodness_params,
                         init_vel,
                         &pitches,
@@ -333,14 +433,13 @@ fn main() -> eframe::Result {
 
 fn show_optimizer(
     ui: &mut egui::Ui,
+    rect: &egui::Rect,
     goodness_params: &GoodnessParams,
     init_vel: Vel3,
     pitches: &[Pitch],
     jitter: &Jitter,
     rad: f32,
 ) {
-    let rect = ui.available_rect_before_wrap();
-
     let value_to_y = |value: f32, approx_max_value: f32| {
         rect.center().y - (value / approx_max_value) * (rect.height() / 2.0)
     };
@@ -379,9 +478,11 @@ fn show_optimizer(
                 jitter,
                 tick,
             );
-            let approx_max_grad = 0.01;
-            let grad = grad.clamp(-approx_max_grad, approx_max_grad);
-            let y = value_to_y(-grad, approx_max_grad);
+            let approx_max_grad = 0.001;
+            let y = value_to_y(
+                -grad.clamp(-approx_max_grad, approx_max_grad),
+                approx_max_grad,
+            );
             dot_at(x, y, egui::Color32::from_rgb(128, 0, 128))
                 .on_hover_text(format!("tick: {}, pitch gradient: {}", tick, grad));
         }
@@ -414,7 +515,7 @@ fn show_optimizer(
                 .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
         }
 
-        let approx_max_energy = 4.0;
+        let approx_max_energy = 7.0;
         // kinetic energy (yellow)
         {
             let ke = state.kinetic_energy();
@@ -521,6 +622,30 @@ pub fn pos_slider(value: &mut f64) -> egui::Slider<'_> {
 
 pub fn vel_slider(value: &mut f64) -> egui::Slider<'_> {
     egui::Slider::new(value, -5.0..=5.0).clamping(egui::SliderClamping::Never)
+}
+
+fn default_pitches(num_ticks: usize) -> Vec<Pitch> {
+    // let pitches = PitchesUtil::new_uniform(ticks, 0.0);
+    // let pitches = PitchesUtil::new_4040(ticks, 0.65);
+    // let pitches = PitchesUtil::new_40zero40(ticks, 0.65, 0.70);
+    // close to the optimal curve with four lines
+    let left_cut = 0.65;
+    let right_cut = 0.70;
+    let right_right_cut = 0.80;
+    let left = (num_ticks as f64 * left_cut) as usize;
+    let right = (num_ticks as f64 * right_cut) as usize;
+    let right_right = (num_ticks as f64 * right_right_cut) as usize;
+
+    // PitchesUtil::new_lerp(left_left, 0.0, 10.0)
+    //     .iter()
+    //     .chain(PitchesUtil::new_lerp(left - left_left, 10.0, 50.0).0.iter())
+    PitchesUtil::new_lerp(left, 10.0, 50.0)
+        .iter()
+        .chain(PitchesUtil::new_constant(right - left, 0.0).iter())
+        .chain(PitchesUtil::new_lerp(right_right - right, -85.0, -30.0).iter())
+        .chain(PitchesUtil::new_lerp(num_ticks - right_right, -30.0, -10.0).iter())
+        .cloned()
+        .collect::<Vec<_>>()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

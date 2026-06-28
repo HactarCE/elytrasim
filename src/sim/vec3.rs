@@ -9,18 +9,38 @@ pub struct Vec3 {
 
 impl Vec3 {
     pub const ZERO: Self = Self::new(0.0, 0.0, 0.0);
+    pub const ONE: Self = Self::new(1.0, 1.0, 1.0);
 
     pub const fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
+
     pub fn horizontal_distance(self) -> f64 {
         (self.x * self.x + self.z * self.z).sqrt()
     }
+
     pub fn length_sq(self) -> f64 {
         self.x * self.x + self.y * self.y + self.z * self.z
     }
+
     pub fn length(self) -> f64 {
         self.length_sq().sqrt()
+    }
+
+    pub const fn elementwise_mul(self, rhs: Self) -> Self {
+        Self {
+            x: self.x * rhs.x,
+            y: self.y * rhs.y,
+            z: self.z * rhs.z,
+        }
+    }
+
+    pub const fn elementwise_div(self, rhs: Self) -> Self {
+        Self {
+            x: self.x / rhs.x,
+            y: self.y / rhs.y,
+            z: self.z / rhs.z,
+        }
     }
 }
 
@@ -58,18 +78,18 @@ impl Sub for Vec3 {
     }
 }
 
-impl MulAssign for Vec3 {
-    fn mul_assign(&mut self, rhs: Self) {
-        self.x *= rhs.x;
-        self.y *= rhs.y;
-        self.z *= rhs.z;
+impl MulAssign<f64> for Vec3 {
+    fn mul_assign(&mut self, rhs: f64) {
+        self.x *= rhs;
+        self.y *= rhs;
+        self.z *= rhs;
     }
 }
 
-impl Mul for Vec3 {
+impl Mul<f64> for Vec3 {
     type Output = Vec3;
 
-    fn mul(mut self, rhs: Self) -> Self::Output {
+    fn mul(mut self, rhs: f64) -> Self::Output {
         self *= rhs;
         self
     }

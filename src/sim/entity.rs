@@ -55,5 +55,5 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
         );
     }
 
-    vel * Vec3::new(0.99_f32 as f64, 0.98_f32 as f64, 0.99_f32 as f64)
+    vel.elementwise_mul(Vec3::new(0.99_f32 as f64, 0.98_f32 as f64, 0.99_f32 as f64))
 }
