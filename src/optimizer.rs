@@ -16,7 +16,7 @@ pub struct PitchUtil;
 
 impl PitchUtil {
     fn try_from(pitch: f32) -> Option<Pitch> {
-        if (-90.0..=90.0).contains(&pitch) {
+        if pitch == Self::clamped(pitch) {
             Some(pitch)
         } else {
             None
@@ -24,7 +24,9 @@ impl PitchUtil {
     }
 
     fn clamped(pitch: Pitch) -> Pitch {
-        pitch.clamp(-90.0, 90.0)
+        // the behavior of .travel() becomes weird at the endpoints
+        const EPSILON: Pitch = 1e-4;
+        pitch.clamp(-90.0 + EPSILON, 90.0 - EPSILON)
     }
 }
 
@@ -166,7 +168,7 @@ pub struct JitterParams {
 
 #[derive(Debug, Clone)]
 pub struct Jitter {
-    time: f64,
+    pub time: f64,
     init_vel: Vel3,
     vels: Vec<Vel3>,
     pitches: Vec<Pitch>,
@@ -241,6 +243,7 @@ impl Jitter {
         assert!(time_rad >= 0.0);
         if time_rad > 0.0 {
             self.time = rand::rng().random_range(-time_rad..time_rad);
+            // self.time = self.time.abs();
         } else {
             self.time = 0.0;
         }
@@ -285,7 +288,11 @@ impl Jitter {
 
 pub static UNDO_JITTER_VEL: AtomicBool = AtomicBool::new(true);
 
-pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Iterator<Item = State> {
+pub fn forward(
+    init_vel: Vel3,
+    pitches: &[Pitch],
+    jitter: &Jitter,
+) -> impl Iterator<Item = (Pitch, State)> {
     assert_eq!(pitches.len(), jitter.num_ticks());
 
     let mut pos_accumulator = Vec3::ZERO;
@@ -301,18 +308,32 @@ pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Itera
             let mid = pitches[tick];
             let right = pitches[(tick + 1).min(pitches.len() - 1)];
             let t = jitter.time as f32;
+
+            let mid_left = mid * (1.0 + t) + (left * -t);
+            let mid_right = mid * (1.0 - t) + (right * t);
+
             match t.total_cmp(&0.0) {
-                std::cmp::Ordering::Less => mid * (1.0 + t) + left * -t,
-                std::cmp::Ordering::Equal => mid,
-                std::cmp::Ordering::Greater => mid * (1.0 - t) + right * t,
+                std::cmp::Ordering::Less => {
+                    assert!((left.min(mid) - 1e-5..=left.max(mid) + 1e-5).contains(&mid_left));
+                    mid_left
+                }
+                std::cmp::Ordering::Equal => {
+                    assert!((mid - mid_left).abs() < 1e-5);
+                    assert!((mid - mid_right).abs() < 1e-5);
+                    mid
+                }
+                std::cmp::Ordering::Greater => {
+                    assert!((mid.min(right) - 1e-5..=mid.max(right) + 1e-5).contains(&mid_right));
+                    mid_right
+                }
             }
-        };
+        } + jitter.pitches[tick];
 
         let mut state = State {
             pos: Vec3::ZERO,
             vel: vel.elementwise_mul(Vec3::ONE + jitter.vels[tick]),
         }
-        .ticked(pitch * (1.0 + jitter.pitches[tick]));
+        .ticked(pitch);
 
         if UNDO_JITTER_VEL.load(atomic::Ordering::Relaxed) {
             state.vel = state.vel.elementwise_div(Vec3::ONE + jitter.vels[tick]);
@@ -321,11 +342,18 @@ pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Itera
         pos_accumulator += state.pos;
         vel = state.vel;
 
-        State {
-            pos: pos_accumulator,
-            vel,
-        }
+        (
+            pitch,
+            State {
+                pos: pos_accumulator,
+                vel,
+            },
+        )
     })
+}
+
+pub fn forward_last(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> State {
+    forward(init_vel, pitches, jitter).last().unwrap().1
 }
 
 // pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Iterator<Item = State> {
@@ -373,19 +401,19 @@ pub fn grad_at_tick(
 
     let right_goodness = PitchUtil::try_from(cur_pitch + EPSILON).map(|right_pitch| {
         pitches[tick] = right_pitch;
-        let after = forward(init_vel, pitches, jitter).last().unwrap();
+        let after = forward_last(init_vel, pitches, jitter);
         pitches[tick] = cur_pitch;
         goodness(after)
     });
 
     let left_goodness = PitchUtil::try_from(cur_pitch - EPSILON).map(|left_pitch| {
         pitches[tick] = left_pitch;
-        let after = forward(init_vel, pitches, jitter).last().unwrap();
+        let after = forward_last(init_vel, pitches, jitter);
         pitches[tick] = cur_pitch;
         goodness(after)
     });
 
-    let cur_goodness = || goodness(forward(init_vel, pitches, jitter).last().unwrap());
+    let cur_goodness = || goodness(forward_last(init_vel, pitches, jitter));
 
     (match (left_goodness, right_goodness) {
         // central difference if we can
@@ -462,14 +490,14 @@ mod deriv_optim {
             .zip(dir)
             .map(|(pitch, dir)| PitchUtil::clamped(*pitch + EPSILON * *dir))
             .collect_vec();
-        let right_goodness = goodness(forward(init_vel, &right_pitches, jitter).last().unwrap());
+        let right_goodness = goodness(forward_last(init_vel, &right_pitches, jitter));
 
         let left_pitches = pitches
             .iter()
             .zip(dir)
             .map(|(pitch, dir)| PitchUtil::clamped(*pitch - EPSILON * *dir))
             .collect_vec();
-        let left_goodness = goodness(forward(init_vel, &left_pitches, jitter).last().unwrap());
+        let left_goodness = goodness(forward_last(init_vel, &left_pitches, jitter));
 
         let diff = right_pitches
             .iter()

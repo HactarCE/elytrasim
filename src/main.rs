@@ -29,12 +29,14 @@ fn main() -> eframe::Result {
     // let ticks = 400; // like 18 delta y
     // let ticks = 500;
 
+    let mut pitch_idx = 0;
     let mut pitches = default_pitches(num_ticks);
 
     let mut init_vel = Vel3::ZERO;
     // the optimal steady state vel
     // let mut init_vel = Vel3::new(0.0, 0.17, 0.2);
 
+    let mut draw_with_jitter = true;
     let mut draw_without_jitter = false;
     // disabling this should show overfitting
     // TODO: check that happens
@@ -44,8 +46,10 @@ fn main() -> eframe::Result {
         time_rad: 0.2,
         init_vel_y_std: 0.1,
         init_vel_z_std: 0.1,
-        vels_y_std: 0.01,
-        vels_z_std: 0.01,
+        // vels_y_std: 0.01,
+        // vels_z_std: 0.01,
+        vels_y_std: 0.0,
+        vels_z_std: 0.0,
         pitches_std: 0.0,
     };
 
@@ -181,6 +185,12 @@ fn main() -> eframe::Result {
                                     pitches = PitchesUtil::new_rand_walk(num_ticks, 10.0);
                                 }
 
+                                ui.add(egui::Slider::new(
+                                    &mut pitch_idx,
+                                    0..=num_ticks.saturating_sub(1),
+                                ));
+                                ui.add(egui::Slider::new(&mut pitches[pitch_idx], -90.0..=90.0));
+
                                 // if ui.button("print pitches").clicked() {
                                 //     println!("{:#?}", pitches);
                                 // }
@@ -209,6 +219,7 @@ fn main() -> eframe::Result {
                                     r.changed()
                                 }
 
+                                ui.checkbox(&mut draw_with_jitter, "draw with jitter");
                                 ui.checkbox(&mut draw_without_jitter, "draw without jitter");
 
                                 {
@@ -229,6 +240,15 @@ fn main() -> eframe::Result {
                                 if ui.button("resample all").clicked() {
                                     jitter.resample_all(&jitter_params);
                                 }
+
+                                ui.label("time:");
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut jitter.time,
+                                        -jitter_params.time_rad..=jitter_params.time_rad,
+                                    )
+                                    .clamping(egui::SliderClamping::Never),
+                                );
 
                                 ui.label("time rad:");
                                 if f(ui, &mut jitter_params.time_rad, 0.5) {
@@ -404,11 +424,11 @@ fn main() -> eframe::Result {
                                         apply_grad(&mut pitches, &grad, learning_rate);
                                     }
 
-                                    after_states.push(
-                                        forward(init_vel, &pitches, &Jitter::zero(num_ticks))
-                                            .last()
-                                            .unwrap(),
-                                    );
+                                    after_states.push(forward_last(
+                                        init_vel,
+                                        &pitches,
+                                        &Jitter::zero(num_ticks),
+                                    ));
                                 };
 
                                 // optimization on / off
@@ -455,16 +475,15 @@ fn main() -> eframe::Result {
                             ui.label(format!("before vel.y: {:.06}", init_vel.y));
                             ui.label(format!("before vel.z: {:.06}", init_vel.z));
                             {
-                                let after = forward(init_vel, &pitches, &jitter).last().unwrap();
+                                let after = forward_last(init_vel, &pitches, &jitter);
                                 ui.label("with jitter:");
                                 ui.label(format!("after vel.y: {:.06}", after.vel.y));
                                 ui.label(format!("after vel.z: {:.06}", after.vel.z));
                                 ui.strong(format!("after pos.y: {:.06}", after.pos.y));
                                 ui.label(format!("after pos.z: {:.06}", after.pos.z));
                                 {}
-                                let after = forward(init_vel, &pitches, &Jitter::zero(num_ticks))
-                                    .last()
-                                    .unwrap();
+                                let after =
+                                    forward_last(init_vel, &pitches, &Jitter::zero(num_ticks));
                                 ui.label("without jitter:");
                                 ui.label(format!("after vel.y: {:.06}", after.vel.y));
                                 ui.label(format!("after vel.z: {:.06}", after.vel.z));
@@ -501,15 +520,17 @@ fn main() -> eframe::Result {
                     }
                 }
 
-                show_optimizer(
-                    ui,
-                    &rect,
-                    &goodness_params,
-                    init_vel,
-                    &pitches,
-                    &jitter,
-                    4.0,
-                );
+                if draw_with_jitter {
+                    show_optimizer(
+                        ui,
+                        &rect,
+                        &goodness_params,
+                        init_vel,
+                        &pitches,
+                        &jitter,
+                        4.0,
+                    );
+                }
                 if draw_without_jitter {
                     show_optimizer(
                         ui,
@@ -631,15 +652,12 @@ fn show_optimizer(
 
     let mut dot_at = |x, y: f32, color: egui::Color32| dot_at(ui, x, y, rad, color);
 
-    for (tick, (state, pitch)) in forward(init_vel, pitches, jitter)
-        .zip(pitches.iter())
-        .enumerate()
-    {
+    for (tick, (pitch, state)) in forward(init_vel, pitches, jitter).enumerate() {
         let x = rect.left() + (tick as f32 / pitches.len() as f32) * rect.width();
 
         // pitch (pink)
         {
-            let y = value_to_y(-*pitch, 90.0);
+            let y = value_to_y(-pitch, 90.0);
             dot_at(x, y, egui::Color32::from_rgb(252, 3, 198))
                 .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
         }
