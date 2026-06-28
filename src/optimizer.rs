@@ -272,27 +272,13 @@ impl Jitter {
     fn sample(std: Option<f64>) -> impl Iterator<Item = f64> {
         match std {
             Some(std) => {
-                let dist = rand_distr::Normal::new(0.0, std).unwrap();
-                Box::new(rand::rng().sample_iter(dist)) as Box<dyn Iterator<Item = f64>>
+                let distr = rand_distr::Normal::new(0.0, std).unwrap();
+                Box::new(rand::rng().sample_iter(distr)) as Box<dyn Iterator<Item = f64>>
             }
             None => Box::new(std::iter::repeat(0.0)) as Box<dyn Iterator<Item = f64>>,
         }
     }
 }
-
-// /// the state at each tick *after* applying the pitches.
-// /// so `init_vel` isn't `ret[0].vel`.
-// /// we have `ret.len() == self.0.len()`.
-// pub fn cycle(init_vel: Vel3, pitches: &[Pitch]) -> impl Iterator<Item = State> {
-//     let mut cur = State {
-//         pos: Pos3::ZERO,
-//         vel: init_vel,
-//     };
-//     pitches.iter().copied().map(move |pitch| {
-//         cur = cur.ticked(pitch);
-//         cur.clone()
-//     })
-// }
 
 pub static UNDO_JITTER_VEL: AtomicBool = AtomicBool::new(true);
 
@@ -416,45 +402,126 @@ pub fn apply_grad(pitches: &mut [Pitch], grads: &[DGDP], learning_rate: f32) {
     }
 }
 
-// /// decay the pitch deltas
-// pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
-//     let deltas = pitches
-//         .windows(2)
-//         .map(|window| window[1] - window[0])
-//         .collect::<Vec<_>>();
-//     let decayed = deltas.iter().map(|delta| delta * decay).collect::<Vec<_>>();
-//     for i in 1..pitches.len() {
-//         pitches[i] = PitchUtil::clamped(pitches[i - 1] + decayed[i - 1]);
-//     }
-// }
+pub use deriv_optim::*;
+mod deriv_optim {
+    use super::*;
 
-/// ret has len `pitches.len() - 1`
-fn delta(pitches: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
-    pitches.tuple_windows().map(|(a, b)| b - a)
+    // problem where you need two pitches to move together
+    // try picking a random direction in pitch space and doing a gradient step along that direction
+
+    // /// random on unit sphere
+    // pub fn rand_pitches_dir(num_ticks: usize) -> Vec<Pitch> {
+    //     let mut ret = rand::rng()
+    //         .sample_iter(rand_distr::StandardNormal)
+    //         .take(num_ticks)
+    //         .collect_vec();
+    //     let s = ret.iter().map(|x| x * x).sum::<f32>().sqrt();
+    //     for x in &mut ret {
+    //         *x /= s;
+    //     }
+    //     ret
+    // }
+
+    /// random pure direction
+    pub fn rand_pitches_dir(num_ticks: usize) -> Vec<Pitch> {
+        let tick = rand::rng().random_range(0..num_ticks);
+        let mut ret = vec![0.0; num_ticks];
+        ret[tick] = 1.0;
+        ret
+    }
+
+    pub fn deriv_along_pitches_dir(
+        goodness: impl Fn(State) -> Goodness,
+        init_vel: Vel3,
+        pitches: &mut [Pitch],
+        jitter: &Jitter,
+        dir: &[Pitch],
+    ) -> DGDP {
+        const EPSILON: f32 = 0.1;
+
+        let right_pitches = pitches
+            .iter()
+            .zip(dir)
+            .map(|(pitch, dir)| PitchUtil::clamped(*pitch + EPSILON * *dir))
+            .collect_vec();
+        let right_goodness = goodness(forward(init_vel, &right_pitches, jitter).last().unwrap());
+
+        let left_pitches = pitches
+            .iter()
+            .zip(dir)
+            .map(|(pitch, dir)| PitchUtil::clamped(*pitch - EPSILON * *dir))
+            .collect_vec();
+        let left_goodness = goodness(forward(init_vel, &left_pitches, jitter).last().unwrap());
+
+        let diff = right_pitches
+            .iter()
+            .zip(left_pitches.iter())
+            .map(|(r, l)| r - l)
+            .collect_vec();
+        let diff_len = diff.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        // this probably isn't the most correct way to do this
+        ((right_goodness - left_goodness) / diff_len as Goodness) as DGDP
+    }
+
+    pub fn deriv_step_along_pitches_dir(
+        pitches: &mut [Pitch],
+        dir: &[Pitch],
+        deriv: DGDP,
+        learning_rate: f32,
+    ) {
+        assert_eq!(pitches.len(), dir.len());
+        for (pitch, dir) in pitches.iter_mut().zip(dir) {
+            *pitch += (learning_rate * deriv * *dir).clamp(-10.0, 10.0);
+            *pitch = PitchUtil::clamped(*pitch);
+        }
+    }
 }
 
-fn prefix_sum(first: f32, it: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
-    std::iter::once(first).chain(
-        it.scan(0.0, |acc, delta| {
-            *acc += delta;
-            Some(*acc)
-        })
-        .map(move |val| first + val),
-    )
-}
+pub use decay::*;
+mod decay {
+    use super::*;
 
-/// decay the pitch delta deltas
-// TODO: try decaying the distance from the left and right neighbors
-// rather than just the left neighbor.
-// bc we kinda want the pitches to form straight lines.
-pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
-    let deltas = delta(pitches.iter().copied()).collect_vec();
-    let delta_deltas = delta(deltas.iter().copied()).collect_vec();
-    assert_eq!(delta_deltas.len() + 2, pitches.len());
-    let decayed = delta_deltas.iter().map(|delta| delta * decay).collect_vec();
-    let new_deltas = prefix_sum(deltas[0], decayed.into_iter());
-    let new_pitches = prefix_sum(pitches[0], new_deltas)
-        .map(PitchUtil::clamped)
-        .collect_vec();
-    pitches.copy_from_slice(&new_pitches);
+    // /// decay the pitch deltas
+    // pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
+    //     let deltas = pitches
+    //         .windows(2)
+    //         .map(|window| window[1] - window[0])
+    //         .collect::<Vec<_>>();
+    //     let decayed = deltas.iter().map(|delta| delta * decay).collect::<Vec<_>>();
+    //     for i in 1..pitches.len() {
+    //         pitches[i] = PitchUtil::clamped(pitches[i - 1] + decayed[i - 1]);
+    //     }
+    // }
+
+    /// ret has len `pitches.len() - 1`
+    fn delta(pitches: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
+        pitches.tuple_windows().map(|(a, b)| b - a)
+    }
+
+    fn prefix_sum(first: f32, it: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
+        std::iter::once(first).chain(
+            it.scan(0.0, |acc, delta| {
+                *acc += delta;
+                Some(*acc)
+            })
+            .map(move |val| first + val),
+        )
+    }
+
+    /// decay the pitch delta deltas
+    // TODO: try decaying the distance from the left and right neighbors
+    // rather than just the left neighbor.
+    // bc we kinda want the pitches to form straight lines.
+    pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
+        let deltas = delta(pitches.iter().copied()).collect_vec();
+        let delta_deltas = delta(deltas.iter().copied()).collect_vec();
+        assert_eq!(delta_deltas.len() + 2, pitches.len());
+        let decayed = delta_deltas.iter().map(|delta| delta * decay).collect_vec();
+        let new_deltas = prefix_sum(deltas[0], decayed.into_iter());
+        let new_pitches = prefix_sum(pitches[0], new_deltas)
+            .map(PitchUtil::clamped)
+            .collect_vec();
+        pitches.copy_from_slice(&new_pitches);
+    }
 }

@@ -281,6 +281,12 @@ fn main() -> eframe::Result {
                                         .clamping(egui::SliderClamping::Never),
                                 );
 
+                                ui.label("steps per frame:");
+                                ui.add(
+                                    egui::Slider::new(&mut optimization_steps_per_frame, 0..=100)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
                                 ui.label("decay:");
                                 ui.add(
                                     egui::Slider::new(&mut decay, 0.0..=0.01)
@@ -305,44 +311,100 @@ fn main() -> eframe::Result {
                                     //     }
                                     // }
 
-                                    let grad = if resample_jitter_on_optimization_step {
-                                        // one of the jitters must be the one shown in the ui
-                                        // so that with a batch size of 1, you see exactly what's happening.
-                                        // TODO: really all of these should be shown on the ui. like the average gradient of them.
-                                        let jitters =
-                                            std::iter::once(jitter.clone())
+                                    // pick a random direction in pitch space and do a derivative step along that direction
+                                    {
+                                        let dir = rand_pitches_dir(num_ticks);
+                                        let deriv = if resample_jitter_on_optimization_step {
+                                            // one of the jitters must be the one shown in the ui
+                                            // so that with a batch size of 1, you see exactly what's happening.
+                                            // TODO: really all of these should be shown on the ui. like the average gradient of them.
+                                            let jitters = std::iter::once(jitter.clone())
                                                 .chain((1..batch_size).map(|_| {
                                                     Jitter::new(&jitter_params, num_ticks)
                                                 }))
                                                 .collect_vec();
-                                        jitter.resample_all(&jitter_params);
+                                            jitter.resample_all(&jitter_params);
 
-                                        let grads = jitters
-                                            .into_par_iter()
-                                            .map(|jitter| {
-                                                let mut pitches = pitches.clone();
-                                                get_grad(&goodness, init_vel, &mut pitches, &jitter)
+                                            let derivs = jitters
+                                                .into_par_iter()
+                                                .map(|jitter| {
+                                                    let mut pitches = pitches.clone();
+                                                    deriv_along_pitches_dir(
+                                                        &goodness,
+                                                        init_vel,
+                                                        &mut pitches,
+                                                        &jitter,
+                                                        &dir,
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>();
+
+                                            derivs.iter().sum::<f32>() / batch_size as f32
+                                        } else {
+                                            deriv_along_pitches_dir(
+                                                &goodness,
+                                                init_vel,
+                                                &mut pitches,
+                                                &jitter,
+                                                &dir,
+                                            )
+                                        };
+
+                                        deriv_step_along_pitches_dir(
+                                            &mut pitches,
+                                            &dir,
+                                            deriv,
+                                            learning_rate,
+                                        );
+                                    }
+
+                                    // gradient descent
+                                    #[cfg(false)]
+                                    {
+                                        let grad = if resample_jitter_on_optimization_step {
+                                            // one of the jitters must be the one shown in the ui
+                                            // so that with a batch size of 1, you see exactly what's happening.
+                                            // TODO: really all of these should be shown on the ui. like the average gradient of them.
+                                            let jitters = std::iter::once(jitter.clone())
+                                                .chain((1..batch_size).map(|_| {
+                                                    Jitter::new(&jitter_params, num_ticks)
+                                                }))
+                                                .collect_vec();
+                                            jitter.resample_all(&jitter_params);
+
+                                            let grads = jitters
+                                                .into_par_iter()
+                                                .map(|jitter| {
+                                                    let mut pitches = pitches.clone();
+                                                    get_grad(
+                                                        &goodness,
+                                                        init_vel,
+                                                        &mut pitches,
+                                                        &jitter,
+                                                    )
                                                     .collect_vec()
-                                            })
-                                            .collect::<Vec<_>>();
+                                                })
+                                                .collect::<Vec<_>>();
 
-                                        grads
-                                            .into_iter()
-                                            .reduce(|a, b| {
-                                                a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-                                            })
-                                            .unwrap()
-                                            .into_iter()
-                                            .map(|g| g / batch_size as f32)
-                                            .collect_vec()
-                                    } else {
-                                        get_grad(&goodness, init_vel, &mut pitches, &jitter)
-                                            .collect_vec()
-                                    };
+                                            grads
+                                                .into_iter()
+                                                .reduce(|a, b| {
+                                                    a.iter()
+                                                        .zip(b.iter())
+                                                        .map(|(x, y)| x + y)
+                                                        .collect()
+                                                })
+                                                .unwrap()
+                                                .into_iter()
+                                                .map(|g| g / batch_size as f32)
+                                                .collect_vec()
+                                        } else {
+                                            get_grad(&goodness, init_vel, &mut pitches, &jitter)
+                                                .collect_vec()
+                                        };
 
-                                    // TODO: batched gradients
-
-                                    apply_grad(&mut pitches, &grad, learning_rate);
+                                        apply_grad(&mut pitches, &grad, learning_rate);
+                                    }
 
                                     after_states.push(
                                         forward(init_vel, &pitches, &Jitter::zero(num_ticks))
@@ -356,11 +418,6 @@ fn main() -> eframe::Result {
                                     do_optimization_step();
                                 }
                                 ui.checkbox(&mut optimizing, "optimizing");
-                                ui.label("steps per frame:");
-                                ui.add(egui::Slider::new(
-                                    &mut optimization_steps_per_frame,
-                                    0..=100,
-                                ));
 
                                 // do the optimization steps
                                 if optimizing {
