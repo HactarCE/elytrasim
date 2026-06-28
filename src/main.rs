@@ -1,6 +1,7 @@
 mod optimizer;
 mod sim;
 
+use egui::NumExt;
 use itertools::Itertools;
 use rayon::prelude::*;
 
@@ -57,11 +58,19 @@ fn main() -> eframe::Result {
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
 
+    // TODO: try out uniform scaling
+    let mut min_y = 0.0;
+    let mut max_y = 25.0;
+    let mut min_z = 300.0;
+    let mut max_z = 400.0;
+    let mut after_states: Vec<State> = Vec::new();
+
     eframe::run_ui_native(
         "Elytra Sim",
         eframe::NativeOptions::default(),
         move |ui, _frame| {
             ui.request_repaint();
+
             egui::Panel::left("side_panel")
                 .resizable(false)
                 .show_inside(ui, |ui| {
@@ -281,6 +290,21 @@ fn main() -> eframe::Result {
 
                                 let goodness = goodness_params.build();
                                 let mut do_optimization_step = || {
+                                    // let before = pitches.clone();
+                                    apply_decay(&mut pitches, 1.0 - decay);
+                                    // dbg!(before.iter().zip(&pitches).map(|(b, p)| (b, p, b - p)).collect_vec());
+                                    // if decay == 0.0 {
+                                    //     for (b, p) in before.iter().zip(&pitches) {
+                                    //         assert!(
+                                    //             (b - p).abs() < 1e-3,
+                                    //             "before: {}, after: {}, diff: {}",
+                                    //             b,
+                                    //             p,
+                                    //             b - p
+                                    //         );
+                                    //     }
+                                    // }
+
                                     let grad = if resample_jitter_on_optimization_step {
                                         // one of the jitters must be the one shown in the ui
                                         // so that with a batch size of 1, you see exactly what's happening.
@@ -320,20 +344,11 @@ fn main() -> eframe::Result {
 
                                     apply_grad(&mut pitches, &grad, learning_rate);
 
-                                    // let before = pitches.clone();
-                                    apply_decay(&mut pitches, 1.0 - decay);
-                                    // dbg!(before.iter().zip(&pitches).map(|(b, p)| (b, p, b - p)).collect_vec());
-                                    // if decay == 0.0 {
-                                    //     for (b, p) in before.iter().zip(&pitches) {
-                                    //         assert!(
-                                    //             (b - p).abs() < 1e-3,
-                                    //             "before: {}, after: {}, diff: {}",
-                                    //             b,
-                                    //             p,
-                                    //             b - p
-                                    //         );
-                                    //     }
-                                    // }
+                                    after_states.push(
+                                        forward(init_vel, &pitches, &Jitter::zero(num_ticks))
+                                            .last()
+                                            .unwrap(),
+                                    );
                                 };
 
                                 // optimization on / off
@@ -353,6 +368,31 @@ fn main() -> eframe::Result {
                                         do_optimization_step();
                                     }
                                 }
+                            });
+
+                        egui::CollapsingHeader::new("pareto frontier")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                ui.label("min_y:");
+                                ui.add(
+                                    egui::Slider::new(&mut min_y, -20.0..=25.0)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+                                ui.label("max_y:");
+                                ui.add(
+                                    egui::Slider::new(&mut max_y, -20.0..=25.0)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+                                ui.label("min_z:");
+                                ui.add(
+                                    egui::Slider::new(&mut min_z, 0.0..=700.0)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+                                ui.label("max_z:");
+                                ui.add(
+                                    egui::Slider::new(&mut max_z, 0.0..=700.0)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
                             });
 
                         // state before and after
@@ -427,8 +467,98 @@ fn main() -> eframe::Result {
                     );
                 }
             });
+
+            egui::Window::new("pareto frontier")
+                .default_pos(egui::pos2(300.0, 50.0))
+                .default_size(egui::vec2(300.0, 300.0))
+                .show(ui, |ui| {
+                    // let rect = ui.content_rect();
+                    // let rect = ui.max_rect();
+                    let rect = ui.available_rect_before_wrap();
+
+                    ui.label(format!("count: {}", after_states.len()));
+
+                    ui.allocate_rect(rect, egui::Sense::hover());
+                    let painter = ui.painter_at(rect);
+
+                    // let (_, painter) = ui.allocate_painter(rect.size(), egui::Sense::hover());
+
+                    // ui.set_clip_rect(rect);
+
+                    // vertical lines for pos.z
+                    {
+                        const STEP: f32 = 5.0;
+                        for z in ((min_z / STEP).round()) as i32..=(max_z / STEP).round() as i32 {
+                            let z = z as f32 * STEP;
+                            let screen_x =
+                                rect.left() + ((z - min_z) / (max_z - min_z)) * rect.width();
+                            painter.line_segment(
+                                [
+                                    egui::pos2(screen_x, rect.top()),
+                                    egui::pos2(screen_x, rect.bottom()),
+                                ],
+                                egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+                            );
+                        }
+                    }
+
+                    // horizontal lines for pos.y
+                    // after pos.z so that the bright y = 0.0 line is drawn on top
+                    {
+                        const STEP: f32 = 5.0;
+                        for y in ((min_y / STEP).round() as i32)..=(max_y / STEP).round() as i32 {
+                            let y = y as f32 * STEP;
+                            let screen_y =
+                                rect.bottom() - ((y - min_y) / (max_y - min_y)) * rect.height();
+                            painter.line_segment(
+                                [
+                                    egui::pos2(rect.left(), screen_y),
+                                    egui::pos2(rect.right(), screen_y),
+                                ],
+                                egui::Stroke::new(
+                                    1.0,
+                                    if y == 0.0 {
+                                        egui::Color32::from_gray(150)
+                                    } else {
+                                        egui::Color32::from_gray(50)
+                                    },
+                                ),
+                            );
+                        }
+                    }
+
+                    let mut dot_at = |state: &State, color: egui::Color32| {
+                        let x = rect.left()
+                            + ((state.pos.z as f32 - min_z) / (max_z - min_z)) * rect.width();
+                        let y = rect.bottom()
+                            - ((state.pos.y as f32 - min_y) / (max_y - min_y)) * rect.height();
+                        dot_at(ui, x, y, 2.0, color).on_hover_text(format!(
+                            "pos.y: {:.06}, pos.z: {:.06}",
+                            state.pos.y, state.pos.z
+                        ));
+                    };
+
+                    for state in &after_states {
+                        dot_at(state, egui::Color32::from_rgb(255, 0, 0));
+                    }
+
+                    // draw the current after state white
+                    if let Some(state) = after_states.last() {
+                        dot_at(state, egui::Color32::WHITE);
+                    }
+                });
         },
     )
+}
+
+fn dot_at(ui: &mut egui::Ui, x: f32, y: f32, rad: f32, color: egui::Color32) -> egui::Response {
+    let rect_before = ui.max_rect();
+    let dot_rect =
+        egui::Rect::from_center_size(egui::pos2(x, y), egui::Vec2::splat(2.0 * rad.at_least(4.0)));
+    let r = ui.allocate_rect(dot_rect.intersect(ui.max_rect()), egui::Sense::hover());
+    ui.painter().circle_filled(egui::pos2(x, y), rad, color);
+    assert_eq!(rect_before, ui.max_rect());
+    r
 }
 
 fn show_optimizer(
@@ -444,13 +574,7 @@ fn show_optimizer(
         rect.center().y - (value / approx_max_value) * (rect.height() / 2.0)
     };
 
-    let mut dot_at = |x, y: f32, color: egui::Color32| {
-        let dot_rect =
-            egui::Rect::from_center_size(egui::Pos2::new(x, y), egui::Vec2::splat(2.0 * rad));
-        let r = ui.allocate_rect(dot_rect, egui::Sense::hover());
-        ui.painter().circle_filled(egui::pos2(x, y), rad, color);
-        r
-    };
+    let mut dot_at = |x, y: f32, color: egui::Color32| dot_at(ui, x, y, rad, color);
 
     for (tick, (state, pitch)) in forward(init_vel, pitches, jitter)
         .zip(pitches.iter())
@@ -478,7 +602,11 @@ fn show_optimizer(
                 jitter,
                 tick,
             );
-            let approx_max_grad = 0.001;
+            let approx_max_grad = 0.0003
+                * match goodness_params.energy_or_y {
+                    EnergyOrY::Energy => 1.5,
+                    EnergyOrY::Y => 20.0,
+                };
             let y = value_to_y(
                 -grad.clamp(-approx_max_grad, approx_max_grad),
                 approx_max_grad,
@@ -542,80 +670,6 @@ fn show_optimizer(
     }
 }
 
-// pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_millis(50); // 20 per second
-
-// fn main() -> eframe::Result {
-//     let mut entity = Entity {
-//         pos: Vec3::ZERO,
-//         vel: Vec3::ZERO,
-//         rot: Rot { x: 0.0, y: 0.0 },
-//     };
-
-//     let mut running = false;
-//     let mut next_tick = std::time::Instant::now();
-
-//     eframe::run_ui_native(
-//         "Elytra Sim",
-//         eframe::NativeOptions::default(),
-//         move |ui, _frame| {
-//             let now = std::time::Instant::now();
-
-//             egui::CentralPanel::default().show_inside(ui, |ui| {
-//                 ui.group(|ui| {
-//                     ui.checkbox(&mut running, "Running");
-//                     if ui.button("Step").clicked() {
-//                         entity.travel();
-//                         running = false;
-//                     } else if running {
-//                         if next_tick <= now {
-//                             entity.travel();
-//                             next_tick += TICK_DURATION;
-//                         }
-//                         ui.request_repaint_after(next_tick.saturating_duration_since(now));
-//                     }
-//                     if ui.button("Reset").clicked() {
-//                         entity = Entity::default();
-//                     }
-//                 });
-
-//                 ui.group(|ui| {
-//                     ui.strong("Position");
-//                     ui.label("X");
-//                     ui.add(pos_slider(&mut entity.pos.x));
-//                     ui.label("Y");
-//                     ui.add(pos_slider(&mut entity.pos.y));
-//                     ui.label("Z");
-//                     ui.add(pos_slider(&mut entity.pos.z));
-//                 });
-
-//                 ui.group(|ui| {
-//                     ui.strong("Velocity");
-//                     ui.label(format!("X = {:.3}", entity.vel.x * 20.0));
-//                     ui.add(vel_slider(&mut entity.vel.x));
-//                     ui.label(format!("Y = {:.3}", entity.vel.y * 20.0));
-//                     ui.add(vel_slider(&mut entity.vel.y));
-//                     ui.label(format!("Z = {:.3}", entity.vel.z * 20.0));
-//                     ui.add(vel_slider(&mut entity.vel.z));
-//                 });
-
-//                 ui.group(|ui| {
-//                     ui.strong("Rotation");
-//                     ui.label("X");
-//                     ui.add(
-//                         egui::Slider::new(&mut entity.rot.x, -180.0..=180.0)
-//                             .clamping(egui::SliderClamping::Never),
-//                     );
-//                     ui.label("Y");
-//                     ui.add(
-//                         egui::Slider::new(&mut entity.rot.y, -90.0..=90.0)
-//                             .clamping(egui::SliderClamping::Never),
-//                     );
-//                 });
-//             });
-//         },
-//     )
-// }
-
 pub fn pos_slider(value: &mut f64) -> egui::Slider<'_> {
     egui::Slider::new(value, -100.0..=100.0).clamping(egui::SliderClamping::Never)
 }
@@ -666,11 +720,12 @@ impl GoodnessParams {
             y_z_blend,
         } = self;
         move |state: State| {
+            // vaguely normalize them so blending feels more uniform
             let goodness_left = match energy_or_y {
                 EnergyOrY::Energy => state.total_energy(),
-                EnergyOrY::Y => state.pos.y,
+                EnergyOrY::Y => state.pos.y / 20.0,
             };
-            let goodness_right = state.pos.z;
+            let goodness_right = state.pos.z / 300.0;
             goodness_left * (1.0 - y_z_blend) + goodness_right * y_z_blend
         }
     }
