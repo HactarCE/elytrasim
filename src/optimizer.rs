@@ -10,10 +10,8 @@ pub type Energy = f64;
 pub type Pos3 = Vec3;
 pub type Vel3 = Vec3;
 pub type Pitch = f32;
-pub type DGDP = f32;
 
 pub struct PitchUtil;
-
 impl PitchUtil {
     fn try_from(pitch: f32) -> Option<Pitch> {
         if pitch == Self::clamped(pitch) {
@@ -30,90 +28,11 @@ impl PitchUtil {
     }
 }
 
-pub struct PitchesUtil;
-
-impl PitchesUtil {
-    /// look at `pitch` for all ticks.
-    pub fn new_constant(ticks: usize, pitch: Pitch) -> Vec<Pitch> {
-        vec![pitch; ticks]
-    }
-
-    /// lerp from start to end over the ticks.
-    pub fn new_lerp(ticks: usize, start: Pitch, end: Pitch) -> Vec<Pitch> {
-        (0..ticks)
-            .map(|i| {
-                let t = i as f32 / (ticks - 1) as f32;
-                start * (1.0 - t) + end * t
-            })
-            .collect()
-    }
-
-    /// +40 then -40.
-    pub fn new_4040(ticks: usize, cut: f64) -> Vec<Pitch> {
-        let mid = (ticks as f64 * cut) as usize;
-
-        (0..mid)
-            .map(|_| 40.0)
-            .chain((mid..ticks).map(|_| -40.0))
-            .collect()
-    }
-
-    /// +40 then 0 then -40.
-    pub fn new_40zero40(ticks: usize, left_cut: f64, right_cut: f64) -> Vec<Pitch> {
-        assert!(left_cut < right_cut);
-        let left = (ticks as f64 * left_cut) as usize;
-        let right = (ticks as f64 * right_cut) as usize;
-
-        (0..left)
-            .map(|_| 40.0)
-            .chain((left..right).map(|_| 0.0))
-            .chain((right..ticks).map(|_| -40.0))
-            .collect()
-    }
-
-    pub fn new_rand_uniform(ticks: usize) -> Vec<Pitch> {
-        let mut rng = rand::rng();
-        (0..ticks).map(|_| rng.random_range(-90.0..=90.0)).collect()
-    }
-
-    pub fn new_rand_walk(ticks: usize, step: f32) -> Vec<Pitch> {
-        let mut rng = rand::rng();
-        let mut pitch = rng.random_range(-90.0..=90.0);
-        (0..ticks)
-            .map(|_| {
-                pitch += rng.random_range(-step..=step);
-                pitch = PitchUtil::clamped(pitch);
-                pitch
-            })
-            .collect()
-    }
-
-    // /// inserts a duplicate pitch so `ret` has the same length as `pitches`.
-    // /// if t < 0.0, inserts a duplicate of the first pitch at the start.
-    // /// if t > 0.0, inserts a duplicate of the last pitch at the end.
-    // /// if t == 0.0, returns the original pitches.
-    // /// TODO: instead of duplicating, do a linear interpolation.
-    // pub fn lerp_between(pitches: &[Pitch], t: f32) -> impl Iterator<Item = Pitch> {
-    //     assert!((-1.0..=1.0).contains(&t));
-    //     pitches
-    //         .first()
-    //         .into_iter()
-    //         .chain(pitches.iter().chain(pitches.iter().last()))
-    //         .array_windows::<3>()
-    //         .map(move |[left, mid, right]| match t.total_cmp(&0.0) {
-    //             std::cmp::Ordering::Less => mid * (1.0 + t) + left * -t,
-    //             std::cmp::Ordering::Equal => *mid,
-    //             std::cmp::Ordering::Greater => mid * (1.0 - t) + right * t,
-    //         })
-    // }
-}
-
 #[derive(Debug, Clone)]
 pub struct State {
     pub pos: Pos3,
     pub vel: Vel3,
 }
-
 impl State {
     const ZERO: Self = Self {
         pos: Pos3::ZERO,
@@ -156,97 +75,33 @@ impl State {
 // TODO: these probably shouldn't be options
 #[derive(Debug, Clone)]
 pub struct JitterParams {
-    pub time_rad: f64,
     pub init_vel_y_std: f64,
     pub init_vel_z_std: f64,
-    pub vels_y_std: f64,
-    pub vels_z_std: f64,
-    // this really should be a `Pitch` ie `f32`,
-    // but that's annoying to deal with.
-    pub pitches_std: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Jitter {
-    pub time: f64,
-    init_vel: Vel3,
-    vels: Vec<Vel3>,
-    pitches: Vec<Pitch>,
+    pub init_vel: Vel3,
 }
-
 impl Jitter {
-    pub fn num_ticks(&self) -> usize {
-        let ret = self.vels.len();
-        assert_eq!(ret, self.pitches.len());
-        ret
-    }
-
-    pub fn new(params: &JitterParams, num_ticks: usize) -> Self {
+    pub fn new(params: &JitterParams) -> Self {
         let mut ret = Self {
-            time: 0.0,
             init_vel: Vel3::ZERO,
-            vels: Vec::new(),
-            pitches: Vec::new(),
         };
-        ret.resample_time(params.time_rad);
         ret.resample_init_vel_y(params.init_vel_y_std);
         ret.resample_init_vel_z(params.init_vel_z_std);
-        ret.resize(params, num_ticks);
         ret
     }
 
-    pub fn zero(num_ticks: usize) -> Self {
+    pub fn zero() -> Self {
         Self {
-            time: 0.0,
             init_vel: Vel3::ZERO,
-            vels: vec![Vec3::ZERO; num_ticks],
-            pitches: vec![0.0; num_ticks],
-        }
-    }
-
-    pub fn resize(&mut self, params: &JitterParams, num_ticks: usize) {
-        let old_ticks = self.num_ticks();
-
-        self.vels.resize(num_ticks, Vec3::ZERO);
-        self.pitches.resize(num_ticks, 0.0);
-
-        for (old, (new_y, new_z)) in self
-            .vels
-            .iter_mut()
-            .skip(old_ticks)
-            .zip(Self::sample(params.vels_y_std).zip(Self::sample(params.vels_z_std)))
-        {
-            old.y = new_y;
-            old.z = new_z;
-        }
-
-        for (old, new) in self
-            .pitches
-            .iter_mut()
-            .skip(old_ticks)
-            .zip(Self::sample(params.pitches_std))
-        {
-            *old = new as Pitch;
         }
     }
 
     pub fn resample_all(&mut self, params: &JitterParams) {
-        self.resample_time(params.time_rad);
         self.resample_init_vel_y(params.init_vel_y_std);
         self.resample_init_vel_z(params.init_vel_z_std);
-        self.resample_vels_y(params.vels_y_std);
-        self.resample_vels_z(params.vels_z_std);
-        self.resample_pitches(params.pitches_std);
-    }
-
-    pub fn resample_time(&mut self, time_rad: f64) {
-        assert!(time_rad >= 0.0);
-        if time_rad > 0.0 {
-            self.time = rand::rng().random_range(-time_rad..time_rad);
-            // self.time = self.time.abs();
-        } else {
-            self.time = 0.0;
-        }
     }
 
     pub fn resample_init_vel_y(&mut self, std: f64) {
@@ -255,24 +110,6 @@ impl Jitter {
 
     pub fn resample_init_vel_z(&mut self, std: f64) {
         self.init_vel.z = Self::sample(std).next().unwrap();
-    }
-
-    pub fn resample_vels_y(&mut self, std: f64) {
-        for (old, new) in self.vels.iter_mut().zip(Self::sample(std)) {
-            old.y = new;
-        }
-    }
-
-    pub fn resample_vels_z(&mut self, std: f64) {
-        for (old, new) in self.vels.iter_mut().zip(Self::sample(std)) {
-            old.z = new;
-        }
-    }
-
-    pub fn resample_pitches(&mut self, std: f64) {
-        for (old, new) in self.pitches.iter_mut().zip(Self::sample(std)) {
-            *old = new as Pitch;
-        }
     }
 
     fn sample(std: f64) -> impl Iterator<Item = f64> {
@@ -286,310 +123,387 @@ impl Jitter {
     }
 }
 
-pub static UNDO_JITTER_VEL: AtomicBool = AtomicBool::new(true);
+pub use splat::*;
+mod splat {
+    use super::*;
 
-pub fn forward(
-    init_vel: Vel3,
-    pitches: &[Pitch],
-    jitter: &Jitter,
-) -> impl Iterator<Item = (Pitch, State)> {
-    assert_eq!(pitches.len(), jitter.num_ticks());
+    /// check out this [graph](https://www.desmos.com/calculator/z9cfqdndyx).
+    /// the stored parameters aren't in the nice user facing format,
+    /// they're in a format that's better for optimization.
+    #[derive(Debug, Clone)]
+    pub struct Mask {
+        mu: f32,
+        /// note that this gets exponentiated
+        sigma_ln: f32,
+        /// note that this gets exponentiated
+        rad_ln: f32,
+    }
+    impl Mask {
+        const ZERO: Self = Self {
+            mu: 0.0,
+            sigma_ln: 0.0,
+            rad_ln: 0.0,
+        };
 
-    let mut pos_accumulator = Vec3::ZERO;
-    let mut vel = init_vel + jitter.init_vel;
-
-    (0..jitter.num_ticks()).map(move |tick| {
-        //  if t < 0.0, inserts a duplicate of the first pitch at the start.
-        //  if t > 0.0, inserts a duplicate of the last pitch at the end.
-        //  if t == 0.0, returns the original pitch.
-        //  TODO: instead of duplicating, do a linear interpolation.
-        let pitch = {
-            let left = pitches[tick.saturating_sub(1)];
-            let mid = pitches[tick];
-            let right = pitches[(tick + 1).min(pitches.len() - 1)];
-            let t = jitter.time as f32;
-
-            let mid_left = mid * (1.0 + t) + (left * -t);
-            let mid_right = mid * (1.0 - t) + (right * t);
-
-            match t.total_cmp(&0.0) {
-                std::cmp::Ordering::Less => {
-                    assert!((left.min(mid) - 1e-5..=left.max(mid) + 1e-5).contains(&mid_left));
-                    mid_left
-                }
-                std::cmp::Ordering::Equal => {
-                    assert!((mid - mid_left).abs() < 1e-5);
-                    assert!((mid - mid_right).abs() < 1e-5);
-                    mid
-                }
-                std::cmp::Ordering::Greater => {
-                    assert!((mid.min(right) - 1e-5..=mid.max(right) + 1e-5).contains(&mid_right));
-                    mid_right
-                }
+        pub fn new(mu: f32, sigma: f32, rad: f32) -> Self {
+            assert!(sigma > 0.0);
+            assert!(rad > 0.0);
+            Self {
+                mu,
+                sigma_ln: sigma.ln(),
+                rad_ln: rad.ln(),
             }
-        } + jitter.pitches[tick];
-
-        let mut state = State {
-            pos: Vec3::ZERO,
-            vel: vel.elementwise_mul(Vec3::ONE + jitter.vels[tick]),
-        }
-        .ticked(pitch);
-
-        if UNDO_JITTER_VEL.load(atomic::Ordering::Relaxed) {
-            state.vel = state.vel.elementwise_div(Vec3::ONE + jitter.vels[tick]);
         }
 
-        pos_accumulator += state.pos;
-        vel = state.vel;
-
-        (
-            pitch,
-            State {
-                pos: pos_accumulator,
-                vel,
-            },
-        )
-    })
-}
-
-pub fn forward_last(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> State {
-    forward(init_vel, pitches, jitter).last().unwrap().1
-}
-
-// pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Iterator<Item = State> {
-//     assert_eq!(pitches.len(), jitter.num_ticks());
-
-//     let mut pos_accumulator = Vec3::ZERO;
-//     let mut vel = init_vel + jitter.init_vel;
-
-//     (0..jitter.num_ticks()).map(move |tick| {
-//         let mut state = State {
-//             pos: jitter.poses[tick],
-//             vel: vel + jitter.vels[tick],
-//         }
-//         .ticked(pitches[tick] + jitter.pitches[tick]);
-
-//         state.pos -= jitter.poses[tick];
-//         if UNDO_JITTER_VEL.load(atomic::Ordering::Relaxed) {
-//             state.vel -= jitter.vels[tick];
-//         }
-
-//         pos_accumulator += state.pos;
-//         vel = state.vel;
-
-//         State {
-//             pos: pos_accumulator,
-//             vel,
-//         }
-//     })
-// }
-
-/// the gradient of goodness with respect to the pitch at the given tick.
-///
-/// &mut pitches bc we want to modify them in place instead of cloning,
-/// but we guarantee that they won't be different after return.
-pub fn grad_at_tick(
-    goodness: impl Fn(State) -> Goodness,
-    init_vel: Vel3,
-    pitches: &mut [Pitch],
-    jitter: &Jitter,
-    tick: usize,
-) -> DGDP {
-    const EPSILON: Pitch = 0.1;
-
-    let cur_pitch = pitches[tick];
-
-    let right_goodness = PitchUtil::try_from(cur_pitch + EPSILON).map(|right_pitch| {
-        pitches[tick] = right_pitch;
-        let after = forward_last(init_vel, pitches, jitter);
-        pitches[tick] = cur_pitch;
-        goodness(after)
-    });
-
-    let left_goodness = PitchUtil::try_from(cur_pitch - EPSILON).map(|left_pitch| {
-        pitches[tick] = left_pitch;
-        let after = forward_last(init_vel, pitches, jitter);
-        pitches[tick] = cur_pitch;
-        goodness(after)
-    });
-
-    let cur_goodness = || goodness(forward_last(init_vel, pitches, jitter));
-
-    (match (left_goodness, right_goodness) {
-        // central difference if we can
-        (Some(left_goodness), Some(right_goodness)) => {
-            (right_goodness - left_goodness) / (2.0 * EPSILON) as Goodness
+        pub fn mu(&self) -> f32 {
+            self.mu
         }
-        (None, Some(right_goodness)) => (right_goodness - cur_goodness()) / EPSILON as Goodness,
-        (Some(left_goodness), None) => (cur_goodness() - left_goodness) / EPSILON as Goodness,
-        (None, None) => {
-            dbg!(cur_pitch);
-            unreachable!()
+        pub fn sigma(&self) -> f32 {
+            self.sigma_ln.exp()
         }
-    }) as f32
-}
+        pub fn rad(&self) -> f32 {
+            self.rad_ln.exp()
+        }
 
-/// &mut pitches bc we want to modify them in place instead of cloning,
-/// but we guarantee that they won't be different after return.
-pub fn get_grad(
-    goodness: impl Fn(State) -> Goodness,
-    init_vel: Vel3,
-    pitches: &mut [Pitch],
-    jitter: &Jitter,
-) -> impl Iterator<Item = DGDP> {
-    (0..pitches.len()).map(move |i| grad_at_tick(&goodness, init_vel, pitches, jitter, i))
-}
+        pub fn set_mu(&mut self, mu: f32) {
+            self.mu = mu;
+        }
+        pub fn set_sigma(&mut self, sigma: f32) {
+            assert!(sigma > 0.0);
+            self.sigma_ln = sigma.ln();
+        }
+        pub fn set_rad(&mut self, rad: f32) {
+            assert!(rad > 0.0);
+            self.rad_ln = rad.ln();
+        }
 
-pub fn apply_grad(pitches: &mut [Pitch], grads: &[DGDP], learning_rate: f32) {
-    assert_eq!(pitches.len(), grads.len());
-    for (pitch, grad) in pitches.iter_mut().zip(grads) {
-        *pitch += (learning_rate * grad).clamp(-10.0, 10.0);
-        *pitch = PitchUtil::clamped(*pitch);
-    }
-}
+        fn into_array(self) -> [f32; 3] {
+            [self.mu, self.sigma_ln, self.rad_ln]
+        }
+        fn from_array([mu, sigma_ln, rad_ln]: [f32; 3]) -> Self {
+            Self {
+                mu,
+                sigma_ln,
+                rad_ln,
+            }
+        }
 
-pub use deriv_optim::*;
-mod deriv_optim {
-    use super::*;
+        fn forward(&self, x: f32) -> f32 {
+            let x = x - self.mu;
+            let x = {
+                let x2 = x * x;
+                let x3 = x2 * x;
+                let rad = self.rad_ln.exp();
+                x3 / (x2 + rad * rad / (3.0 - 2.0 * 2.0_f32.sqrt()))
+            };
+            {
+                let x2 = x * x;
+                let sigma = self.sigma_ln.exp();
+                (-x2 / (sigma * sigma)).exp()
+            }
+        }
 
-    // problem where you need two pitches to move together
-    // try picking a random direction in pitch space and doing a gradient step along that direction
-
-    // /// random on unit sphere
-    // pub fn rand_pitches_dir(num_ticks: usize) -> Vec<Pitch> {
-    //     let mut ret = rand::rng()
-    //         .sample_iter(rand_distr::StandardNormal)
-    //         .take(num_ticks)
-    //         .collect_vec();
-    //     let s = ret.iter().map(|x| x * x).sum::<f32>().sqrt();
-    //     for x in &mut ret {
-    //         *x /= s;
-    //     }
-    //     ret
-    // }
-
-    /// random pure direction
-    pub fn rand_pitches_dir(num_ticks: usize) -> Vec<Pitch> {
-        let tick = rand::rng().random_range(0..num_ticks);
-        let mut ret = vec![0.0; num_ticks];
-        ret[tick] = 1.0;
-        ret
+        // /// guarantee that at least `1.0 - epsilon` of the area
+        // /// is contained in the bounding box.
+        // fn aabb(&self, epsilon: f32) -> [f32; 2] {}
     }
 
-    pub fn deriv_along_pitches_dir(
-        goodness: impl Fn(State) -> Goodness,
-        init_vel: Vel3,
-        pitches: &mut [Pitch],
-        jitter: &Jitter,
-        dir: &[Pitch],
-    ) -> DGDP {
-        const EPSILON: f32 = 0.1;
-
-        let right_pitches = pitches
-            .iter()
-            .zip(dir)
-            .map(|(pitch, dir)| PitchUtil::clamped(*pitch + EPSILON * *dir))
-            .collect_vec();
-        let right_goodness = goodness(forward_last(init_vel, &right_pitches, jitter));
-
-        let left_pitches = pitches
-            .iter()
-            .zip(dir)
-            .map(|(pitch, dir)| PitchUtil::clamped(*pitch - EPSILON * *dir))
-            .collect_vec();
-        let left_goodness = goodness(forward_last(init_vel, &left_pitches, jitter));
-
-        let diff = right_pitches
-            .iter()
-            .zip(left_pitches.iter())
-            .map(|(r, l)| r - l)
-            .collect_vec();
-        let diff_len = diff.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        // this probably isn't the most correct way to do this
-        ((right_goodness - left_goodness) / diff_len as Goodness) as DGDP
+    #[derive(Debug, Clone)]
+    pub struct Affine<const N: usize> {
+        pub weights: [f32; N],
+        pub bias: f32,
     }
+    impl<const N: usize> Affine<N> {
+        const ZERO: Self = Self {
+            weights: [0.0; N],
+            bias: 0.0,
+        };
 
-    pub fn deriv_step_along_pitches_dir(
-        pitches: &mut [Pitch],
-        dir: &[Pitch],
-        deriv: DGDP,
-        learning_rate: f32,
-    ) {
-        assert_eq!(pitches.len(), dir.len());
-        for (pitch, dir) in pitches.iter_mut().zip(dir) {
-            *pitch += (learning_rate * deriv * *dir).clamp(-10.0, 10.0);
-            *pitch = PitchUtil::clamped(*pitch);
+        // `Vec` bc rust doesn't understand `[f32; N + 1]`.
+        fn into_array(self) -> Vec<f32> {
+            self.weights
+                .into_iter()
+                .chain(std::iter::once(self.bias))
+                .collect()
+        }
+        fn from_array(arr: &[f32]) -> Self {
+            Self {
+                weights: arr[..N].try_into().unwrap(),
+                bias: arr[N],
+            }
+        }
+
+        fn forward(&self, x: &[f32; N]) -> f32 {
+            self.weights.iter().zip(x).map(|(w, x)| w * x).sum::<f32>() + self.bias
         }
     }
-}
 
-pub use decay::*;
-mod decay {
-    use super::*;
+    #[derive(Debug, Clone)]
+    pub struct Term {
+        /// `[tick, vel_y, vel_z]`
+        pub masks: [Mask; 3],
+        pub pitch_map: Affine<3>,
+        // weight:
+    }
+    impl Term {
+        const ZERO: Self = Self {
+            masks: [Mask::ZERO; 3],
+            pitch_map: Affine::ZERO,
+        };
 
-    // /// decay the pitch deltas
-    // pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
-    //     let deltas = pitches
-    //         .windows(2)
-    //         .map(|window| window[1] - window[0])
-    //         .collect::<Vec<_>>();
-    //     let decayed = deltas.iter().map(|delta| delta * decay).collect::<Vec<_>>();
-    //     for i in 1..pitches.len() {
-    //         pitches[i] = PitchUtil::clamped(pitches[i - 1] + decayed[i - 1]);
-    //     }
-    // }
+        fn into_array(self) -> [f32; 13] {
+            self.masks
+                .into_iter()
+                .flat_map(|mask| mask.into_array())
+                .chain(self.pitch_map.into_array())
+                .collect_vec()
+                .try_into()
+                .unwrap()
+        }
+        fn from_array(arr: [f32; 13]) -> Self {
+            Self {
+                masks: arr[..9]
+                    .chunks_exact(3)
+                    .map(|chunk| Mask::from_array(chunk.try_into().unwrap()))
+                    .collect_vec()
+                    .try_into()
+                    .unwrap(),
+                pitch_map: Affine::from_array(arr[9..].try_into().unwrap()),
+            }
+        }
 
-    /// ret has len `pitches.len() - 1`
-    fn delta(pitches: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
-        pitches.tuple_windows().map(|(a, b)| b - a)
+        fn forward(&self, tick: usize, vel: Vel3) -> Pitch {
+            let x = [tick as f32, vel.y as f32, vel.z as f32];
+            let mask = self
+                .masks
+                .iter()
+                .zip(x)
+                .map(|(mask, x)| mask.forward(x))
+                .product::<f32>();
+            mask * self.pitch_map.forward(&x)
+        }
     }
 
-    fn prefix_sum(first: f32, it: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
-        std::iter::once(first).chain(
-            it.scan(0.0, |acc, delta| {
-                *acc += delta;
-                Some(*acc)
+    /// this isn't really a neural network but whatever.
+    #[derive(Debug, Clone)]
+    pub struct Nn {
+        // TODO: maybe a bvh?
+        pub terms: Vec<Term>,
+    }
+    impl Nn {
+        fn zero(num_terms: usize) -> Self {
+            Self {
+                terms: vec![Term::ZERO; num_terms],
+            }
+        }
+
+        pub fn new_4040() -> Self {
+            Self {
+                terms: vec![
+                    Term {
+                        masks: [
+                            Mask::new(200.0, 1.0, 100.0),
+                            Mask::new(0.0, 1.0, 5.0),
+                            Mask::new(0.0, 1.0, 5.0),
+                        ],
+                        pitch_map: Affine {
+                            weights: [0.0, 0.0, 0.0],
+                            bias: 40.0,
+                        },
+                    },
+                    Term {
+                        masks: [
+                            Mask::new(50.0, 1.0, 25.0),
+                            Mask::new(0.0, 1.0, 5.0),
+                            Mask::new(0.0, 1.0, 5.0),
+                        ],
+                        pitch_map: Affine {
+                            weights: [0.0, 0.0, 0.0],
+                            bias: -40.0,
+                        },
+                    },
+                ],
+            }
+        }
+
+        /// the guess of the best pitch at the given tick and velocity.
+        pub fn forward(&self, tick: usize, vel: Vel3) -> Pitch {
+            let forward = self
+                .terms
+                .iter()
+                .map(|term| term.forward(tick, vel))
+                .sum::<f32>();
+            PitchUtil::clamped(forward)
+        }
+
+        /// do `num_ticks` autoregressive steps.
+        pub fn forward_iter(
+            &self,
+            num_ticks: usize,
+            init_vel: Vel3,
+        ) -> impl Iterator<Item = (Pitch, State)> {
+            let mut pos_accumulator = Vec3::ZERO;
+            let mut vel = init_vel;
+
+            (0..num_ticks).map(move |tick| {
+                let pitch = self.forward(tick, vel);
+
+                let state = State {
+                    pos: Vec3::ZERO,
+                    vel,
+                }
+                .ticked(pitch);
+
+                pos_accumulator += state.pos;
+                vel = state.vel;
+
+                (
+                    pitch,
+                    State {
+                        pos: pos_accumulator,
+                        vel,
+                    },
+                )
             })
-            .map(move |val| first + val),
-        )
-    }
+        }
 
-    /// decay the pitch delta deltas
-    // TODO: try decaying the distance from the left and right neighbors
-    // rather than just the left neighbor.
-    // bc we kinda want the pitches to form straight lines.
-    pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
-        let deltas = delta(pitches.iter().copied()).collect_vec();
-        let delta_deltas = delta(deltas.iter().copied()).collect_vec();
-        assert_eq!(delta_deltas.len() + 2, pitches.len());
-        let decayed = delta_deltas.iter().map(|delta| delta * decay).collect_vec();
-        let new_deltas = prefix_sum(deltas[0], decayed.into_iter());
-        let new_pitches = prefix_sum(pitches[0], new_deltas)
-            .map(PitchUtil::clamped)
-            .collect_vec();
-        pitches.copy_from_slice(&new_pitches);
+        /// do `num_ticks` autoregressive steps and return the final state.
+        pub fn forward_last_(&self, num_ticks: usize, init_vel: Vel3) -> State {
+            self.forward_iter(num_ticks, init_vel).last().unwrap().1
+        }
+
+        /// `goodness` of the final state after `num_ticks` autoregressive steps.
+        pub fn goodness(
+            &self,
+            goodness: impl Fn(State) -> Goodness,
+            num_ticks: usize,
+            init_vel: Vel3,
+        ) -> Goodness {
+            goodness(self.forward_last_(num_ticks, init_vel))
+        }
+
+        /// the gradient of goodness with respect to each parameter.
+        ///
+        /// &mut self bc we want to modify `self` in place instead of cloning,
+        /// but we guarantee that it won't be different after return.
+        pub fn get_grad(
+            &mut self,
+            goodness: impl Fn(State) -> Goodness,
+            num_ticks: usize,
+            init_vel: Vel3,
+        ) -> Self {
+            // you could also find the grad of pitches
+            // then tell the terms to make the pitches closer to that target.
+            // and you could do this in parallel for each term, then sum the terms at the end.
+
+            const EPSILON: Pitch = 0.1;
+
+            let cur_goodness = self.goodness(&goodness, num_ticks, init_vel);
+
+            let mut grad = Nn::zero(self.terms.len());
+
+            for term_idx in 0..self.terms.len() {
+                let mut term_arr = self.terms[term_idx].clone().into_array();
+                let mut grad_term_arr = grad.terms[term_idx].clone().into_array();
+
+                for parameter_idx in 0..term_arr.len() {
+                    let mid = term_arr[parameter_idx];
+                    let right = mid + EPSILON;
+
+                    term_arr[parameter_idx] = right;
+                    self.terms[term_idx] = Term::from_array(term_arr);
+
+                    let right_goodness = self.goodness(&goodness, num_ticks, init_vel);
+
+                    term_arr[parameter_idx] = mid;
+                    self.terms[term_idx] = Term::from_array(term_arr);
+
+                    grad_term_arr[parameter_idx] = (right_goodness - cur_goodness) as f32 / EPSILON;
+                }
+
+                grad.terms[term_idx] = Term::from_array(grad_term_arr);
+            }
+
+            grad
+        }
+
+        pub fn apply_grad(&mut self, grad: &Self, learning_rate: f32) {
+            assert_eq!(self.terms.len(), grad.terms.len());
+            for (term, grad_term) in self.terms.iter_mut().zip(grad.terms.iter()) {
+                let mut term_arr = term.clone().into_array();
+                let grad_arr = grad_term.clone().into_array();
+                for i in 0..term_arr.len() {
+                    term_arr[i] += learning_rate * grad_arr[i];
+                }
+                *term = Term::from_array(term_arr);
+            }
+        }
+
+        /// 0.0 means no decay.
+        pub fn decay(&mut self, decay: f32) {
+            for term in self.terms.iter_mut() {
+                let mut term_arr = term.clone().into_array();
+                for i in 0..term_arr.len() {
+                    term_arr[i] *= decay;
+                }
+                *term = Term::from_array(term_arr);
+            }
+        }
+    }
+    impl std::ops::AddAssign<&Self> for Nn {
+        fn add_assign(&mut self, rhs: &Self) {
+            assert_eq!(self.terms.len(), rhs.terms.len());
+            for (term, rhs_term) in self.terms.iter_mut().zip(rhs.terms.iter()) {
+                let mut term_arr = term.clone().into_array();
+                let rhs_arr = rhs_term.clone().into_array();
+                for i in 0..term_arr.len() {
+                    term_arr[i] += rhs_arr[i];
+                }
+                *term = Term::from_array(term_arr);
+            }
+        }
+    }
+    impl std::ops::Add<&Self> for Nn {
+        type Output = Self;
+        fn add(mut self, rhs: &Self) -> Self {
+            self += rhs;
+            self
+        }
+    }
+    impl std::ops::MulAssign<f32> for Nn {
+        fn mul_assign(&mut self, rhs: f32) {
+            for term in self.terms.iter_mut() {
+                let mut term_arr = term.clone().into_array();
+                for i in 0..term_arr.len() {
+                    term_arr[i] *= rhs;
+                }
+                *term = Term::from_array(term_arr);
+            }
+        }
+    }
+    impl std::ops::Mul<f32> for Nn {
+        type Output = Self;
+        fn mul(mut self, rhs: f32) -> Self {
+            self *= rhs;
+            self
+        }
+    }
+    impl std::ops::DivAssign<f32> for Nn {
+        fn div_assign(&mut self, rhs: f32) {
+            for term in self.terms.iter_mut() {
+                let mut term_arr = term.clone().into_array();
+                for i in 0..term_arr.len() {
+                    term_arr[i] /= rhs;
+                }
+                *term = Term::from_array(term_arr);
+            }
+        }
+    }
+    impl std::ops::Div<f32> for Nn {
+        type Output = Self;
+        fn div(mut self, rhs: f32) -> Self {
+            self /= rhs;
+            self
+        }
     }
 }
-
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_lerp_between_pos() {
-//         let pitches = vec![10.0, 20.0, 30.0];
-//         let t = 0.1;
-//         let oracle = vec![11.0, 21.0, 30.0];
-//         let actual = PitchesUtil::lerp_between(&pitches, t).collect_vec();
-//         assert_eq!(oracle, actual);
-//     }
-
-//     #[test]
-//     fn test_lerp_between_neg() {
-//         let pitches = vec![10.0, 20.0, 30.0];
-//         let t = -0.1;
-//         let oracle = vec![10.0, 19.0, 29.0];
-//         let actual = PitchesUtil::lerp_between(&pitches, t).collect_vec();
-//         assert_eq!(oracle, actual);
-//     }
-// }
