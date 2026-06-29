@@ -266,7 +266,7 @@ fn main() -> eframe::Result {
                                                 mask: &mut Mask,
                                                 grad_mask: &Mask,
                                                 show_nn_grad: bool,
-                                                show_nn_sliders: bool,
+                                                show_nn_editor: bool,
                                             ) {
                                                 egui::CollapsingHeader::new(name)
                                                     .default_open(true)
@@ -281,7 +281,7 @@ fn main() -> eframe::Result {
                                                                     grad_mask.mu()
                                                                 ));
                                                             }
-                                                            if show_nn_sliders && ui
+                                                            if show_nn_editor && ui
                                                                 .add(
                                                                     egui::Slider::new(
                                                                         &mut mu,
@@ -303,21 +303,21 @@ fn main() -> eframe::Result {
 
                                                         // sigma
                                                         {
-                                                            let mut sigma = mask.sigma();
+                                                            let mut sigma_ln = mask.sigma_ln();
                                                             ui.label(format!(
-                                                                "sigma: {:.06}",
-                                                                sigma
+                                                                "sigma_ln: {:.06}",
+                                                                sigma_ln
                                                             ));
                                                             if show_nn_grad {
                                                                 ui.label(format!(
-                                                                    "sigma grad: {:.06}",
-                                                                    grad_mask.sigma()
+                                                                    "sigma_ln grad: {:.06}",
+                                                                    grad_mask.sigma_ln()
                                                                 ));
                                                             }
-                                                            if show_nn_sliders && ui
+                                                            if show_nn_editor && ui
                                                                 .add(
                                                                     egui::Slider::new(
-                                                                        &mut sigma,
+                                                                        &mut sigma_ln,
                                                                         // if is_tick_mask {
                                                                         //     0.0..=200.0
                                                                         // } else {
@@ -336,7 +336,7 @@ fn main() -> eframe::Result {
                                                                 .changed()
                                                             {
                                                                 // sigma = sigma.max(1e-3);
-                                                                mask.set_sigma(sigma);
+                                                                mask.set_sigma_ln(sigma_ln);
                                                             }
                                                         }
 
@@ -345,7 +345,7 @@ fn main() -> eframe::Result {
                                                         {
                                                             let mut rad = mask.rad();
                                                             ui.label(format!("rad: {:.06}", rad));
-                                                            if show_nn_sliders && ui
+                                                            if show_nn_editor && ui
                                                                 .add(
                                                                     egui::Slider::new(
                                                                         &mut rad,
@@ -387,13 +387,17 @@ fn main() -> eframe::Result {
 
                                             let Term {
                                                 tick_mask,
-                                                pitch_map,
-                                                weight,
+                                                vel_y_mask,
+                                                vel_z_mask,
+                                                pitch,
+                                                weight_ln: weight,
                                             } = &mut nn.terms[term_idx];
                                             let Term {
                                                 tick_mask: grad_tick_mask,
-                                                pitch_map: grad_pitch_map,
-                                                weight: grad_weight,
+                                                vel_y_mask: grad_vel_y_mask,
+                                                vel_z_mask: grad_vel_z_mask,
+                                                pitch: grad_pitch,
+                                                weight_ln: grad_weight,
                                             } = &grad.terms[term_idx];
 
                                             egui::CollapsingHeader::new("masks")
@@ -408,96 +412,39 @@ fn main() -> eframe::Result {
                                                         show_nn_grad,
                                                         show_nn_editor,
                                                     );
+                                                    show_mask(
+                                                        ui,
+                                                        "vel_y mask",
+                                                        false,
+                                                        vel_y_mask,
+                                                        grad_vel_y_mask,
+                                                        show_nn_grad,
+                                                        show_nn_editor,
+                                                    );
+                                                    show_mask(
+                                                        ui,
+                                                        "vel_z mask",
+                                                        false,
+                                                        vel_z_mask,
+                                                        grad_vel_z_mask,
+                                                        show_nn_grad,
+                                                        show_nn_editor,
+                                                    );
                                                 });
 
                                             egui::CollapsingHeader::new("pitch map")
                                                 .default_open(true)
                                                 .show(ui, |ui| {
-                                                    let Affine {
-                                                        weights:
-                                                            [tick_coeff, vel_y_coeff, vel_z_coeff],
-                                                        bias,
-                                                    } = pitch_map;
-                                                    let Affine {
-                                                        weights:
-                                                            [
-                                                                grad_tick_coeff,
-                                                                grad_vel_y_coeff,
-                                                                grad_vel_z_coeff,
-                                                            ],
-                                                        bias: grad_bias,
-                                                    } = grad_pitch_map;
-
-                                                    ui.label(format!(
-                                                        "tick coeff: {:.06}",
-                                                        tick_coeff
-                                                    ));
+                                                    ui.label(format!("pitch: {:.06}", pitch));
                                                     if show_nn_grad {
                                                         ui.label(format!(
-                                                            "tick coeff grad: {:.06}",
-                                                            grad_tick_coeff
+                                                            "pitch grad: {:.06}",
+                                                            grad_pitch
                                                         ));
                                                     }
                                                     if show_nn_editor {
                                                         ui.add(
-                                                            egui::Slider::new(
-                                                                tick_coeff,
-                                                                -1.0..=1.0,
-                                                            )
-                                                            .clamping(egui::SliderClamping::Never),
-                                                        );
-                                                    }
-
-                                                    ui.label(format!(
-                                                        "vel_y coeff: {:.06}",
-                                                        vel_y_coeff
-                                                    ));
-                                                    if show_nn_grad {
-                                                        ui.label(format!(
-                                                            "vel_y coeff grad: {:.06}",
-                                                            grad_vel_y_coeff
-                                                        ));
-                                                    }
-                                                    if show_nn_editor {
-                                                        ui.add(
-                                                            egui::Slider::new(
-                                                                vel_y_coeff,
-                                                                -10.0..=10.0,
-                                                            )
-                                                            .clamping(egui::SliderClamping::Never),
-                                                        );
-                                                    }
-
-                                                    ui.label(format!(
-                                                        "vel_z coeff: {:.06}",
-                                                        vel_z_coeff
-                                                    ));
-                                                    if show_nn_grad {
-                                                        ui.label(format!(
-                                                            "vel_z coeff grad: {:.06}",
-                                                            grad_vel_z_coeff
-                                                        ));
-                                                    }
-                                                    if show_nn_editor {
-                                                        ui.add(
-                                                            egui::Slider::new(
-                                                                vel_z_coeff,
-                                                                -10.0..=10.0,
-                                                            )
-                                                            .clamping(egui::SliderClamping::Never),
-                                                        );
-                                                    }
-
-                                                    ui.label(format!("bias: {:.06}", bias));
-                                                    if show_nn_grad {
-                                                        ui.label(format!(
-                                                            "bias grad: {:.06}",
-                                                            grad_bias
-                                                        ));
-                                                    }
-                                                    if show_nn_editor {
-                                                        ui.add(
-                                                            egui::Slider::new(bias, -90.0..=90.0)
+                                                            egui::Slider::new(pitch, -90.0..=90.0)
                                                                 .clamping(
                                                                     egui::SliderClamping::Never,
                                                                 ),

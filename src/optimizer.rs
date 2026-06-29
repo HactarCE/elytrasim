@@ -140,43 +140,49 @@ mod splat {
     #[derive(Debug, Clone)]
     pub struct Mask {
         mu: f32,
-        sigma: f32,
+        sigma_ln: f32,
     }
     impl Mask {
         const ZERO: Self = Self {
             mu: 0.0,
-            sigma: 0.0,
+            sigma_ln: 0.0,
         };
 
         const RAD_SCALE: f32 = 3.0 - 2.0 * std::f32::consts::SQRT_2;
 
-        pub fn new(mu: f32, sigma: f32) -> Self {
-            Self { mu, sigma }
+        pub fn new(mu: f32, sigma_ln: f32) -> Self {
+            Self { mu, sigma_ln }
         }
 
         pub fn mu(&self) -> f32 {
             self.mu
         }
-        pub fn sigma(&self) -> f32 {
-            self.sigma
+        pub fn sigma_ln(&self) -> f32 {
+            self.sigma_ln
         }
 
         pub fn set_mu(&mut self, mu: f32) {
             self.mu = mu;
         }
-        pub fn set_sigma(&mut self, sigma: f32) {
-            self.sigma = sigma;
+        pub fn set_sigma_ln(&mut self, sigma_ln: f32) {
+            self.sigma_ln = sigma_ln;
         }
 
         fn into_array(self) -> [f32; 2] {
-            [self.mu, self.sigma]
+            [self.mu, self.sigma_ln]
         }
-        fn from_array([mu, sigma]: [f32; 2]) -> Self {
-            Self { mu, sigma }
+        fn from_array([mu, sigma_ln]: [f32; 2]) -> Self {
+            Self { mu, sigma_ln }
         }
 
         fn forward(&self, x: f32) -> f32 {
-            1.0 / (1.0 + (-self.sigma * (x - self.mu)).exp())
+            // sigmoid
+            // 1.0 / (1.0 + (-self.sigma * (x - self.mu)).exp())
+
+            // gaussian
+            let sigma = self.sigma_ln.exp();
+            let x = (x - self.mu) / sigma;
+            (-x * x).exp()
         }
 
         // /// guarantee that at least `1.0 - epsilon` of the area
@@ -217,18 +223,19 @@ mod splat {
     #[derive(Debug, Clone)]
     pub struct Term {
         pub tick_mask: Mask,
-        // TODO: this should get put through a 90*sigmoid (or something that's near linear at the origin)
-        // the ui stuff can get fed through the sigmoid_inv before being show.
-        pub pitch_map: Affine<3>,
-        // TODO: this should be a function of tick and vel, but for now it's just a constant
-        /// this should always start very small.
-        pub weight: f32,
+        pub vel_y_mask: Mask,
+        pub vel_z_mask: Mask,
+        pub pitch: f32,
+        /// this should always start at 0.
+        pub weight_ln: f32,
     }
     impl Term {
         const ZERO: Self = Self {
             tick_mask: Mask::ZERO,
-            pitch_map: Affine::ZERO,
-            weight: 0.0,
+            vel_y_mask: Mask::ZERO,
+            vel_z_mask: Mask::ZERO,
+            pitch: 0.0,
+            weight_ln: 0.0,
         };
 
         const WEIGHT_DEFAULT: f32 = 0.0;
@@ -236,48 +243,96 @@ mod splat {
         pub fn new_random() -> Self {
             let mut rng = rand::rng();
             let tick_mask = Mask::new(
-                rng.random_range(-50.0..=500.0),
-                rng.random_range(-5.0..=5.0),
+                rng.random_range(-50.0..=400.0),
+                rng.random_range(2.0..=50.0_f32).ln(),
             );
-            let pitch_map = Affine {
-                weights: [
-                    rng.random_range(-0.5..=0.5),
-                    rng.random_range(-1.0..=1.0),
-                    rng.random_range(-1.0..=1.0),
-                ],
-                bias: rng.random_range(-80.0..=80.0),
-            };
+            let vel_y_mask = Mask::new(
+                rng.random_range(-3.0..=3.0),
+                rng.random_range(0.1..=5.0_f32).ln(),
+            );
+            let vel_z_mask = Mask::new(
+                rng.random_range(-1.0..=4.0),
+                rng.random_range(0.1..=5.0_f32).ln(),
+            );
+            let pitch = rng.random_range(-80.0..=80.0);
+            let weight_ln = Self::WEIGHT_DEFAULT;
             Term {
                 tick_mask,
-                pitch_map,
-                weight: Self::WEIGHT_DEFAULT,
+                vel_y_mask,
+                vel_z_mask,
+                pitch,
+                weight_ln,
             }
         }
 
-        fn into_array(self) -> [f32; 7] {
-            self.tick_mask
-                .into_array()
-                .into_iter()
-                .chain(self.pitch_map.into_array())
-                .chain(std::iter::once(self.weight))
-                .collect_vec()
-                .try_into()
-                .unwrap()
+        fn into_array(self) -> [f32; 8] {
+            let Self {
+                tick_mask:
+                    Mask {
+                        mu: tick_mu,
+                        sigma_ln: tick_sigma_ln,
+                    },
+                vel_y_mask:
+                    Mask {
+                        mu: vel_y_mu,
+                        sigma_ln: vel_y_sigma_ln,
+                    },
+                vel_z_mask:
+                    Mask {
+                        mu: vel_z_mu,
+                        sigma_ln: vel_z_sigma_ln,
+                    },
+                pitch,
+                weight_ln: weight,
+            } = self;
+            [
+                tick_mu,
+                tick_sigma_ln,
+                vel_y_mu,
+                vel_y_sigma_ln,
+                vel_z_mu,
+                vel_z_sigma_ln,
+                pitch,
+                weight,
+            ]
         }
-        fn from_array(arr: [f32; 7]) -> Self {
+        fn from_array(arr: [f32; 8]) -> Self {
+            let [
+                tick_mu,
+                tick_sigma_ln,
+                vel_y_mu,
+                vel_y_sigma_ln,
+                vel_z_mu,
+                vel_z_sigma_ln,
+                pitch,
+                weight_ln,
+            ] = arr;
             Self {
-                tick_mask: Mask::from_array(arr[..2].try_into().unwrap()),
-                pitch_map: Affine::from_array(arr[2..].try_into().unwrap()),
-                weight: arr[6],
+                tick_mask: Mask {
+                    mu: tick_mu,
+                    sigma_ln: tick_sigma_ln,
+                },
+                vel_y_mask: Mask {
+                    mu: vel_y_mu,
+                    sigma_ln: vel_y_sigma_ln,
+                },
+                vel_z_mask: Mask {
+                    mu: vel_z_mu,
+                    sigma_ln: vel_z_sigma_ln,
+                },
+                pitch,
+                weight_ln,
             }
         }
 
         /// (pitch, weight)
         fn forward(&self, tick: usize, vel: Vel3) -> (Pitch, f32) {
             let x = [tick as f32, vel.y as f32, vel.z as f32];
-            let mask = self.tick_mask.forward(x[0]);
-            let pitch = self.pitch_map.forward(&x);
-            let weight = self.weight;
+            let mask = self.tick_mask.forward(x[0])
+                * self.vel_y_mask.forward(x[1])
+                * self.vel_z_mask.forward(x[2]);
+            let pitch = self.pitch;
+            let weight = self.weight_ln.exp();
             (mask * pitch, mask * weight)
         }
     }
@@ -299,20 +354,18 @@ mod splat {
             Self {
                 terms: vec![
                     Term {
-                        tick_mask: Mask::new(110.0, 3.0),
-                        pitch_map: Affine {
-                            weights: [0.0, 0.0, 0.0],
-                            bias: 40.0,
-                        },
-                        weight: 1.0,
+                        tick_mask: Mask::new(200.0, 50.0_f32.ln()),
+                        vel_y_mask: Mask::new(0.0, 5.0_f32.ln()),
+                        vel_z_mask: Mask::new(0.0, 5.0_f32.ln()),
+                        pitch: 40.0,
+                        weight_ln: 1.0,
                     },
                     Term {
-                        tick_mask: Mask::new(90.0, -3.0),
-                        pitch_map: Affine {
-                            weights: [-0.5, 0.0, 0.0],
-                            bias: -10.0,
-                        },
-                        weight: 1.0,
+                        tick_mask: Mask::new(50.0, 30.0_f32.ln()),
+                        vel_y_mask: Mask::new(0.0, 5.0_f32.ln()),
+                        vel_z_mask: Mask::new(0.0, 5.0_f32.ln()),
+                        pitch: -40.0,
+                        weight_ln: 1.0,
                     },
                 ],
             }
@@ -478,8 +531,8 @@ mod splat {
     }
 
     pub struct Adam {
-        m: Vec<[f32; 7]>,
-        v: Vec<[f32; 7]>,
+        m: Vec<[f32; 8]>,
+        v: Vec<[f32; 8]>,
         t: u64,
         pub beta1: f32,
         pub beta2: f32,
@@ -489,8 +542,8 @@ mod splat {
     impl Adam {
         pub fn new(num_terms: usize) -> Self {
             Self {
-                m: vec![[0.0; 7]; num_terms],
-                v: vec![[0.0; 7]; num_terms],
+                m: vec![[0.0; 8]; num_terms],
+                v: vec![[0.0; 8]; num_terms],
                 t: 0,
                 beta1: 0.9,
                 beta2: 0.999,
@@ -500,8 +553,8 @@ mod splat {
         }
 
         pub fn reset(&mut self, num_terms: usize) {
-            self.m = vec![[0.0; 7]; num_terms];
-            self.v = vec![[0.0; 7]; num_terms];
+            self.m = vec![[0.0; 8]; num_terms];
+            self.v = vec![[0.0; 8]; num_terms];
             self.t = 0;
         }
 
@@ -524,6 +577,8 @@ mod splat {
             for term_idx in 0..nn.terms.len() {
                 let mut param = nn.terms[term_idx].clone().into_array();
                 let g = grad.terms[term_idx].clone().into_array();
+                assert_eq!(self.m[term_idx].len(), param.len());
+                assert_eq!(self.v[term_idx].len(), param.len());
 
                 for i in 0..param.len() {
                     self.m[term_idx][i] = b1 * self.m[term_idx][i] + (1.0 - b1) * g[i];
