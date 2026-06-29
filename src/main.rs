@@ -51,10 +51,10 @@ fn main() -> eframe::Result {
 
     let mut jitter = Jitter::new(&jitter_params);
 
+    let mut adam = Adam::new(nn.terms.len());
     let mut learning_rate = 0.001;
     // this has no effect if resample_jitter_on_optimization_step is disabled
     let mut batch_size = 8;
-    let mut decay = 0.0;
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
 
@@ -165,10 +165,12 @@ fn main() -> eframe::Result {
                                     if ui.button("-").on_hover_text("hold shift for 10x").clicked()
                                     {
                                         nn.terms.truncate(nn.terms.len().saturating_sub(mul));
+                                        adam.reset(nn.terms.len());
                                     }
                                     if ui.button("+").on_hover_text("hold shift for 10x").clicked()
                                     {
                                         nn.terms.extend((0..mul).map(|_| Term::new_random()));
+                                        adam.reset(nn.terms.len());
                                     }
                                 });
 
@@ -519,6 +521,13 @@ fn main() -> eframe::Result {
                                         .clamping(egui::SliderClamping::Never),
                                 );
 
+                                ui.label("weight decay:");
+                                ui.add(
+                                    egui::Slider::new(&mut adam.weight_decay, 0.0..=0.1)
+                                        .logarithmic(true)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
                                 ui.label("batch size:");
                                 ui.add(
                                     egui::Slider::new(&mut batch_size, 1..=20)
@@ -531,17 +540,8 @@ fn main() -> eframe::Result {
                                         .clamping(egui::SliderClamping::Never),
                                 );
 
-                                ui.label("decay:");
-                                ui.add(
-                                    egui::Slider::new(&mut decay, 0.0..=0.01)
-                                        .logarithmic(true)
-                                        .clamping(egui::SliderClamping::Never),
-                                );
-
                                 let goodness = goodness_params.build();
                                 let mut do_optimization_step = || {
-                                    nn.decay(1.0 - decay);
-
                                     // gradient descent
                                     {
                                         let grad = if resample_jitter_on_optimization_step {
@@ -578,7 +578,7 @@ fn main() -> eframe::Result {
                                             )
                                         };
 
-                                        nn.apply_grad(&grad, learning_rate);
+                                        adam.step(&mut nn, &grad, learning_rate);
                                     }
 
                                     after_states_without_jitter

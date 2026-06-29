@@ -482,4 +482,67 @@ mod splat {
             self
         }
     }
+
+    pub struct Adam {
+        m: Vec<[f32; 6]>,
+        v: Vec<[f32; 6]>,
+        t: u64,
+        pub beta1: f32,
+        pub beta2: f32,
+        pub epsilon: f32,
+        pub weight_decay: f32,
+    }
+    impl Adam {
+        pub fn new(num_terms: usize) -> Self {
+            Self {
+                m: vec![[0.0; 6]; num_terms],
+                v: vec![[0.0; 6]; num_terms],
+                t: 0,
+                beta1: 0.9,
+                beta2: 0.999,
+                epsilon: 1e-8,
+                weight_decay: 0.01,
+            }
+        }
+
+        pub fn reset(&mut self, num_terms: usize) {
+            self.m = vec![[0.0; 6]; num_terms];
+            self.v = vec![[0.0; 6]; num_terms];
+            self.t = 0;
+        }
+
+        pub fn step(&mut self, nn: &mut Nn, grad: &Nn, learning_rate: f32) {
+            assert_eq!(nn.terms.len(), grad.terms.len());
+            assert_eq!(nn.terms.len(), self.m.len());
+            assert_eq!(nn.terms.len(), self.v.len());
+
+            self.t += 1;
+            let t = self.t;
+            let b1 = self.beta1;
+            let b2 = self.beta2;
+            let eps = self.epsilon;
+            let wd = self.weight_decay;
+            let lr = learning_rate;
+
+            let bc1 = 1.0 - b1.powi(t as i32);
+            let bc2 = 1.0 - b2.powi(t as i32);
+
+            for term_idx in 0..nn.terms.len() {
+                let mut param = nn.terms[term_idx].clone().into_array();
+                let g = grad.terms[term_idx].clone().into_array();
+
+                for i in 0..6 {
+                    self.m[term_idx][i] = b1 * self.m[term_idx][i] + (1.0 - b1) * g[i];
+                    self.v[term_idx][i] = b2 * self.v[term_idx][i] + (1.0 - b2) * g[i] * g[i];
+
+                    let m_hat = self.m[term_idx][i] / bc1;
+                    let v_hat = self.v[term_idx][i] / bc2;
+
+                    param[i] = param[i] * (1.0 - lr * wd) + lr * m_hat / (v_hat.sqrt() + eps);
+                }
+
+                nn.terms[term_idx] = Term::from_array(param);
+            }
+        }
+    }
 }
