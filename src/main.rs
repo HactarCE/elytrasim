@@ -32,7 +32,7 @@ fn main() -> eframe::Result {
     // TODO: better initialization
     let mut nn = Nn::new_4040();
     let mut show_nn_grad = true;
-    let mut show_nn_sliders = true;
+    let mut show_nn_editor = true;
 
     let mut init_vel = Vel3::ZERO;
     // the optimal steady state vel
@@ -150,7 +150,7 @@ fn main() -> eframe::Result {
                             .default_open(true)
                             .show(ui, |ui| {
                                 ui.checkbox(&mut show_nn_grad, "show gradient");
-                                ui.checkbox(&mut show_nn_sliders, "show sliders");
+                                ui.checkbox(&mut show_nn_editor, "show editor");
 
                                 // increase / decrease num_terms
                                 ui.horizontal(|ui| {
@@ -192,18 +192,11 @@ fn main() -> eframe::Result {
                                     Nn::zero(nn.terms.len())
                                 };
 
-                                for (term_idx, (term, grad_term)) in
-                                    nn.terms.iter_mut().zip(grad.terms.iter()).enumerate()
-                                {
-                                    let Term {
-                                        masks: [tick_mask, vel_y_mask, vel_z_mask],
-                                        pitch_map,
-                                    } = term;
-                                    let Term {
-                                        masks: [grad_tick_mask, grad_vel_y_mask, grad_vel_z_mask],
-                                        pitch_map: grad_pitch_map,
-                                    } = grad_term;
+                                let mut term_idx = 0;
+                                while term_idx < nn.terms.len() {
+                                    // TODO: show the pitches that a term contributes
 
+                                    let mut increment = true;
                                     egui::CollapsingHeader::new(format!("term {}", term_idx))
                                         .default_open(false)
                                         .show(ui, |ui| {
@@ -225,7 +218,7 @@ fn main() -> eframe::Result {
                                                             ui.label(format!("mu: {:.06}", mu));
                                                             if show_nn_grad {
                                                                 ui.label(format!(
-                                                                    "grad mu: {:.06}",
+                                                                    "mu grad: {:.06}",
                                                                     grad_mask.mu()
                                                                 ));
                                                             }
@@ -258,7 +251,7 @@ fn main() -> eframe::Result {
                                                             ));
                                                             if show_nn_grad {
                                                                 ui.label(format!(
-                                                                    "grad sigma: {:.06}",
+                                                                    "sigma grad: {:.06}",
                                                                     grad_mask.sigma_raw()
                                                                 ));
                                                             }
@@ -311,33 +304,59 @@ fn main() -> eframe::Result {
                                                     });
                                             }
 
-                                            show_mask(
-                                                ui,
-                                                "tick mask",
-                                                true,
-                                                tick_mask,
-                                                grad_tick_mask,
-                                                show_nn_grad,
-                                                show_nn_sliders,
-                                            );
-                                            show_mask(
-                                                ui,
-                                                "vel y mask",
-                                                false,
-                                                vel_y_mask,
-                                                grad_vel_y_mask,
-                                                show_nn_grad,
-                                                show_nn_sliders,
-                                            );
-                                            show_mask(
-                                                ui,
-                                                "vel z mask",
-                                                false,
-                                                vel_z_mask,
-                                                grad_vel_z_mask,
-                                                show_nn_grad,
-                                                show_nn_sliders,
-                                            );
+                                            if show_nn_editor{
+                                                if ui.button("randomize").clicked() {
+                                                    nn.terms[term_idx] = Term::new_random();
+                                                }
+                                                if ui.button("delete").clicked() {
+                                                    nn.terms.remove(term_idx);
+                                                    increment = false;
+                                                }
+                                                if ui.button("duplicate").clicked() {
+                                                    nn.terms.insert(term_idx, nn.terms[term_idx].clone());
+                                                }
+                                            }
+
+                                            let Term {
+                                                masks: [tick_mask, vel_y_mask, vel_z_mask],
+                                                pitch_map,
+                                            } = &mut nn.terms[term_idx];
+                                            let Term {
+                                                masks: [grad_tick_mask, grad_vel_y_mask, grad_vel_z_mask],
+                                                pitch_map: grad_pitch_map,
+                                            } = &grad.terms[term_idx];
+
+                                            egui::CollapsingHeader::new("masks")
+                                                .default_open(true)
+                                                .show_unindented(ui, |ui| {
+                                                show_mask(
+                                                    ui,
+                                                    "tick mask",
+                                                    true,
+                                                    tick_mask,
+                                                    grad_tick_mask,
+                                                    show_nn_grad,
+                                                    show_nn_editor,
+                                                );
+                                                show_mask(
+                                                    ui,
+                                                    "vel y mask",
+                                                    false,
+                                                    vel_y_mask,
+                                                    grad_vel_y_mask,
+                                                    show_nn_grad,
+                                                    show_nn_editor,
+                                                );
+                                                show_mask(
+                                                    ui,
+                                                    "vel z mask",
+                                                    false,
+                                                    vel_z_mask,
+                                                    grad_vel_z_mask,
+                                                    show_nn_grad,
+                                                    show_nn_editor,
+                                                );
+                                            });
 
                                             egui::CollapsingHeader::new("pitch map")
                                                 .default_open(true)
@@ -363,11 +382,11 @@ fn main() -> eframe::Result {
                                                     ));
                                                     if show_nn_grad {
                                                         ui.label(format!(
-                                                            "grad tick coeff: {:.06}",
+                                                            "tick coeff grad: {:.06}",
                                                             grad_tick_coeff
                                                         ));
                                                     }
-                                                    if show_nn_sliders {
+                                                    if show_nn_editor {
                                                         ui.add(
                                                             egui::Slider::new(
                                                                 tick_coeff,
@@ -383,11 +402,11 @@ fn main() -> eframe::Result {
                                                     ));
                                                     if show_nn_grad {
                                                         ui.label(format!(
-                                                            "grad vel_y coeff: {:.06}",
+                                                            "vel_y coeff grad: {:.06}",
                                                             grad_vel_y_coeff
                                                         ));
                                                     }
-                                                    if show_nn_sliders {
+                                                    if show_nn_editor {
                                                         ui.add(
                                                             egui::Slider::new(
                                                                 vel_y_coeff,
@@ -403,11 +422,11 @@ fn main() -> eframe::Result {
                                                     ));
                                                     if show_nn_grad {
                                                         ui.label(format!(
-                                                            "grad vel_z coeff: {:.06}",
+                                                            "vel_z coeff grad: {:.06}",
                                                             grad_vel_z_coeff
                                                         ));
                                                     }
-                                                    if show_nn_sliders {
+                                                    if show_nn_editor {
                                                         ui.add(
                                                             egui::Slider::new(
                                                                 vel_z_coeff,
@@ -418,7 +437,13 @@ fn main() -> eframe::Result {
                                                     }
 
                                                     ui.label(format!("bias: {:.06}", bias));
-                                                    if show_nn_sliders {
+                                                    if show_nn_grad {
+                                                        ui.label(format!(
+                                                            "bias grad: {:.06}",
+                                                            grad_bias
+                                                        ));
+                                                    }
+                                                    if show_nn_editor {
                                                         ui.add(
                                                             egui::Slider::new(bias, -90.0..=90.0)
                                                                 .clamping(
@@ -428,6 +453,9 @@ fn main() -> eframe::Result {
                                                     }
                                                 });
                                         });
+                                    if increment {
+                                        term_idx += 1;
+                                    }
                                 }
                             });
 

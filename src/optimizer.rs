@@ -251,6 +251,8 @@ mod splat {
     pub struct Term {
         /// `[tick, vel_y, vel_z]`
         pub masks: [Mask; 3],
+        // TODO: this should get put through a 90*sigmoid (or something that's near linear at the origin)
+        // the ui stuff can get fed through the sigmoid_inv before being show.
         pub pitch_map: Affine<3>,
         // weight:
     }
