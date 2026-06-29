@@ -56,10 +56,10 @@ fn main() -> eframe::Result {
 
     let mut jitter = Jitter::new(&jitter_params, num_ticks);
 
-    let mut learning_rate = 500.0;
+    let mut adam = Adam::new(num_ticks);
+    let mut learning_rate = 0.1;
     // this has no effect if resample_jitter_on_optimization_step is disabled
     let mut batch_size = 8;
-    let mut decay = 0.0;
     let mut optimizing = false;
     let mut optimization_steps_per_frame: usize = 10;
 
@@ -159,6 +159,7 @@ fn main() -> eframe::Result {
                                             pitches.last().copied().unwrap_or(0.0),
                                         );
                                         jitter.resize(&jitter_params, num_ticks);
+                                        adam.reset(num_ticks);
                                     }
                                 });
                             });
@@ -282,7 +283,14 @@ fn main() -> eframe::Result {
                             .show(ui, |ui| {
                                 ui.label("learning rate:");
                                 ui.add(
-                                    egui::Slider::new(&mut learning_rate, 10.0..=10000.0)
+                                    egui::Slider::new(&mut learning_rate, 0.0001..=10.0)
+                                        .logarithmic(true)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
+                                ui.label("decay:");
+                                ui.add(
+                                    egui::Slider::new(&mut adam.weight_decay, 0.0..=0.01)
                                         .logarithmic(true)
                                         .clamping(egui::SliderClamping::Never),
                                 );
@@ -299,78 +307,8 @@ fn main() -> eframe::Result {
                                         .clamping(egui::SliderClamping::Never),
                                 );
 
-                                ui.label("decay:");
-                                ui.add(
-                                    egui::Slider::new(&mut decay, 0.0..=0.01)
-                                        .logarithmic(true)
-                                        .clamping(egui::SliderClamping::Never),
-                                );
-
                                 let goodness = goodness_params.build();
                                 let mut do_optimization_step = || {
-                                    // let before = pitches.clone();
-                                    apply_decay(&mut pitches, 1.0 - decay);
-                                    // dbg!(before.iter().zip(&pitches).map(|(b, p)| (b, p, b - p)).collect_vec());
-                                    // if decay == 0.0 {
-                                    //     for (b, p) in before.iter().zip(&pitches) {
-                                    //         assert!(
-                                    //             (b - p).abs() < 1e-3,
-                                    //             "before: {}, after: {}, diff: {}",
-                                    //             b,
-                                    //             p,
-                                    //             b - p
-                                    //         );
-                                    //     }
-                                    // }
-
-                                    // pick a random direction in pitch space and do a derivative step along that direction
-                                    #[cfg(false)]
-                                    {
-                                        let dir = rand_pitches_dir(num_ticks);
-                                        let deriv = if resample_jitter_on_optimization_step {
-                                            // one of the jitters must be the one shown in the ui
-                                            // so that with a batch size of 1, you see exactly what's happening.
-                                            // TODO: really all of these should be shown on the ui. like the average gradient of them.
-                                            let jitters = std::iter::once(jitter.clone())
-                                                .chain((1..batch_size).map(|_| {
-                                                    Jitter::new(&jitter_params, num_ticks)
-                                                }))
-                                                .collect_vec();
-                                            jitter.resample_all(&jitter_params);
-
-                                            let derivs = jitters
-                                                .into_par_iter()
-                                                .map(|jitter| {
-                                                    let mut pitches = pitches.clone();
-                                                    deriv_along_pitches_dir(
-                                                        &goodness,
-                                                        init_vel,
-                                                        &mut pitches,
-                                                        &jitter,
-                                                        &dir,
-                                                    )
-                                                })
-                                                .collect::<Vec<_>>();
-
-                                            derivs.iter().sum::<f32>() / batch_size as f32
-                                        } else {
-                                            deriv_along_pitches_dir(
-                                                &goodness,
-                                                init_vel,
-                                                &mut pitches,
-                                                &jitter,
-                                                &dir,
-                                            )
-                                        };
-
-                                        deriv_step_along_pitches_dir(
-                                            &mut pitches,
-                                            &dir,
-                                            deriv,
-                                            learning_rate,
-                                        );
-                                    }
-
                                     // gradient descent
                                     // #[cfg(false)]
                                     {
@@ -421,7 +359,7 @@ fn main() -> eframe::Result {
                                                 .collect_vec()
                                         };
 
-                                        apply_grad(&mut pitches, &grad, learning_rate);
+                                        adam.step(&mut pitches, &grad, learning_rate);
                                     }
 
                                     after_states.push(forward_last(
