@@ -29,11 +29,6 @@ fn main() -> eframe::Result {
     // let ticks = 400; // like 18 delta y
     // let ticks = 500;
 
-    // TODO: better initialization
-    let mut nn = Nn::new_40_0_down();
-    let mut show_nn_grad = true;
-    let mut show_nn_editor = true;
-
     let mut init_vel = Vel3::ZERO;
     // the optimal steady state vel
     // let mut init_vel = Vel3::new(0.0, 0.17, 0.2);
@@ -48,8 +43,12 @@ fn main() -> eframe::Result {
         init_vel_y_std: 0.1,
         init_vel_z_std: 0.1,
     };
-
     let mut jitter = Jitter::new(&jitter_params);
+
+    // TODO: better initialization
+    let mut nn = Nn::new_40_0_down();
+    let mut show_nn_grad = true;
+    let mut show_nn_editor = true;
 
     let mut adam = Adam::new(nn.terms.len());
     let mut learning_rate = 0.001;
@@ -144,6 +143,64 @@ fn main() -> eframe::Result {
                                         num_ticks += mul;
                                     }
                                 });
+                            });
+
+                        // jitter
+                        egui::CollapsingHeader::new("jitter stuff")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                ui.checkbox(&mut draw_with_jitter, "draw with jitter");
+                                ui.checkbox(&mut draw_without_jitter, "draw without jitter");
+
+                                ui.checkbox(
+                                    &mut resample_jitter_on_optimization_step,
+                                    "resample jitter on optimization step",
+                                );
+
+                                if ui.button("resample all").clicked() {
+                                    jitter.resample_all(&jitter_params);
+                                }
+
+                                ui.label("init_vel_y:");
+                                ui.add(
+                                    egui::Slider::new(&mut init_vel.y, -0.2..=0.2)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
+                                ui.label("init_vel_z:");
+                                ui.add(
+                                    egui::Slider::new(&mut init_vel.z, -0.2..=0.2)
+                                        .clamping(egui::SliderClamping::Never),
+                                );
+
+                                ui.label("init_vel_y std:");
+
+                                if ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut jitter_params.init_vel_y_std,
+                                            0.0..=0.2,
+                                        )
+                                        .clamping(egui::SliderClamping::Never),
+                                    )
+                                    .changed()
+                                {
+                                    jitter.resample_init_vel_y(jitter_params.init_vel_y_std);
+                                }
+
+                                ui.label("init_vel_z std:");
+                                if ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut jitter_params.init_vel_z_std,
+                                            0.0..=0.2,
+                                        )
+                                        .clamping(egui::SliderClamping::Never),
+                                    )
+                                    .changed()
+                                {
+                                    jitter.resample_init_vel_z(jitter_params.init_vel_z_std);
+                                }
                             });
 
                         egui::CollapsingHeader::new("nn")
@@ -331,10 +388,12 @@ fn main() -> eframe::Result {
                                             let Term {
                                                 tick_mask,
                                                 pitch_map,
+                                                weight,
                                             } = &mut nn.terms[term_idx];
                                             let Term {
                                                 tick_mask: grad_tick_mask,
                                                 pitch_map: grad_pitch_map,
+                                                weight: grad_weight,
                                             } = &grad.terms[term_idx];
 
                                             egui::CollapsingHeader::new("masks")
@@ -445,68 +504,30 @@ fn main() -> eframe::Result {
                                                         );
                                                     }
                                                 });
+
+                                            egui::CollapsingHeader::new("weight map")
+                                                .default_open(true)
+                                                .show(ui, |ui| {
+                                                    ui.label(format!("weight: {:.06}", weight));
+                                                    if show_nn_grad {
+                                                        ui.label(format!(
+                                                            "weight grad: {:.06}",
+                                                            grad_weight
+                                                        ));
+                                                    }
+                                                    if show_nn_editor {
+                                                        ui.add(
+                                                            egui::Slider::new(weight, -10.0..=10.0)
+                                                                .clamping(
+                                                                    egui::SliderClamping::Never,
+                                                                ),
+                                                        );
+                                                    }
+                                                });
                                         });
                                     if increment {
                                         term_idx += 1;
                                     }
-                                }
-                            });
-
-                        // jitter
-                        egui::CollapsingHeader::new("jitter stuff")
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                ui.checkbox(&mut draw_with_jitter, "draw with jitter");
-                                ui.checkbox(&mut draw_without_jitter, "draw without jitter");
-
-                                ui.checkbox(
-                                    &mut resample_jitter_on_optimization_step,
-                                    "resample jitter on optimization step",
-                                );
-
-                                if ui.button("resample all").clicked() {
-                                    jitter.resample_all(&jitter_params);
-                                }
-
-                                ui.label("init_vel_y:");
-                                ui.add(
-                                    egui::Slider::new(&mut init_vel.y, -0.2..=0.2)
-                                        .clamping(egui::SliderClamping::Never),
-                                );
-
-                                ui.label("init_vel_z:");
-                                ui.add(
-                                    egui::Slider::new(&mut init_vel.z, -0.2..=0.2)
-                                        .clamping(egui::SliderClamping::Never),
-                                );
-
-                                ui.label("init_vel_y std:");
-
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut jitter_params.init_vel_y_std,
-                                            0.0..=0.2,
-                                        )
-                                        .clamping(egui::SliderClamping::Never),
-                                    )
-                                    .changed()
-                                {
-                                    jitter.resample_init_vel_y(jitter_params.init_vel_y_std);
-                                }
-
-                                ui.label("init_vel_z std:");
-                                if ui
-                                    .add(
-                                        egui::Slider::new(
-                                            &mut jitter_params.init_vel_z_std,
-                                            0.0..=0.2,
-                                        )
-                                        .clamping(egui::SliderClamping::Never),
-                                    )
-                                    .changed()
-                                {
-                                    jitter.resample_init_vel_z(jitter_params.init_vel_z_std);
                                 }
                             });
 
@@ -591,7 +612,10 @@ fn main() -> eframe::Result {
                                 if ui.button("optimization step").clicked() {
                                     do_optimization_step();
                                 }
-                                ui.checkbox(&mut optimizing, "optimizing");
+                                ui.checkbox(
+                                    &mut optimizing,
+                                    egui::RichText::new("optimizing").strong(),
+                                );
 
                                 // do the optimization steps
                                 if optimizing {

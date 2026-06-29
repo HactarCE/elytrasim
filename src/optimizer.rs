@@ -26,6 +26,12 @@ impl PitchUtil {
         const EPSILON: Pitch = 1e-4;
         pitch.clamp(-90.0 + EPSILON, 90.0 - EPSILON)
     }
+
+    /// activation function to soft clamp the pitch to [-90, 90].
+    /// check out this [graph](https://www.desmos.com/calculator/y5qqjt4m8w).
+    fn sigmoid(pitch: Pitch) -> Pitch {
+        90.0 * (2.0 / (1.0 + (-(2.0 / 90.0) * pitch).exp()) - 1.0)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -214,13 +220,18 @@ mod splat {
         // TODO: this should get put through a 90*sigmoid (or something that's near linear at the origin)
         // the ui stuff can get fed through the sigmoid_inv before being show.
         pub pitch_map: Affine<3>,
-        // weight:
+        // TODO: this should be a function of tick and vel, but for now it's just a constant
+        /// this should always start very small.
+        pub weight: f32,
     }
     impl Term {
         const ZERO: Self = Self {
             tick_mask: Mask::ZERO,
             pitch_map: Affine::ZERO,
+            weight: 0.0,
         };
+
+        const WEIGHT_DEFAULT: f32 = 0.0;
 
         pub fn new_random() -> Self {
             let mut rng = rand::rng();
@@ -239,32 +250,35 @@ mod splat {
             Term {
                 tick_mask,
                 pitch_map,
+                weight: Self::WEIGHT_DEFAULT,
             }
         }
 
-        fn into_array(self) -> [f32; 6] {
+        fn into_array(self) -> [f32; 7] {
             self.tick_mask
                 .into_array()
                 .into_iter()
                 .chain(self.pitch_map.into_array())
+                .chain(std::iter::once(self.weight))
                 .collect_vec()
                 .try_into()
                 .unwrap()
         }
-        fn from_array(arr: [f32; 6]) -> Self {
+        fn from_array(arr: [f32; 7]) -> Self {
             Self {
                 tick_mask: Mask::from_array(arr[..2].try_into().unwrap()),
                 pitch_map: Affine::from_array(arr[2..].try_into().unwrap()),
+                weight: arr[6],
             }
         }
 
-        fn forward(&self, tick: usize, vel: Vel3) -> Pitch {
+        /// (pitch, weight)
+        fn forward(&self, tick: usize, vel: Vel3) -> (Pitch, f32) {
             let x = [tick as f32, vel.y as f32, vel.z as f32];
             let mask = self.tick_mask.forward(x[0]);
-            let pitch = mask * self.pitch_map.forward(&x);
-            // activation function to soft clamp the pitch to [-90, 90].
-            // check out this [graph](https://www.desmos.com/calculator/y5qqjt4m8w).
-            90.0 * (2.0 / (1.0 + (-(2.0 / 90.0) * pitch).exp()) - 1.0)
+            let pitch = self.pitch_map.forward(&x);
+            let weight = self.weight;
+            (mask * pitch, mask * weight)
         }
     }
 
@@ -290,6 +304,7 @@ mod splat {
                             weights: [0.0, 0.0, 0.0],
                             bias: 40.0,
                         },
+                        weight: 1.0,
                     },
                     Term {
                         tick_mask: Mask::new(90.0, -3.0),
@@ -297,6 +312,7 @@ mod splat {
                             weights: [-0.5, 0.0, 0.0],
                             bias: -10.0,
                         },
+                        weight: 1.0,
                     },
                 ],
             }
@@ -304,12 +320,13 @@ mod splat {
 
         /// the guess of the best pitch at the given tick and velocity.
         pub fn forward(&self, tick: usize, vel: Vel3) -> Pitch {
-            let forward = self
-                .terms
-                .iter()
-                .map(|term| term.forward(tick, vel))
-                .sum::<f32>();
-            PitchUtil::clamped(forward)
+            let mut total_weight = 1.0;
+            let mut weighted_pitch = 0.0;
+            for (pitch, weight) in self.terms.iter().map(|term| term.forward(tick, vel)) {
+                total_weight += weight;
+                weighted_pitch += pitch * weight;
+            }
+            PitchUtil::sigmoid(weighted_pitch / total_weight)
         }
 
         /// do `num_ticks` autoregressive steps.
@@ -402,29 +419,6 @@ mod splat {
 
             grad
         }
-
-        pub fn apply_grad(&mut self, grad: &Self, learning_rate: f32) {
-            assert_eq!(self.terms.len(), grad.terms.len());
-            for (term, grad_term) in self.terms.iter_mut().zip(grad.terms.iter()) {
-                let mut term_arr = term.clone().into_array();
-                let grad_arr = grad_term.clone().into_array();
-                for i in 0..term_arr.len() {
-                    term_arr[i] += learning_rate * grad_arr[i];
-                }
-                *term = Term::from_array(term_arr);
-            }
-        }
-
-        /// 0.0 means no decay.
-        pub fn decay(&mut self, decay: f32) {
-            for term in self.terms.iter_mut() {
-                let mut term_arr = term.clone().into_array();
-                for i in 0..term_arr.len() {
-                    term_arr[i] *= decay;
-                }
-                *term = Term::from_array(term_arr);
-            }
-        }
     }
     impl std::ops::AddAssign<&Self> for Nn {
         fn add_assign(&mut self, rhs: &Self) {
@@ -484,8 +478,8 @@ mod splat {
     }
 
     pub struct Adam {
-        m: Vec<[f32; 6]>,
-        v: Vec<[f32; 6]>,
+        m: Vec<[f32; 7]>,
+        v: Vec<[f32; 7]>,
         t: u64,
         pub beta1: f32,
         pub beta2: f32,
@@ -495,8 +489,8 @@ mod splat {
     impl Adam {
         pub fn new(num_terms: usize) -> Self {
             Self {
-                m: vec![[0.0; 6]; num_terms],
-                v: vec![[0.0; 6]; num_terms],
+                m: vec![[0.0; 7]; num_terms],
+                v: vec![[0.0; 7]; num_terms],
                 t: 0,
                 beta1: 0.9,
                 beta2: 0.999,
@@ -506,8 +500,8 @@ mod splat {
         }
 
         pub fn reset(&mut self, num_terms: usize) {
-            self.m = vec![[0.0; 6]; num_terms];
-            self.v = vec![[0.0; 6]; num_terms];
+            self.m = vec![[0.0; 7]; num_terms];
+            self.v = vec![[0.0; 7]; num_terms];
             self.t = 0;
         }
 
@@ -531,7 +525,7 @@ mod splat {
                 let mut param = nn.terms[term_idx].clone().into_array();
                 let g = grad.terms[term_idx].clone().into_array();
 
-                for i in 0..6 {
+                for i in 0..param.len() {
                     self.m[term_idx][i] = b1 * self.m[term_idx][i] + (1.0 - b1) * g[i];
                     self.v[term_idx][i] = b2 * self.v[term_idx][i] + (1.0 - b2) * g[i] * g[i];
 
