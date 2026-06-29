@@ -356,6 +356,34 @@ pub fn forward_last(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> State
     forward(init_vel, pitches, jitter).last().unwrap().1
 }
 
+// pub fn forward(init_vel: Vel3, pitches: &[Pitch], jitter: &Jitter) -> impl Iterator<Item = State> {
+//     assert_eq!(pitches.len(), jitter.num_ticks());
+
+//     let mut pos_accumulator = Vec3::ZERO;
+//     let mut vel = init_vel + jitter.init_vel;
+
+//     (0..jitter.num_ticks()).map(move |tick| {
+//         let mut state = State {
+//             pos: jitter.poses[tick],
+//             vel: vel + jitter.vels[tick],
+//         }
+//         .ticked(pitches[tick] + jitter.pitches[tick]);
+
+//         state.pos -= jitter.poses[tick];
+//         if UNDO_JITTER_VEL.load(atomic::Ordering::Relaxed) {
+//             state.vel -= jitter.vels[tick];
+//         }
+
+//         pos_accumulator += state.pos;
+//         vel = state.vel;
+
+//         State {
+//             pos: pos_accumulator,
+//             vel,
+//         }
+//     })
+// }
+
 /// the gradient of goodness with respect to the pitch at the given tick.
 ///
 /// &mut pitches bc we want to modify them in place instead of cloning,
@@ -420,135 +448,38 @@ pub fn apply_grad(pitches: &mut [Pitch], grads: &[DGDP], learning_rate: f32) {
     }
 }
 
-pub use deriv_optim::*;
-mod deriv_optim {
+pub use decay::*;
+mod decay {
     use super::*;
 
-    // problem where you need two pitches to move together
-    // try picking a random direction in pitch space and doing a gradient step along that direction
-
-    // /// random on unit sphere
-    // pub fn rand_pitches_dir(num_ticks: usize) -> Vec<Pitch> {
-    //     let mut ret = rand::rng()
-    //         .sample_iter(rand_distr::StandardNormal)
-    //         .take(num_ticks)
-    //         .collect_vec();
-    //     let s = ret.iter().map(|x| x * x).sum::<f32>().sqrt();
-    //     for x in &mut ret {
-    //         *x /= s;
-    //     }
-    //     ret
-    // }
-
-    /// random pure direction
-    pub fn rand_pitches_dir(num_ticks: usize) -> Vec<Pitch> {
-        let tick = rand::rng().random_range(0..num_ticks);
-        let mut ret = vec![0.0; num_ticks];
-        ret[tick] = 1.0;
-        ret
+    /// ret has len `pitches.len() - 1`
+    fn delta(pitches: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
+        pitches.tuple_windows().map(|(a, b)| b - a)
     }
 
-    pub fn deriv_along_pitches_dir(
-        goodness: impl Fn(State) -> Goodness,
-        init_vel: Vel3,
-        pitches: &mut [Pitch],
-        jitter: &Jitter,
-        dir: &[Pitch],
-    ) -> DGDP {
-        const EPSILON: f32 = 0.1;
+    fn prefix_sum(first: f32, it: impl Iterator<Item = Pitch>) -> impl Iterator<Item = Pitch> {
+        std::iter::once(first).chain(
+            it.scan(0.0, |acc, delta| {
+                *acc += delta;
+                Some(*acc)
+            })
+            .map(move |val| first + val),
+        )
+    }
 
-        let right_pitches = pitches
-            .iter()
-            .zip(dir)
-            .map(|(pitch, dir)| PitchUtil::clamped(*pitch + EPSILON * *dir))
+    /// decay the pitch delta deltas
+    // TODO: try decaying the distance from the left and right neighbors
+    // rather than just the left neighbor.
+    // bc we kinda want the pitches to form straight lines.
+    pub fn apply_decay(pitches: &mut [Pitch], decay: f32) {
+        let deltas = delta(pitches.iter().copied()).collect_vec();
+        let delta_deltas = delta(deltas.iter().copied()).collect_vec();
+        assert_eq!(delta_deltas.len() + 2, pitches.len());
+        let decayed = delta_deltas.iter().map(|delta| delta * decay).collect_vec();
+        let new_deltas = prefix_sum(deltas[0], decayed.into_iter());
+        let new_pitches = prefix_sum(pitches[0], new_deltas)
+            .map(PitchUtil::clamped)
             .collect_vec();
-        let right_goodness = goodness(forward_last(init_vel, &right_pitches, jitter));
-
-        let left_pitches = pitches
-            .iter()
-            .zip(dir)
-            .map(|(pitch, dir)| PitchUtil::clamped(*pitch - EPSILON * *dir))
-            .collect_vec();
-        let left_goodness = goodness(forward_last(init_vel, &left_pitches, jitter));
-
-        let diff = right_pitches
-            .iter()
-            .zip(left_pitches.iter())
-            .map(|(r, l)| r - l)
-            .collect_vec();
-        let diff_len = diff.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        // this probably isn't the most correct way to do this
-        ((right_goodness - left_goodness) / diff_len as Goodness) as DGDP
-    }
-
-    pub fn deriv_step_along_pitches_dir(
-        pitches: &mut [Pitch],
-        dir: &[Pitch],
-        deriv: DGDP,
-        learning_rate: f32,
-    ) {
-        assert_eq!(pitches.len(), dir.len());
-        for (pitch, dir) in pitches.iter_mut().zip(dir) {
-            *pitch += (learning_rate * deriv * *dir).clamp(-10.0, 10.0);
-            *pitch = PitchUtil::clamped(*pitch);
-        }
-    }
-}
-
-pub struct Adam {
-    m: Vec<Pitch>,
-    v: Vec<Pitch>,
-    t: u64,
-    pub beta1: f32,
-    pub beta2: f32,
-    pub epsilon: f32,
-    pub weight_decay: f32,
-}
-impl Adam {
-    pub fn new(num_ticks: usize) -> Self {
-        Self {
-            m: vec![0.0; num_ticks],
-            v: vec![0.0; num_ticks],
-            t: 0,
-            beta1: 0.9,
-            beta2: 0.99,
-            epsilon: 1e-8,
-            weight_decay: 0.01,
-        }
-    }
-
-    pub fn reset(&mut self, num_ticks: usize) {
-        self.m = vec![0.0; num_ticks];
-        self.v = vec![0.0; num_ticks];
-        self.t = 0;
-    }
-
-    pub fn step(&mut self, pitches: &mut [Pitch], grad: &[DGDP], learning_rate: f32) {
-        assert_eq!(pitches.len(), grad.len());
-        assert_eq!(pitches.len(), self.m.len());
-        assert_eq!(pitches.len(), self.v.len());
-
-        self.t += 1;
-        let t = self.t;
-        let b1 = self.beta1;
-        let b2 = self.beta2;
-        let eps = self.epsilon;
-        let wd = self.weight_decay;
-        let lr = learning_rate;
-
-        let bc1 = 1.0 - b1.powi(t as i32);
-        let bc2 = 1.0 - b2.powi(t as i32);
-
-        for i in 0..pitches.len() {
-            self.m[i] = b1 * self.m[i] + (1.0 - b1) * grad[i];
-            self.v[i] = b2 * self.v[i] + (1.0 - b2) * grad[i] * grad[i];
-
-            let m_hat = self.m[i] / bc1;
-            let v_hat = self.v[i] / bc2;
-
-            pitches[i] = pitches[i] * (1.0 - lr * wd) + lr * m_hat / (v_hat.sqrt() + eps);
-            pitches[i] = PitchUtil::clamped(pitches[i]);
-        }
+        pitches.copy_from_slice(&new_pitches);
     }
 }

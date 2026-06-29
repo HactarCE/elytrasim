@@ -56,8 +56,8 @@ fn main() -> eframe::Result {
 
     let mut jitter = Jitter::new(&jitter_params, num_ticks);
 
-    let mut adam = Adam::new(num_ticks);
-    let mut learning_rate = 0.1;
+    let mut learning_rate = 500.0;
+    let mut decay = 0.0;
     // this has no effect if resample_jitter_on_optimization_step is disabled
     let mut batch_size = 8;
     let mut optimizing = false;
@@ -159,7 +159,6 @@ fn main() -> eframe::Result {
                                             pitches.last().copied().unwrap_or(0.0),
                                         );
                                         jitter.resize(&jitter_params, num_ticks);
-                                        adam.reset(num_ticks);
                                     }
                                 });
                             });
@@ -283,14 +282,14 @@ fn main() -> eframe::Result {
                             .show(ui, |ui| {
                                 ui.label("learning rate:");
                                 ui.add(
-                                    egui::Slider::new(&mut learning_rate, 0.0001..=10.0)
+                                    egui::Slider::new(&mut learning_rate, 10.0..=10000.0)
                                         .logarithmic(true)
                                         .clamping(egui::SliderClamping::Never),
                                 );
 
                                 ui.label("decay:");
                                 ui.add(
-                                    egui::Slider::new(&mut adam.weight_decay, 0.0..=0.01)
+                                    egui::Slider::new(&mut decay, 0.0..=0.01)
                                         .logarithmic(true)
                                         .clamping(egui::SliderClamping::Never),
                                 );
@@ -309,6 +308,21 @@ fn main() -> eframe::Result {
 
                                 let goodness = goodness_params.build();
                                 let mut do_optimization_step = || {
+                                    // let before = pitches.clone();
+                                    apply_decay(&mut pitches, 1.0 - decay);
+                                    // dbg!(before.iter().zip(&pitches).map(|(b, p)| (b, p, b - p)).collect_vec());
+                                    // if decay == 0.0 {
+                                    //     for (b, p) in before.iter().zip(&pitches) {
+                                    //         assert!(
+                                    //             (b - p).abs() < 1e-3,
+                                    //             "before: {}, after: {}, diff: {}",
+                                    //             b,
+                                    //             p,
+                                    //             b - p
+                                    //         );
+                                    //     }
+                                    // }
+
                                     // gradient descent
                                     // #[cfg(false)]
                                     {
@@ -359,7 +373,7 @@ fn main() -> eframe::Result {
                                                 .collect_vec()
                                         };
 
-                                        adam.step(&mut pitches, &grad, learning_rate);
+                                        apply_grad(&mut pitches, &grad, learning_rate);
                                     }
 
                                     after_states.push(forward_last(
