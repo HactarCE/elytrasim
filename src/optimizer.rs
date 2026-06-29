@@ -134,82 +134,43 @@ mod splat {
     #[derive(Debug, Clone)]
     pub struct Mask {
         mu: f32,
-        /// note that this gets exponentiated
-        sigma_ln: f32,
-        // /// note that this gets exponentiated
-        // rad_ln: f32,
+        sigma: f32,
     }
     impl Mask {
         const ZERO: Self = Self {
             mu: 0.0,
-            sigma_ln: 0.0,
-            // rad_ln: 0.0,
+            sigma: 0.0,
         };
 
         const RAD_SCALE: f32 = 3.0 - 2.0 * std::f32::consts::SQRT_2;
 
-        // pub fn new(mu: f32, sigma: f32, rad: f32) -> Self {
-        //     assert!(sigma > 0.0);
-        //     assert!(rad > 0.0);
-        //     Self {
-        //         mu,
-        //         sigma_ln: sigma.ln(),
-        //         rad_ln: (rad / Self::RAD_SCALE).ln(),
-        //     }
-        // }
         pub fn new(mu: f32, sigma: f32) -> Self {
-            assert!(sigma > 0.0);
-            Self {
-                mu,
-                sigma_ln: sigma.ln(),
-            }
+            Self { mu, sigma }
         }
 
         pub fn mu(&self) -> f32 {
             self.mu
         }
         pub fn sigma(&self) -> f32 {
-            self.sigma_ln.exp()
+            self.sigma
         }
-        pub fn sigma_raw(&self) -> f32 {
-            self.sigma_ln
-        }
-        // pub fn rad(&self) -> f32 {
-        //     self.rad_ln.exp() * Self::RAD_SCALE
-        // }
 
         pub fn set_mu(&mut self, mu: f32) {
             self.mu = mu;
         }
         pub fn set_sigma(&mut self, sigma: f32) {
-            assert!(sigma > 0.0);
-            self.sigma_ln = sigma.ln();
+            self.sigma = sigma;
         }
-        // pub fn set_rad(&mut self, rad: f32) {
-        //     assert!(rad > 0.0);
-        //     self.rad_ln = (rad / Self::RAD_SCALE).ln();
-        // }
 
         fn into_array(self) -> [f32; 2] {
-            [self.mu, self.sigma_ln]
+            [self.mu, self.sigma]
         }
-        fn from_array([mu, sigma_ln]: [f32; 2]) -> Self {
-            Self { mu, sigma_ln }
+        fn from_array([mu, sigma]: [f32; 2]) -> Self {
+            Self { mu, sigma }
         }
 
         fn forward(&self, x: f32) -> f32 {
-            let x = x - self.mu;
-            // let x = {
-            //     let x2 = x * x;
-            //     let x3 = x2 * x;
-            //     let rad = self.rad_ln.exp();
-            //     x3 / (x2 + rad * rad / Self::RAD_SCALE)
-            // };
-            {
-                let x2 = x * x;
-                let sigma = self.sigma_ln.exp();
-                (-x2 / (sigma * sigma)).exp()
-            }
+            1.0 / (1.0 + (-self.sigma * (x - self.mu)).exp())
         }
 
         // /// guarantee that at least `1.0 - epsilon` of the area
@@ -249,8 +210,7 @@ mod splat {
 
     #[derive(Debug, Clone)]
     pub struct Term {
-        /// `[tick, vel_y, vel_z]`
-        pub masks: [Mask; 3],
+        pub tick_mask: Mask,
         // TODO: this should get put through a 90*sigmoid (or something that's near linear at the origin)
         // the ui stuff can get fed through the sigmoid_inv before being show.
         pub pitch_map: Affine<3>,
@@ -258,60 +218,49 @@ mod splat {
     }
     impl Term {
         const ZERO: Self = Self {
-            masks: [Mask::ZERO; 3],
+            tick_mask: Mask::ZERO,
             pitch_map: Affine::ZERO,
         };
 
         pub fn new_random() -> Self {
             let mut rng = rand::rng();
-            let masks = [
-                Mask::new(
-                    rng.random_range(-50.0..=500.0),
-                    rng.random_range(1.0..=100.0),
-                ),
-                Mask::new(rng.random_range(-5.0..=5.0), rng.random_range(1.0..=5.0)),
-                Mask::new(rng.random_range(-1.0..=5.0), rng.random_range(1.0..=5.0)),
-            ];
+            let tick_mask = Mask::new(
+                rng.random_range(-50.0..=500.0),
+                rng.random_range(-5.0..=5.0),
+            );
             let pitch_map = Affine {
                 weights: [
-                    rng.random_range(-1.0..=1.0),
+                    rng.random_range(-0.5..=0.5),
                     rng.random_range(-1.0..=1.0),
                     rng.random_range(-1.0..=1.0),
                 ],
-                bias: rng.random_range(-20.0..=20.0),
+                bias: rng.random_range(-80.0..=80.0),
             };
-            Term { masks, pitch_map }
+            Term {
+                tick_mask,
+                pitch_map,
+            }
         }
 
-        fn into_array(self) -> [f32; 10] {
-            self.masks
+        fn into_array(self) -> [f32; 6] {
+            self.tick_mask
+                .into_array()
                 .into_iter()
-                .flat_map(|mask| mask.into_array())
                 .chain(self.pitch_map.into_array())
                 .collect_vec()
                 .try_into()
                 .unwrap()
         }
-        fn from_array(arr: [f32; 10]) -> Self {
+        fn from_array(arr: [f32; 6]) -> Self {
             Self {
-                masks: arr[..6]
-                    .chunks_exact(2)
-                    .map(|chunk| Mask::from_array(chunk.try_into().unwrap()))
-                    .collect_vec()
-                    .try_into()
-                    .unwrap(),
-                pitch_map: Affine::from_array(arr[6..].try_into().unwrap()),
+                tick_mask: Mask::from_array(arr[..2].try_into().unwrap()),
+                pitch_map: Affine::from_array(arr[2..].try_into().unwrap()),
             }
         }
 
         fn forward(&self, tick: usize, vel: Vel3) -> Pitch {
             let x = [tick as f32, vel.y as f32, vel.z as f32];
-            let mask = self
-                .masks
-                .iter()
-                .zip(x)
-                .map(|(mask, x)| mask.forward(x))
-                .product::<f32>();
+            let mask = self.tick_mask.forward(x[0]);
             mask * self.pitch_map.forward(&x)
         }
     }
@@ -329,29 +278,21 @@ mod splat {
             }
         }
 
-        pub fn new_4040() -> Self {
+        pub fn new_40_0_down() -> Self {
             Self {
                 terms: vec![
                     Term {
-                        masks: [
-                            Mask::new(200.0, 100.0),
-                            Mask::new(0.0, 5.0),
-                            Mask::new(0.0, 5.0),
-                        ],
+                        tick_mask: Mask::new(110.0, 3.0),
                         pitch_map: Affine {
                             weights: [0.0, 0.0, 0.0],
                             bias: 40.0,
                         },
                     },
                     Term {
-                        masks: [
-                            Mask::new(50.0, 25.0),
-                            Mask::new(0.0, 5.0),
-                            Mask::new(0.0, 5.0),
-                        ],
+                        tick_mask: Mask::new(90.0, -3.0),
                         pitch_map: Affine {
-                            weights: [0.0, 0.0, 0.0],
-                            bias: -40.0,
+                            weights: [-0.5, 0.0, 0.0],
+                            bias: -10.0,
                         },
                     },
                 ],
@@ -400,7 +341,7 @@ mod splat {
         }
 
         /// do `num_ticks` autoregressive steps and return the final state.
-        pub fn forward_last_(&self, num_ticks: usize, init_vel: Vel3) -> State {
+        pub fn forward_last(&self, num_ticks: usize, init_vel: Vel3) -> State {
             self.forward_iter(num_ticks, init_vel).last().unwrap().1
         }
 
@@ -411,7 +352,7 @@ mod splat {
             num_ticks: usize,
             init_vel: Vel3,
         ) -> Goodness {
-            goodness(self.forward_last_(num_ticks, init_vel))
+            goodness(self.forward_last(num_ticks, init_vel))
         }
 
         /// the gradient of goodness with respect to each parameter.

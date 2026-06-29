@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
     // let ticks = 500;
 
     // TODO: better initialization
-    let mut nn = Nn::new_4040();
+    let mut nn = Nn::new_40_0_down();
     let mut show_nn_grad = true;
     let mut show_nn_editor = true;
 
@@ -252,17 +252,22 @@ fn main() -> eframe::Result {
                                                             if show_nn_grad {
                                                                 ui.label(format!(
                                                                     "sigma grad: {:.06}",
-                                                                    grad_mask.sigma_raw()
+                                                                    grad_mask.sigma()
                                                                 ));
                                                             }
                                                             if show_nn_sliders && ui
                                                                 .add(
                                                                     egui::Slider::new(
                                                                         &mut sigma,
+                                                                        // if is_tick_mask {
+                                                                        //     0.0..=200.0
+                                                                        // } else {
+                                                                        //     0.0..=3.0
+                                                                        // },
                                                                         if is_tick_mask {
-                                                                            0.0..=200.0
+                                                                            -5.0..=5.0
                                                                         } else {
-                                                                            0.0..=3.0
+                                                                            -3.0..=3.0
                                                                         },
                                                                     )
                                                                     .clamping(
@@ -271,7 +276,7 @@ fn main() -> eframe::Result {
                                                                 )
                                                                 .changed()
                                                             {
-                                                                sigma = sigma.max(1e-3);
+                                                                // sigma = sigma.max(1e-3);
                                                                 mask.set_sigma(sigma);
                                                             }
                                                         }
@@ -304,59 +309,45 @@ fn main() -> eframe::Result {
                                                     });
                                             }
 
-                                            if show_nn_editor{
+                                            if show_nn_editor {
                                                 if ui.button("randomize").clicked() {
                                                     nn.terms[term_idx] = Term::new_random();
                                                 }
                                                 if ui.button("delete").clicked() {
                                                     nn.terms.remove(term_idx);
                                                     increment = false;
+                                                    return;
                                                 }
                                                 if ui.button("duplicate").clicked() {
-                                                    nn.terms.insert(term_idx, nn.terms[term_idx].clone());
+                                                    nn.terms.insert(
+                                                        term_idx,
+                                                        nn.terms[term_idx].clone(),
+                                                    );
                                                 }
                                             }
 
                                             let Term {
-                                                masks: [tick_mask, vel_y_mask, vel_z_mask],
+                                                tick_mask,
                                                 pitch_map,
                                             } = &mut nn.terms[term_idx];
                                             let Term {
-                                                masks: [grad_tick_mask, grad_vel_y_mask, grad_vel_z_mask],
+                                                tick_mask: grad_tick_mask,
                                                 pitch_map: grad_pitch_map,
                                             } = &grad.terms[term_idx];
 
                                             egui::CollapsingHeader::new("masks")
                                                 .default_open(true)
                                                 .show_unindented(ui, |ui| {
-                                                show_mask(
-                                                    ui,
-                                                    "tick mask",
-                                                    true,
-                                                    tick_mask,
-                                                    grad_tick_mask,
-                                                    show_nn_grad,
-                                                    show_nn_editor,
-                                                );
-                                                show_mask(
-                                                    ui,
-                                                    "vel y mask",
-                                                    false,
-                                                    vel_y_mask,
-                                                    grad_vel_y_mask,
-                                                    show_nn_grad,
-                                                    show_nn_editor,
-                                                );
-                                                show_mask(
-                                                    ui,
-                                                    "vel z mask",
-                                                    false,
-                                                    vel_z_mask,
-                                                    grad_vel_z_mask,
-                                                    show_nn_grad,
-                                                    show_nn_editor,
-                                                );
-                                            });
+                                                    show_mask(
+                                                        ui,
+                                                        "tick mask",
+                                                        true,
+                                                        tick_mask,
+                                                        grad_tick_mask,
+                                                        show_nn_grad,
+                                                        show_nn_editor,
+                                                    );
+                                                });
 
                                             egui::CollapsingHeader::new("pitch map")
                                                 .default_open(true)
@@ -410,7 +401,7 @@ fn main() -> eframe::Result {
                                                         ui.add(
                                                             egui::Slider::new(
                                                                 vel_y_coeff,
-                                                                -1.0..=1.0,
+                                                                -10.0..=10.0,
                                                             )
                                                             .clamping(egui::SliderClamping::Never),
                                                         );
@@ -430,7 +421,7 @@ fn main() -> eframe::Result {
                                                         ui.add(
                                                             egui::Slider::new(
                                                                 vel_z_coeff,
-                                                                -1.0..=1.0,
+                                                                -10.0..=10.0,
                                                             )
                                                             .clamping(egui::SliderClamping::Never),
                                                         );
@@ -591,9 +582,9 @@ fn main() -> eframe::Result {
                                     }
 
                                     after_states_without_jitter
-                                        .push(nn.forward_last_(num_ticks, init_vel));
+                                        .push(nn.forward_last(num_ticks, init_vel));
                                     after_states_with_jitter
-                                        .push(nn.forward_last_(num_ticks, init_vel));
+                                        .push(nn.forward_last(num_ticks, init_vel));
                                 };
 
                                 // optimization on / off
@@ -641,7 +632,7 @@ fn main() -> eframe::Result {
                             ui.label(format!("before vel.z: {:.06}", init_vel.z));
                             // with jitter
                             {
-                                let after = nn.forward_last_(num_ticks, init_vel + jitter.init_vel);
+                                let after = nn.forward_last(num_ticks, init_vel + jitter.init_vel);
                                 ui.label("with jitter:");
                                 ui.label(format!("after vel.y: {:.06}", after.vel.y));
                                 ui.label(format!("after vel.z: {:.06}", after.vel.z));
@@ -650,7 +641,7 @@ fn main() -> eframe::Result {
                             }
                             // without jitter
                             {
-                                let after = nn.forward_last_(num_ticks, init_vel);
+                                let after = nn.forward_last(num_ticks, init_vel);
                                 ui.label("without jitter:");
                                 ui.label(format!("after vel.y: {:.06}", after.vel.y));
                                 ui.label(format!("after vel.z: {:.06}", after.vel.z));
