@@ -130,28 +130,38 @@ mod splat {
     /// check out this [graph](https://www.desmos.com/calculator/z9cfqdndyx).
     /// the stored parameters aren't in the nice user facing format,
     /// they're in a format that's better for optimization.
+    /// actually don't bother with rad for now, it's kinda annoying.
     #[derive(Debug, Clone)]
     pub struct Mask {
         mu: f32,
         /// note that this gets exponentiated
         sigma_ln: f32,
-        /// note that this gets exponentiated
-        rad_ln: f32,
+        // /// note that this gets exponentiated
+        // rad_ln: f32,
     }
     impl Mask {
         const ZERO: Self = Self {
             mu: 0.0,
             sigma_ln: 0.0,
-            rad_ln: 0.0,
+            // rad_ln: 0.0,
         };
 
-        pub fn new(mu: f32, sigma: f32, rad: f32) -> Self {
+        const RAD_SCALE: f32 = 3.0 - 2.0 * std::f32::consts::SQRT_2;
+
+        // pub fn new(mu: f32, sigma: f32, rad: f32) -> Self {
+        //     assert!(sigma > 0.0);
+        //     assert!(rad > 0.0);
+        //     Self {
+        //         mu,
+        //         sigma_ln: sigma.ln(),
+        //         rad_ln: (rad / Self::RAD_SCALE).ln(),
+        //     }
+        // }
+        pub fn new(mu: f32, sigma: f32) -> Self {
             assert!(sigma > 0.0);
-            assert!(rad > 0.0);
             Self {
                 mu,
                 sigma_ln: sigma.ln(),
-                rad_ln: rad.ln(),
             }
         }
 
@@ -161,9 +171,12 @@ mod splat {
         pub fn sigma(&self) -> f32 {
             self.sigma_ln.exp()
         }
-        pub fn rad(&self) -> f32 {
-            self.rad_ln.exp()
+        pub fn sigma_raw(&self) -> f32 {
+            self.sigma_ln
         }
+        // pub fn rad(&self) -> f32 {
+        //     self.rad_ln.exp() * Self::RAD_SCALE
+        // }
 
         pub fn set_mu(&mut self, mu: f32) {
             self.mu = mu;
@@ -172,30 +185,26 @@ mod splat {
             assert!(sigma > 0.0);
             self.sigma_ln = sigma.ln();
         }
-        pub fn set_rad(&mut self, rad: f32) {
-            assert!(rad > 0.0);
-            self.rad_ln = rad.ln();
-        }
+        // pub fn set_rad(&mut self, rad: f32) {
+        //     assert!(rad > 0.0);
+        //     self.rad_ln = (rad / Self::RAD_SCALE).ln();
+        // }
 
-        fn into_array(self) -> [f32; 3] {
-            [self.mu, self.sigma_ln, self.rad_ln]
+        fn into_array(self) -> [f32; 2] {
+            [self.mu, self.sigma_ln]
         }
-        fn from_array([mu, sigma_ln, rad_ln]: [f32; 3]) -> Self {
-            Self {
-                mu,
-                sigma_ln,
-                rad_ln,
-            }
+        fn from_array([mu, sigma_ln]: [f32; 2]) -> Self {
+            Self { mu, sigma_ln }
         }
 
         fn forward(&self, x: f32) -> f32 {
             let x = x - self.mu;
-            let x = {
-                let x2 = x * x;
-                let x3 = x2 * x;
-                let rad = self.rad_ln.exp();
-                x3 / (x2 + rad * rad / (3.0 - 2.0 * 2.0_f32.sqrt()))
-            };
+            // let x = {
+            //     let x2 = x * x;
+            //     let x3 = x2 * x;
+            //     let rad = self.rad_ln.exp();
+            //     x3 / (x2 + rad * rad / Self::RAD_SCALE)
+            // };
             {
                 let x2 = x * x;
                 let sigma = self.sigma_ln.exp();
@@ -251,7 +260,28 @@ mod splat {
             pitch_map: Affine::ZERO,
         };
 
-        fn into_array(self) -> [f32; 13] {
+        pub fn new_random() -> Self {
+            let mut rng = rand::rng();
+            let masks = [
+                Mask::new(
+                    rng.random_range(-50.0..=500.0),
+                    rng.random_range(1.0..=100.0),
+                ),
+                Mask::new(rng.random_range(-5.0..=5.0), rng.random_range(1.0..=5.0)),
+                Mask::new(rng.random_range(-1.0..=5.0), rng.random_range(1.0..=5.0)),
+            ];
+            let pitch_map = Affine {
+                weights: [
+                    rng.random_range(-1.0..=1.0),
+                    rng.random_range(-1.0..=1.0),
+                    rng.random_range(-1.0..=1.0),
+                ],
+                bias: rng.random_range(-20.0..=20.0),
+            };
+            Term { masks, pitch_map }
+        }
+
+        fn into_array(self) -> [f32; 10] {
             self.masks
                 .into_iter()
                 .flat_map(|mask| mask.into_array())
@@ -260,15 +290,15 @@ mod splat {
                 .try_into()
                 .unwrap()
         }
-        fn from_array(arr: [f32; 13]) -> Self {
+        fn from_array(arr: [f32; 10]) -> Self {
             Self {
-                masks: arr[..9]
-                    .chunks_exact(3)
+                masks: arr[..6]
+                    .chunks_exact(2)
                     .map(|chunk| Mask::from_array(chunk.try_into().unwrap()))
                     .collect_vec()
                     .try_into()
                     .unwrap(),
-                pitch_map: Affine::from_array(arr[9..].try_into().unwrap()),
+                pitch_map: Affine::from_array(arr[6..].try_into().unwrap()),
             }
         }
 
@@ -291,7 +321,7 @@ mod splat {
         pub terms: Vec<Term>,
     }
     impl Nn {
-        fn zero(num_terms: usize) -> Self {
+        pub fn zero(num_terms: usize) -> Self {
             Self {
                 terms: vec![Term::ZERO; num_terms],
             }
@@ -302,9 +332,9 @@ mod splat {
                 terms: vec![
                     Term {
                         masks: [
-                            Mask::new(200.0, 1.0, 100.0),
-                            Mask::new(0.0, 1.0, 5.0),
-                            Mask::new(0.0, 1.0, 5.0),
+                            Mask::new(200.0, 100.0),
+                            Mask::new(0.0, 5.0),
+                            Mask::new(0.0, 5.0),
                         ],
                         pitch_map: Affine {
                             weights: [0.0, 0.0, 0.0],
@@ -313,9 +343,9 @@ mod splat {
                     },
                     Term {
                         masks: [
-                            Mask::new(50.0, 1.0, 25.0),
-                            Mask::new(0.0, 1.0, 5.0),
-                            Mask::new(0.0, 1.0, 5.0),
+                            Mask::new(50.0, 25.0),
+                            Mask::new(0.0, 5.0),
+                            Mask::new(0.0, 5.0),
                         ],
                         pitch_map: Affine {
                             weights: [0.0, 0.0, 0.0],
@@ -345,7 +375,7 @@ mod splat {
             let mut pos_accumulator = Vec3::ZERO;
             let mut vel = init_vel;
 
-            (0..num_ticks).map(move |tick| {
+            (0..num_ticks).rev().map(move |tick| {
                 let pitch = self.forward(tick, vel);
 
                 let state = State {
@@ -396,7 +426,7 @@ mod splat {
             // then tell the terms to make the pitches closer to that target.
             // and you could do this in parallel for each term, then sum the terms at the end.
 
-            const EPSILON: Pitch = 0.1;
+            const EPSILON: f32 = 0.01;
 
             let cur_goodness = self.goodness(&goodness, num_ticks, init_vel);
 

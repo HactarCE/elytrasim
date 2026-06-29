@@ -31,7 +31,7 @@ fn main() -> eframe::Result {
 
     // TODO: better initialization
     let mut nn = Nn::new_4040();
-    let mut num_terms = nn.terms.len();
+    let mut show_nn_grad = true;
     let mut show_nn_sliders = true;
 
     let mut init_vel = Vel3::ZERO;
@@ -51,7 +51,7 @@ fn main() -> eframe::Result {
 
     let mut jitter = Jitter::new(&jitter_params);
 
-    let mut learning_rate = 500.0;
+    let mut learning_rate = 0.001;
     // this has no effect if resample_jitter_on_optimization_step is disabled
     let mut batch_size = 8;
     let mut decay = 0.0;
@@ -125,8 +125,6 @@ fn main() -> eframe::Result {
                         egui::CollapsingHeader::new("num ticks")
                             .default_open(true)
                             .show(ui, |ui| {
-                                assert_eq!(nn.terms.len(), num_terms);
-
                                 // increase / decrease num_ticks
                                 ui.horizontal(|ui| {
                                     ui.label(format!("num ticks: {}", num_ticks));
@@ -137,15 +135,12 @@ fn main() -> eframe::Result {
                                         1
                                     };
 
-                                    let mut changed = false;
                                     if ui.button("-").on_hover_text("hold shift for 10x").clicked()
                                     {
-                                        changed |= true;
                                         num_ticks = num_ticks.saturating_sub(mul);
                                     }
                                     if ui.button("+").on_hover_text("hold shift for 10x").clicked()
                                     {
-                                        changed |= true;
                                         num_ticks += mul;
                                     }
                                 });
@@ -154,13 +149,60 @@ fn main() -> eframe::Result {
                         egui::CollapsingHeader::new("nn")
                             .default_open(true)
                             .show(ui, |ui| {
+                                ui.checkbox(&mut show_nn_grad, "show gradient");
                                 ui.checkbox(&mut show_nn_sliders, "show sliders");
 
-                                for (term_idx, term) in nn.terms.iter_mut().enumerate() {
+                                // increase / decrease num_terms
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("num terms: {}", nn.terms.len()));
+
+                                    let mul = if ui.ctx().input(|i| i.modifiers.shift) {
+                                        10
+                                    } else {
+                                        1
+                                    };
+
+                                    if ui.button("-").on_hover_text("hold shift for 10x").clicked()
+                                    {
+                                        nn.terms.truncate(nn.terms.len().saturating_sub(mul));
+                                    }
+                                    if ui.button("+").on_hover_text("hold shift for 10x").clicked()
+                                    {
+                                        nn.terms.extend((0..mul).map(|_| Term::new_random()));
+                                    }
+                                });
+
+                                if ui
+                                    .button("randomize")
+                                    .on_hover_text("randomize all terms")
+                                    .clicked()
+                                {
+                                    nn.terms
+                                        .iter_mut()
+                                        .for_each(|term| *term = Term::new_random());
+                                }
+
+                                let grad = if show_nn_grad {
+                                    nn.get_grad(
+                                        goodness_params.build(),
+                                        num_ticks,
+                                        init_vel + jitter.init_vel,
+                                    )
+                                } else {
+                                    Nn::zero(nn.terms.len())
+                                };
+
+                                for (term_idx, (term, grad_term)) in
+                                    nn.terms.iter_mut().zip(grad.terms.iter()).enumerate()
+                                {
                                     let Term {
                                         masks: [tick_mask, vel_y_mask, vel_z_mask],
                                         pitch_map,
                                     } = term;
+                                    let Term {
+                                        masks: [grad_tick_mask, grad_vel_y_mask, grad_vel_z_mask],
+                                        pitch_map: grad_pitch_map,
+                                    } = grad_term;
 
                                     egui::CollapsingHeader::new(format!("term {}", term_idx))
                                         .default_open(false)
@@ -168,8 +210,10 @@ fn main() -> eframe::Result {
                                             fn show_mask(
                                                 ui: &mut egui::Ui,
                                                 name: &str,
-                                                mask: &mut Mask,
                                                 is_tick_mask: bool,
+                                                mask: &mut Mask,
+                                                grad_mask: &Mask,
+                                                show_nn_grad: bool,
                                                 show_nn_sliders: bool,
                                             ) {
                                                 egui::CollapsingHeader::new(name)
@@ -178,7 +222,13 @@ fn main() -> eframe::Result {
                                                         // mu
                                                         {
                                                             let mut mu = mask.mu();
-                                                            ui.label(format!("mu: {:06}", mu));
+                                                            ui.label(format!("mu: {:.06}", mu));
+                                                            if show_nn_grad {
+                                                                ui.label(format!(
+                                                                    "grad mu: {:.06}",
+                                                                    grad_mask.mu()
+                                                                ));
+                                                            }
                                                             if show_nn_sliders && ui
                                                                 .add(
                                                                     egui::Slider::new(
@@ -203,15 +253,21 @@ fn main() -> eframe::Result {
                                                         {
                                                             let mut sigma = mask.sigma();
                                                             ui.label(format!(
-                                                                "sigma: {:06}",
+                                                                "sigma: {:.06}",
                                                                 sigma
                                                             ));
+                                                            if show_nn_grad {
+                                                                ui.label(format!(
+                                                                    "grad sigma: {:.06}",
+                                                                    grad_mask.sigma_raw()
+                                                                ));
+                                                            }
                                                             if show_nn_sliders && ui
                                                                 .add(
                                                                     egui::Slider::new(
                                                                         &mut sigma,
                                                                         if is_tick_mask {
-                                                                            0.0..=10.0
+                                                                            0.0..=200.0
                                                                         } else {
                                                                             0.0..=3.0
                                                                         },
@@ -228,9 +284,10 @@ fn main() -> eframe::Result {
                                                         }
 
                                                         // rad
+                                                        #[cfg(false)]
                                                         {
                                                             let mut rad = mask.rad();
-                                                            ui.label(format!("rad: {:06}", rad));
+                                                            ui.label(format!("rad: {:.06}", rad));
                                                             if show_nn_sliders && ui
                                                                 .add(
                                                                     egui::Slider::new(
@@ -257,22 +314,28 @@ fn main() -> eframe::Result {
                                             show_mask(
                                                 ui,
                                                 "tick mask",
-                                                tick_mask,
                                                 true,
+                                                tick_mask,
+                                                grad_tick_mask,
+                                                show_nn_grad,
                                                 show_nn_sliders,
                                             );
                                             show_mask(
                                                 ui,
                                                 "vel y mask",
-                                                vel_y_mask,
                                                 false,
+                                                vel_y_mask,
+                                                grad_vel_y_mask,
+                                                show_nn_grad,
                                                 show_nn_sliders,
                                             );
                                             show_mask(
                                                 ui,
                                                 "vel z mask",
-                                                vel_z_mask,
                                                 false,
+                                                vel_z_mask,
+                                                grad_vel_z_mask,
+                                                show_nn_grad,
                                                 show_nn_sliders,
                                             );
 
@@ -284,11 +347,26 @@ fn main() -> eframe::Result {
                                                             [tick_coeff, vel_y_coeff, vel_z_coeff],
                                                         bias,
                                                     } = pitch_map;
+                                                    let Affine {
+                                                        weights:
+                                                            [
+                                                                grad_tick_coeff,
+                                                                grad_vel_y_coeff,
+                                                                grad_vel_z_coeff,
+                                                            ],
+                                                        bias: grad_bias,
+                                                    } = grad_pitch_map;
 
                                                     ui.label(format!(
-                                                        "tick coeff: {:06}",
+                                                        "tick coeff: {:.06}",
                                                         tick_coeff
                                                     ));
+                                                    if show_nn_grad {
+                                                        ui.label(format!(
+                                                            "grad tick coeff: {:.06}",
+                                                            grad_tick_coeff
+                                                        ));
+                                                    }
                                                     if show_nn_sliders {
                                                         ui.add(
                                                             egui::Slider::new(
@@ -300,9 +378,15 @@ fn main() -> eframe::Result {
                                                     }
 
                                                     ui.label(format!(
-                                                        "vel_y coeff: {:06}",
+                                                        "vel_y coeff: {:.06}",
                                                         vel_y_coeff
                                                     ));
+                                                    if show_nn_grad {
+                                                        ui.label(format!(
+                                                            "grad vel_y coeff: {:.06}",
+                                                            grad_vel_y_coeff
+                                                        ));
+                                                    }
                                                     if show_nn_sliders {
                                                         ui.add(
                                                             egui::Slider::new(
@@ -314,9 +398,15 @@ fn main() -> eframe::Result {
                                                     }
 
                                                     ui.label(format!(
-                                                        "vel_z coeff: {:06}",
+                                                        "vel_z coeff: {:.06}",
                                                         vel_z_coeff
                                                     ));
+                                                    if show_nn_grad {
+                                                        ui.label(format!(
+                                                            "grad vel_z coeff: {:.06}",
+                                                            grad_vel_z_coeff
+                                                        ));
+                                                    }
                                                     if show_nn_sliders {
                                                         ui.add(
                                                             egui::Slider::new(
@@ -327,7 +417,7 @@ fn main() -> eframe::Result {
                                                         );
                                                     }
 
-                                                    ui.label(format!("bias: {:06}", bias));
+                                                    ui.label(format!("bias: {:.06}", bias));
                                                     if show_nn_sliders {
                                                         ui.add(
                                                             egui::Slider::new(bias, -90.0..=90.0)
@@ -405,7 +495,7 @@ fn main() -> eframe::Result {
                             .show(ui, |ui| {
                                 ui.label("learning rate:");
                                 ui.add(
-                                    egui::Slider::new(&mut learning_rate, 10.0..=10000.0)
+                                    egui::Slider::new(&mut learning_rate, 0.00001..=1.0)
                                         .logarithmic(true)
                                         .clamping(egui::SliderClamping::Never),
                                 );
