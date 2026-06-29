@@ -261,7 +261,10 @@ mod splat {
         fn forward(&self, tick: usize, vel: Vel3) -> Pitch {
             let x = [tick as f32, vel.y as f32, vel.z as f32];
             let mask = self.tick_mask.forward(x[0]);
-            mask * self.pitch_map.forward(&x)
+            let pitch = mask * self.pitch_map.forward(&x);
+            // activation function to soft clamp the pitch to [-90, 90].
+            // check out this [graph](https://www.desmos.com/calculator/y5qqjt4m8w).
+            90.0 * (2.0 / (1.0 + (-(2.0 / 90.0) * pitch).exp()) - 1.0)
         }
     }
 
