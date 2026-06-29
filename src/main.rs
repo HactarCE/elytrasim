@@ -1,3 +1,4 @@
+mod data;
 mod optimizer;
 mod sim;
 
@@ -390,14 +391,14 @@ fn main() -> eframe::Result {
                                                 vel_y_mask,
                                                 vel_z_mask,
                                                 pitch,
-                                                weight_ln: weight,
+                                                weight_ln,
                                             } = &mut nn.terms[term_idx];
                                             let Term {
                                                 tick_mask: grad_tick_mask,
                                                 vel_y_mask: grad_vel_y_mask,
                                                 vel_z_mask: grad_vel_z_mask,
                                                 pitch: grad_pitch,
-                                                weight_ln: grad_weight,
+                                                weight_ln: grad_weight_ln,
                                             } = &grad.terms[term_idx];
 
                                             egui::CollapsingHeader::new("masks")
@@ -455,19 +456,23 @@ fn main() -> eframe::Result {
                                             egui::CollapsingHeader::new("weight map")
                                                 .default_open(true)
                                                 .show(ui, |ui| {
-                                                    ui.label(format!("weight: {:.06}", weight));
+                                                    ui.label(format!(
+                                                        "weight_ln: {:.06}",
+                                                        weight_ln
+                                                    ));
                                                     if show_nn_grad {
                                                         ui.label(format!(
-                                                            "weight grad: {:.06}",
-                                                            grad_weight
+                                                            "weight_ln grad: {:.06}",
+                                                            grad_weight_ln
                                                         ));
                                                     }
                                                     if show_nn_editor {
                                                         ui.add(
-                                                            egui::Slider::new(weight, -10.0..=10.0)
-                                                                .clamping(
-                                                                    egui::SliderClamping::Never,
-                                                                ),
+                                                            egui::Slider::new(
+                                                                weight_ln,
+                                                                -10.0..=10.0,
+                                                            )
+                                                            .clamping(egui::SliderClamping::Never),
                                                         );
                                                     }
                                                 });
@@ -516,23 +521,37 @@ fn main() -> eframe::Result {
                                             // one of the jitters must be the one shown in the ui
                                             // so that with a batch size of 1, you see exactly what's happening.
                                             // TODO: really all of these should be shown on the ui. like the average gradient of them.
-                                            let jitters = std::iter::once(jitter.clone())
-                                                .chain(
-                                                    (1..batch_size)
-                                                        .map(|_| Jitter::new(&jitter_params)),
-                                                )
-                                                .collect_vec();
-                                            jitter.resample_all(&jitter_params);
+                                            // let jitters = std::iter::once(jitter.clone())
+                                            //     .chain(
+                                            //         (1..batch_size)
+                                            //             .map(|_| Jitter::new(&jitter_params)),
+                                            //     )
+                                            //     .collect_vec();
+                                            // jitter.resample_all(&jitter_params);
 
-                                            let grads = jitters
+                                            use rand::prelude::*;
+                                            let mut rng = rand::rng();
+
+                                            let data = (0..batch_size)
+                                                .map(|_| {
+                                                    let [&(tick, vel_y, vel_z)] = crate::data::VELS
+                                                        .sample(&mut rng, 1)
+                                                        .collect_vec()
+                                                        .try_into()
+                                                        .unwrap();
+                                                    let vel = Vel3 {
+                                                        x: 0.0,
+                                                        y: vel_y + rng.random_range(-1.0..1.0),
+                                                        z: vel_z + rng.random_range(-1.0..1.0),
+                                                    };
+                                                    (tick, vel)
+                                                })
+                                                .collect_vec();
+                                            let grads = data
                                                 .into_par_iter()
-                                                .map(|jitter| {
+                                                .map(|(tick, vel)| {
                                                     let mut nn = nn.clone();
-                                                    nn.get_grad(
-                                                        &goodness,
-                                                        num_ticks,
-                                                        init_vel + jitter.init_vel,
-                                                    )
+                                                    nn.get_grad(&goodness, tick, vel)
                                                 })
                                                 .collect::<Vec<_>>();
 
