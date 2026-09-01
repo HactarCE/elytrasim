@@ -73,19 +73,27 @@ One tick is not merely imprecise: it pins to the −90° bound for ticks 214–2
 recovers through −79° to −45°, and is still 40° off at tick 228.
 
 **Is n = 20 overfit?** No. Re-optimising the cycle against `TE + w·z` gives a family of optimal
-cycles trading climb for distance, and the best `n` barely moves (`myopic family`):
+cycles trading climb against ground covered (`myopic polish <file> <passes> <w>`, then
+`myopic family`). Negative w is the operationally interesting half — climbing in as little space as
+possible — since extra distance can always be bought by flying more cycles.
 
-| w | climb b/s | dist b/s | dive hold-γ median | best n | RMS at best n | RMS at n=1 |
-|------|--------|--------|------|----|------|------|
-| 0    | 1.4425 | 23.300 | 0.34 | 19 | 2.02 | 22.7 |
-| .002 | 1.4340 | 24.368 | 0.42 | 20 | 2.15 | 23.2 |
-| .005 | 1.3782 | 25.509 | 0.61 | 20 | 2.81 | 23.8 |
-| .010 | 1.2338 | 27.096 | 0.60 | 21 | 2.98 | 26.6 |
-| .020 | 0.6579 | 30.164 | 0.73 | 23 | 6.22 | 30.8 |
+| w | | climb b/s | dist b/s | dive hold-γ median | best n | RMS at best n | RMS at n=1 |
+|-------|-----|--------|--------|------|----|------|------|
+| -.010 | tightest | 1.1940 | 19.233 | 1.15 | 18 | 1.65 | 22.1 |
+| -.005 |     | 1.3926 | 21.292 | 0.39 | 19 | 1.21 | 22.6 |
+| -.002 |     | 1.4321 | 22.205 | 0.35 | 19 | 1.49 | 23.2 |
+|  0    | reference | 1.4425 | 23.300 | 0.34 | 19 | 2.02 | 22.7 |
+|  .002 |     | 1.4340 | 24.368 | 0.42 | 20 | 2.15 | 23.2 |
+|  .005 |     | 1.3782 | 25.509 | 0.61 | 20 | 2.81 | 23.8 |
+|  .010 |     | 1.2338 | 27.096 | 0.60 | 21 | 2.98 | 26.6 |
+|  .020 | longest | 0.6579 | 30.164 | 0.73 | 23 | 6.22 | 30.8 |
 
-Over a 2.2× range of climb rate the best lookahead stays in 19–23 and the dive rule stays under a
-degree. The dive's γ floor does drift (16.7° → 14.5°) as distance is weighted, so that one number
-is cycle-specific even though the rule is not.
+Across 19–30 b/s of ground covered the best lookahead stays in **18–23**, and the dive rule stays
+well under a degree. If anything the rules fit the min-distance cycles better than the reference.
+
+The dive's γ floor *is* cycle-specific: it peaks at 16.7–16.8° right around w = 0, where the
+fastest-steady-glide angle predicts it, and falls off in both directions (14.5° at w = .020,
+12.8° at w = -.010). At the extremes the dive stops settling on a plateau and simply sweeps.
 
 `n` is a compromise rather than a constant, though. The *implied* lookahead — the `n` whose argmax
 lands exactly on the optimum, from `myopic probe` — runs ~20 at the start of the gain phase, sags
@@ -93,9 +101,21 @@ to ~12 around tick 275, then climbs steeply near the end. It is not the time rem
 that falls monotonically 94 → 10 across the same window, so the two are anticorrelated over the
 last thirty ticks.
 
+**Past tick ~280 the implied lookahead means nothing**, because the family stops disagreeing
+(`myopic sweepn` dumps the whole tick × lookahead matrix). The spread across n = 12..24 falls from
+28° at tick 216 to under 1° by tick 280, and even n = 1 against n = 60 differ by only ~2° there. On
+the horizoned 300-tick problem the implied lookahead duly collapses to 1 near the end; horizon-free
+it climbs past 40. Both are fitting sub-degree noise. The quantity is only determined in the first
+half of the gain phase, where the fan is wide.
+
 What *is* clean is a bracket: `n = 1` is nose-up of the optimum and `n = 48` is nose-down of it for
 **82 of 86 ticks** of the gain phase, so the optimum is squeezed between a short and a long
-lookahead almost everywhere.
+lookahead almost everywhere. This is the useful property for a cloud-of-bugs display: the cloud's
+width is the uncertainty, and it is wide exactly where the choice matters.
+
+Note the ΔTE family is not merely imprecise in the **dive** — it is bimodal there, splitting
+between "stay level" (short n) and "give up and zoom now" (long n, around -40 to -52), and
+describing the optimum at neither.
 
 ## Flying only the bugs
 

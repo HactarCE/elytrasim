@@ -21,6 +21,7 @@
 //!   score    <file> <off> <lo> <hi>      RMS pitch error of a menu of rules, per phase
 //!   probe    <file> <off> <lo> <hi>      implied lookahead n*(t) through the gain phase
 //!   family   <file> <tag>                auto-detect the phases and summarise the fit
+//!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
 //!   policy   [opt]                       fly the four bugs; NGAIN=<n> sets the gain lookahead
 //!
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
@@ -253,6 +254,22 @@ fn cmd_probe(path: &str, off: usize, lo: usize, hi: usize) {
     }
 }
 
+/// Dump the whole tick x lookahead matrix of argmax pitches, so the spread across horizons
+/// can be read directly. A narrow spread means the implied lookahead is barely determined.
+fn cmd_sweepn(path: &str, off: usize, lo: usize, hi: usize, nmax: usize) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    print!("rel,pitch");
+    for n in 1..=nmax { print!(",n{n}") }
+    println!();
+    for rel in lo..hi {
+        let s = &st[off + rel];
+        print!("{rel},{:.4}", ps[off + rel]);
+        for n in 1..=nmax { print!(",{:.4}", bug_dte_n(s, n)) }
+        println!();
+    }
+}
+
 /// Find the cycle in a schedule without being told where it is, then report how well the
 /// dive and gain rules fit it. Used to check the rules across a family of optimal cycles.
 fn cmd_family(path: &str, tag: &str) {
@@ -262,10 +279,19 @@ fn cmd_family(path: &str, tag: &str) {
     if apex.len() < 3 { eprintln!("{tag}: only {} apexes, need 3", apex.len()); return }
     let (a0, a1) = (apex[1], apex[2]);                       // middle cycle, apex to apex
     let period = a1 - a0;
-    // the dive ends where the nose comes down and stays down (a lone spike is polish noise)
-    let t_snap = (a0 + 30..a1 - 3).find(|&t| ps[t] < 5.0 && ps[t + 1] < 5.0 && ps[t + 2] < 5.0).unwrap_or(a1);
+    // The dive ends where the nose comes down and stays down. Require most of the cycle's
+    // speed to be built first: a polished dive often has a level stretch early on, which
+    // otherwise reads as the snap and collapses every window downstream.
+    let v_top = (a0..a1).map(|t| st[t].vel.length()).fold(0.0, f64::max);
+    let t_snap = (a0 + 30..a1 - 3)
+        .find(|&t| ps[t] < 5.0 && ps[t + 1] < 5.0 && ps[t + 2] < 5.0 && st[t].vel.length() > 0.8 * v_top)
+        .unwrap_or(a1);
     let t_gain = (t_snap..a1).find(|&t| st[t].vel.y > 0.0).unwrap_or(a1);
     let t_gend = (t_gain + 10..a1).find(|&t| ps[t] > 0.0).unwrap_or(a1);
+    if t_snap <= a0 + 30 || t_gend <= t_gain + 5 {
+        eprintln!("{tag}: could not segment the cycle (snap {t_snap}, gain {t_gain}..{t_gend} in {a0}..{a1})");
+        return;
+    }
     let (dy, dz) = (st[a1].pos.y - st[a0].pos.y, st[a1].pos.z - st[a0].pos.z);
 
     let (mut acc, mut n, mut gmin, mut gmax) = (0.0, 0, f64::MAX, f64::MIN);
@@ -380,8 +406,9 @@ fn main() {
         Some("score") => cmd_score(&a[2], n(3), n(4), n(5)),
         Some("probe") => cmd_probe(&a[2], n(3), n(4), n(5)),
         Some("family") => cmd_family(&a[2], &a[3]),
+        Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
         Some("policy") => cmd_policy(a.get(2).map(String::as_str) == Some("opt")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|polish|cycle|score|probe|family|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|polish|cycle|score|probe|family|sweepn|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }
