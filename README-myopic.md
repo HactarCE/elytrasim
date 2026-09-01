@@ -91,9 +91,9 @@ possible — since extra distance can always be bought by flying more cycles.
 Across 19–30 b/s of ground covered the best lookahead stays in **18–23**, and the dive rule stays
 well under a degree. If anything the rules fit the min-distance cycles better than the reference.
 
-The dive's γ floor *is* cycle-specific: it peaks at 16.7–16.8° right around w = 0, where the
-fastest-steady-glide angle predicts it, and falls off in both directions (14.5° at w = .020,
-12.8° at w = -.010). At the extremes the dive stops settling on a plateau and simply sweeps.
+The dive's γ floor *is* cycle-specific, and it moves monotonically: 17.4° at w = -.003 down to
+14.7° at w = .020, crossing the fastest-steady-glide angle within a whisker of w = 0. Below
+w = -.005 there is no floor to report — γ climbs through the whole dive. See the last section.
 
 `n` is a compromise rather than a constant, though. The *implied* lookahead — the `n` whose argmax
 lands exactly on the optimum, from `myopic probe` — runs ~20 at the start of the gain phase, sags
@@ -153,30 +153,68 @@ All of this uses `sim`'s libm trig. Vanilla's `Mth.cos` is a lookup table whose 
 exactly zero at −90°, which trips every `lookHorLength > 0` guard and makes the flight ballistic.
 The flick wants about −88, so it does not bite here, but do not port a −90° target across.
 
-## Open question: why does the dive's γ floor peak at w = 0?
+## The dive's γ floor: what sets it, and why the peak was not real
 
-Worth chasing. Across the cycle family the dive's flight-path-angle floor is **non-monotonic in w**,
-and it peaks essentially exactly where the fastest-steady-glide derivation predicts:
+The floor moves **monotonically** with w, and there was never a peak at w = 0. Measured as the
+interior trough of γ over the middle of the dive (`myopic floor`):
 
-| w | -.010 | -.005 | -.002 | **0** | .002 | .005 | .010 | .020 |
+| w | -.003 | -.002 | -.001 | **0** | .002 | .005 | .010 | .020 |
 |---|-------|-------|-------|-------|------|------|------|------|
-| γ floor | 12.81 | 14.62 | 16.80 | **16.72** | 16.32 | 15.94 | 15.36 | 14.45 |
+| γ trough | 17.37 | 17.25 | 17.01 | **16.72** | 16.32 | 15.94 | 15.60 | 14.74 |
+| steady v_z there, % of ceiling | 99.92 | 99.94 | 99.98 | 99.997 | 99.99 | 99.94 | 99.85 | 99.46 |
 
-`myopic eq` says the steady glide maximising forward speed has γ = **16.577°**. The pure-climb cycle
-sits at a maximum of the floor over the whole family, and weighting distance in *either* direction
-pulls the floor down. Naively you would expect it to move monotonically as you trade climb against
-ground covered — a shallower glide for more distance, a steeper one for less — and instead both
-directions are shallower.
+Steeper when you are told to cover less ground, shallower when you are told to cover more, exactly
+as it should be. It crosses `myopic eq`'s fastest-steady-glide angle of **16.577°** between w = 0
+and w = .002; the raw 300-tick cycle troughs at 16.80°.
 
-Things to try:
+**The old peak was the statistic, not the cycle.** `min γ over the whole dive window` assumes the
+dive settles. Near w = 0 it does — γ dips to a plateau around the middle and comes back up as the
+snap approaches — but from w = -.005 down the shape inverts and γ climbs monotonically through the
+dive. There is no floor there at all, and the minimum lands on the early transient instead: 12.80°
+at 22% of the way in, 14.48° at 20%, 16.67° at 20%. Those three numbers were the entire left-hand
+descent of the "peak". `myopic gprofile` prints the shape; `myopic floor` reports the trough and
+says `(no floor)` when it is not interior.
 
-- For each w, find the equilibrium maximising the *objective rate* at that equilibrium, i.e.
-  `argmax_pitch (GRAVITY * eq_vy + w * eq_vz)`, and compare it to the observed floor. If that
-  reduces to `argmax eq_vz` at w = 0 it would explain the peak; if it does not, the target is
-  something else and the w = 0 match may be a coincidence worth being suspicious of.
-- Resolve the peak with more w values in -.004..+.004; four points either side is thin.
-- The floor is currently reported as `min γ over the dive window`, which is a poor statistic once
-  the dive stops settling on a plateau (at |w| >= .010 it just sweeps). Try the γ at a fixed
-  fraction of the way through the dive, or fit the first-order decay and report its asymptote.
-- Re-polish the extreme cycles properly. w = ±.010 and +.020 were still improving at ~1e-3/pass
-  when they were stopped, so those rows are the softest numbers in the table.
+**The rate turnpike is the wrong object.** `myopic eqrate` computes the equilibrium maximising the
+objective rate `GRAVITY*eq_vy + w*eq_vz`, which is what the cycle's objective integrates. At w = 0
+that reduces to `argmax eq_vy` — the *minimum-sink* glide, pitch **-13.06°**, nose up, γ 9.15°,
+speed 0.445 — and not to `argmax eq_vz` at all. `argmax eq_vz` is the other end of the same family:
+it is the w → +∞ limit, the pure-distance turnpike (γ → 16.53 at w = 10).
+
+It cannot work, for a structural reason. The turnpike argument presumes that loitering at the best
+fixed point is nearly optimal. Here every steady glide sinks at 1.4 b/s or worse while the cycle
+*climbs* at 1.44 b/s, so the best fixed point is about 2.9 b/s worse than the orbit. The optimum is
+a strict limit cycle and there is no steady state for it to head toward.
+
+Replacing the guessed weights with the optimum's own shadow prices does not rescue it either.
+`myopic prices` recovers the costate from the stationarity condition `λ·∂f/∂p = 0` — in the (v_y,
+v_z) plane that pins λ up to sign and scale — and the extraction checks out: the optimum's pitch is
+the *global* argmax of `λ·f` at every dive tick, to 0.000°. The prices are λ ≈ (-0.42, +0.91):
+upward velocity is worth **less than nothing** during a dive, which is why forcing λ_y > 0 gives
+nonsense. But the equilibrium those prices prefer runs γ 18.3° → 21.3° *rising* through the dive
+while the actual γ falls to 16.8° and levels — off by 3.7° and moving the wrong way.
+
+**What does set it is a ceiling, not an optimum.** `argmax eq_vz` is where `d(eq_vz)/dp = 0`: the
+fastest forward speed any sustained glide can hold, 3.38879 blocks/tick. At w = 0 the dive's whole
+job is to arrive at the snap fast, and a long dive at constant γ converges on the equilibrium for
+that γ, so the best γ to hold is the one whose equilibrium is quickest. That derivation never
+invokes a rate, which is why it survives while the turnpike version fails.
+
+**And the floor is a badly conditioned readout of it.** eq_vz is very flat on top — γ from 16.0° to
+17.1° is all within 0.05% of the ceiling, and the entire family's floors, 14.7° to 17.4°, sit above
+99.4%. So γ swings by degrees at essentially no cost in what the dive is actually buying. Treat
+sub-degree floor movements as unresolved; the honest statement is that the whole family pins the
+dive to the top of the speed curve and the exact angle is barely determined.
+
+Still open, but smaller:
+
+- Why does the shape invert below w = -.005 — why does a min-distance cycle steepen through the
+  dive rather than settling? Those cycles also stop matching `hold γ` as well.
+- `pitch 0` is a genuine corner of the equilibrium locus, not a smooth point: for p ≥ 0 the
+  equilibrium is frozen (eq_vz 1.51017 → 1.51022 over the first 0.2°) while for p < 0 it moves
+  fast, so the locus has a vertex there and a whole range of w parks the turnpike at exactly 0.000.
+  It is also exactly the best-glide-ratio point (γ 5.65°). The cause is the `lean_angle < 0.0`
+  guard on the forward-to-up conversion in `update_fall_flying_movement`: that term is off for
+  every nose-down pitch and switches on linearly in `-sin(lean_angle)` the moment the nose comes
+  up, so `df/dp` is discontinuous at exactly zero. Not an open question any more, but worth
+  knowing — a pitch of exactly 0 is a special point of the physics, not just a round number.

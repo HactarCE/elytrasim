@@ -16,11 +16,15 @@
 //! Subcommands:
 //!   profiles                             cycle closure and climb rate of the built-in profiles
 //!   eq                                   terminal-glide table, and the fastest steady glide
+//!   eqrate                               steady glide maximising the objective rate, per w
 //!   polish   <file> [passes] [w]         coordinate-ascent polish of a schedule; maximises TE + w*z
 //!   cycle    <file> <off>                per-tick dump: pitch, gamma, and each rule's answer
 //!   score    <file> <off> <lo> <hi>      RMS pitch error of a menu of rules, per phase
 //!   probe    <file> <off> <lo> <hi>      implied lookahead n*(t) through the gain phase
 //!   family   <file> <tag>                auto-detect the phases and summarise the fit
+//!   floor    <file> <tag>                fit the dive's first-order gamma decay and its asymptote
+//!   prices   <file> <tag>                shadow prices from the optimum, and the glide they pick
+//!   gprofile <file> <tag>                flight-path angle at ten points through the dive
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
 //!   policy   [opt]                       fly the four bugs; NGAIN=<n> sets the gain lookahead
 //!
@@ -272,13 +276,12 @@ fn cmd_sweepn(path: &str, off: usize, lo: usize, hi: usize, nmax: usize) {
 
 /// Find the cycle in a schedule without being told where it is, then report how well the
 /// dive and gain rules fit it. Used to check the rules across a family of optimal cycles.
-fn cmd_family(path: &str, tag: &str) {
-    let ps = read_pitches(path);
-    let st = replay(&ps);
+/// Middle cycle of a 3x-tiled schedule, split into its four phases: `(a0, t_snap, t_gain,
+/// t_gend, a1)`. Apex to apex, so the dive is `a0..t_snap` and the gain is `t_gain..t_gend`.
+fn segment(ps: &[f64], st: &[State], tag: &str) -> Option<(usize, usize, usize, usize, usize)> {
     let apex: Vec<usize> = (1..ps.len() - 1).filter(|&t| st[t].vel.y > 0.0 && st[t + 1].vel.y <= 0.0).collect();
-    if apex.len() < 3 { eprintln!("{tag}: only {} apexes, need 3", apex.len()); return }
+    if apex.len() < 3 { eprintln!("{tag}: only {} apexes, need 3", apex.len()); return None }
     let (a0, a1) = (apex[1], apex[2]);                       // middle cycle, apex to apex
-    let period = a1 - a0;
     // The dive ends where the nose comes down and stays down. Require most of the cycle's
     // speed to be built first: a polished dive often has a level stretch early on, which
     // otherwise reads as the snap and collapses every window downstream.
@@ -290,8 +293,16 @@ fn cmd_family(path: &str, tag: &str) {
     let t_gend = (t_gain + 10..a1).find(|&t| ps[t] > 0.0).unwrap_or(a1);
     if t_snap <= a0 + 30 || t_gend <= t_gain + 5 {
         eprintln!("{tag}: could not segment the cycle (snap {t_snap}, gain {t_gain}..{t_gend} in {a0}..{a1})");
-        return;
+        return None;
     }
+    Some((a0, t_snap, t_gain, t_gend, a1))
+}
+
+fn cmd_family(path: &str, tag: &str) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let Some((a0, t_snap, t_gain, t_gend, a1)) = segment(&ps, &st, tag) else { return };
+    let period = a1 - a0;
     let (dy, dz) = (st[a1].pos.y - st[a0].pos.y, st[a1].pos.z - st[a0].pos.z);
 
     let (mut acc, mut n, mut gmin, mut gmax) = (0.0, 0, f64::MAX, f64::MIN);
@@ -322,6 +333,197 @@ fn cmd_family(path: &str, tag: &str) {
               hold RMS {:>5.2} med {:>4.2} | gain {:>3}t best n={:<3} rms {:>5.2} | n=1 {:>6.2} | n=20 {:>5.2} | n* med {:>2}",
              dy / period as f64 * 20.0, dz / period as f64 * 20.0, t_snap - a0, gmin, gmax,
              hold_rms, hold_med, t_gend - t_gain, best.0, best.1, r1, r20, ns[ns.len() / 2]);
+}
+
+/// The steady glide that maximises the *objective rate* `GRAVITY*v_y + w*v_z`.
+///
+/// Turnpike candidate for the dive's flight-path-angle floor. Maximising `TE + w*z` over a
+/// fixed number of ticks is maximising the time-average of `d/dt (TE + w*z) = g*v_y + w*v_z`,
+/// so if the dive were asymptoting to the best available *steady* state for the objective,
+/// the floor would track this angle. Note what it reduces to at w = 0: the minimum-sink
+/// glide, not the fastest one.
+fn cmd_eqrate() {
+    const G: f64 = GRAVITY;
+    // The locus is a curve in the (v_z, v_y) plane parameterised by pitch. Build it once;
+    // each point is 40k iterations of the velocity map.
+    let step = 0.05;
+    let tab: Vec<(f64, Vec3)> = (0..=(180.0 / step) as i64)
+        .map(|i| { let p = -90.0 + step * i as f64; (p, equilibrium(p)) })
+        .collect();
+    let pick = |f: &dyn Fn(Vec3) -> f64| -> (f64, Vec3) {
+        let (mut bp, mut bs) = (0.0, f64::NEG_INFINITY);
+        for &(p, e) in &tab { let v = f(e); if v > bs { bs = v; bp = p } }
+        let (mut a, mut b) = ((bp - step).max(-90.0), (bp + step).min(90.0));
+        for _ in 0..80 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if f(equilibrium(m1)) < f(equilibrium(m2)) { a = m1 } else { b = m2 }
+        }
+        let p = 0.5 * (a + b);
+        if f(equilibrium(p)) > bs { (p, equilibrium(p)) } else { (bp, equilibrium(bp)) }
+    };
+
+    println!("reference points on the equilibrium locus");
+    println!("{:<28} {:>8} {:>10} {:>10} {:>9} {:>9}", "", "pitch", "eq v_y", "eq v_z", "|eq|", "gamma");
+    let refs: [(&str, &dyn Fn(Vec3) -> f64); 3] = [
+        ("fastest glide  (max v_z)", &|e: Vec3| e.z),
+        ("min-sink glide (max v_y)", &|e: Vec3| e.y),
+        ("best glide ratio (min y)", &|e: Vec3| -gamma(e)),
+    ];
+    for (name, f) in refs {
+        let (p, e) = pick(f);
+        println!("{name:<28} {p:>8.3} {:>10.5} {:>10.5} {:>9.5} {:>9.4}", e.y, e.z, e.length(), gamma(e));
+    }
+
+    // The observed floors, from README-myopic.md's family table.
+    let obs: &[(f64, f64)] = &[(-0.010, 12.81), (-0.005, 14.62), (-0.002, 16.80), (0.0, 16.72),
+                               (0.002, 16.32), (0.005, 15.94), (0.010, 15.36), (0.020, 14.45)];
+    println!("\nturnpike glide for the objective TE + w*z, vs the observed dive floor");
+    println!("{:>7} {:>8} {:>10} {:>10} {:>9} {:>9} {:>12} {:>9}",
+             "w", "pitch", "eq v_y", "eq v_z", "|eq|", "gamma_eq", "rate", "observed");
+    for &(w, g_obs) in obs {
+        let (p, e) = pick(&|e: Vec3| G * e.y + w * e.z);
+        println!("{w:>7.3} {p:>8.3} {:>10.5} {:>10.5} {:>9.5} {:>9.4} {:>12.6} {g_obs:>9.2}",
+                 e.y, e.z, e.length(), gamma(e), G * e.y + w * e.z);
+    }
+    if std::env::args().any(|a| a == "locus") {
+        println!("\npitch,eq_vy,eq_vz,speed,gamma");
+        for i in 0..=3600 { let p = -90.0 + 0.05 * i as f64; let e = equilibrium(p);
+            println!("{p:.2},{:.6},{:.6},{:.6},{:.4}", e.y, e.z, e.length(), gamma(e)) }
+        return;
+    }
+    println!("\nthe same sweep, wider, to show which way the turnpike actually moves");
+    println!("{:>9} {:>8} {:>10} {:>10} {:>9}", "w", "pitch", "eq v_y", "eq v_z", "gamma_eq");
+    for w in [-1.0, -0.2, -0.08, -0.04, -0.02, -0.01, 0.0, 0.01, 0.02, 0.04, 0.08, 0.2, 1.0, 10.0] {
+        let (p, e) = pick(&|e: Vec3| G * e.y + w * e.z);
+        println!("{w:>9.3} {p:>8.3} {:>10.5} {:>10.5} {:>9.4}", e.y, e.z, gamma(e));
+    }
+}
+
+/// What angle is the dive's flight-path angle actually heading for?
+///
+/// Near w = 0 gamma dips to a plateau and comes back up as the snap approaches, so the trough
+/// is a real floor. On the min-distance side it climbs monotonically and there is no floor at
+/// all. `min gamma over the whole dive` cannot tell those apart -- on the climbing shapes it
+/// returns the early transient instead, which is what produced the spurious non-monotonicity
+/// in the family table. So take the minimum over the middle of the dive only, and say whether
+/// it is interior; if it is not, there is no floor to report.
+///
+/// (A first-order decay `gamma_{t+1} - gamma_t = k (c - gamma_t)` fits badly -- the shape is
+/// dip-then-rise, not decay -- and on a polished schedule the tick-scale jitter enters
+/// regressor and response with opposite signs and inflates k. Not worth reporting.)
+fn cmd_floor(path: &str, tag: &str) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let Some((a0, t_snap, _, _, a1)) = segment(&ps, &st, tag) else { return };
+    let (lo, hi) = (a0 + (a1 - a0) / 8, t_snap);             // same window family scores the hold on
+    let g: Vec<f64> = (lo..hi).map(|t| gamma(st[t].vel)).collect();
+    let m = g.len() - 1;
+    let (i, &trough) = g[m / 5..=4 * m / 5].iter().enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap();
+    let at = (m / 5 + i) as f64 / m as f64;
+    let interior = at > 0.22 && at < 0.78;
+    // How much forward speed does that angle buy? Invert it onto the nose-down branch of the
+    // equilibrium locus and read the steady speed there against the ceiling.
+    let (mut bp, mut bd) = (0.0, f64::MAX);
+    for i in 400..=1800 {
+        let q = 0.05 * i as f64;
+        let d = (gamma(equilibrium(q)) - trough).abs();
+        if d < bd { bd = d; bp = q }
+    }
+    let vz = equilibrium(bp).z;
+    const VZ_MAX: f64 = 3.3887937;                           // fastest steady glide, from `eq`
+    println!("{tag:>9} | dive {:>3}t | gamma {:>5.2} -> {:>5.2} | trough {:>5.2} at {:>3.0}% {} \
+              | that glide: pitch {bp:>5.2} v_z {vz:>7.5} = {:>6.3}% of the ceiling",
+             m + 1, g[0], g[m], trough, 100.0 * at,
+             if interior { "        " } else { "(no floor)" }, 100.0 * vz / VZ_MAX);
+}
+
+/// The costate direction, read off the optimum itself.
+///
+/// The optimal pitch satisfies the stationarity condition `lambda_{t+1} . df/dp = 0`. With yaw
+/// pinned the state is two-dimensional, so that one equation pins `lambda` up to sign and
+/// scale: it is the normal to the reachable curve's tangent. Sign is fixed by requiring height
+/// to be worth something. What comes back is the cycle's *actual* price of distance in units of
+/// height, `lambda_z / lambda_y`, which is the number the objective weight `w / GRAVITY` was
+/// standing in for.
+fn costate_dir(v: Vec3, p: f64) -> (f64, f64) {
+    let h = 1e-3;
+    let (a, m, b) = (update_fall_flying_movement(v, rot(p - h)), update_fall_flying_movement(v, rot(p)),
+                     update_fall_flying_movement(v, rot(p + h)));
+    let (dy, dz) = ((b.y - a.y) / (2.0 * h), (b.z - a.z) / (2.0 * h));
+    let (mut ny, mut nz) = (-dz, dy);
+    let n = ny.hypot(nz);
+    ny /= n; nz /= n;
+    // Sign from the second-order condition: at a maximum of lambda.f the curvature must be
+    // non-positive. Do NOT assume lambda_y > 0 -- in a dive, upward velocity is worth less
+    // than nothing, and forcing the other branch picks out a nose-up glide that makes no sense.
+    let (fyy, fzz) = ((b.y - 2.0 * m.y + a.y) / (h * h), (b.z - 2.0 * m.z + a.z) / (h * h));
+    if ny * fyy + nz * fzz > 0.0 { ny = -ny; nz = -nz }
+    (ny, nz)
+}
+
+/// Does the dive's floor sit where the *measured* prices say a steady glide should?
+///
+/// `eqrate` asks which equilibrium maximises `GRAVITY*v_y + w*v_z` and gets the wrong answer.
+/// This asks the same question with the shadow prices the optimum is actually using, recovered
+/// from its own stationarity condition, which is the only version of the turnpike claim that
+/// has a chance of being true.
+fn cmd_prices(path: &str, tag: &str) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let Some((a0, t_snap, _, _, a1)) = segment(&ps, &st, tag) else { return };
+    let step = 0.05;
+    let tab: Vec<(f64, Vec3)> = (0..=(180.0 / step) as i64)
+        .map(|i| { let p = -90.0 + step * i as f64; (p, equilibrium(p)) }).collect();
+    let best_eq = |ly: f64, lz: f64| -> (f64, Vec3) {
+        let (mut bp, mut be, mut bs) = (0.0, Vec3::ZERO, f64::NEG_INFINITY);
+        for &(p, e) in &tab { let v = ly * e.y + lz * e.z; if v > bs { bs = v; bp = p; be = e } }
+        (bp, be)
+    };
+    println!("{tag}: costate through the dive (w/GRAVITY is what eqrate assumed)");
+    println!("{:>5} {:>8} {:>8} {:>8} {:>8} {:>9} {:>10} {:>9} {:>9} {:>9}",
+             "rel", "pitch", "gamma", "l_y", "l_z", "lz/ly", "eq pitch", "eq gamma", "eq v_z", "argmax-p");
+    println!("{:>88}   (last column: global argmax of lambda.f minus the optimum's pitch)", "");
+    let (lo, hi) = (a0 + (a1 - a0) / 8, t_snap);
+    for t in (lo..hi).step_by(((hi - lo) / 12).max(1)) {
+        let (ly, lz) = costate_dir(st[t].vel, ps[t]);
+        let (ep, ee) = best_eq(ly, lz);
+        // not circular: the tangency fixes lambda locally, so recovering p_t as the *global*
+        // argmax of lambda.f is a real check that the extracted lambda is the optimum's own
+        let chk = argmax(|q| { let f = update_fall_flying_movement(st[t].vel, rot(q)); ly * f.y + lz * f.z }, 0.125);
+        println!("{:>5} {:>8.3} {:>8.3} {ly:>8.4} {lz:>8.4} {:>9.4} {ep:>10.3} {:>9.4} {:>9.5} {:>9.3}",
+                 t - a0, ps[t], gamma(st[t].vel), lz / ly, gamma(ee), ee.z, chk - ps[t]);
+    }
+    // the price the cycle puts on distance, averaged over the settled half of the dive
+    let mid = (lo + hi) / 2;
+    let (mut sy, mut sz) = (0.0, 0.0);
+    for t in mid..hi { let (ly, lz) = costate_dir(st[t].vel, ps[t]); sy += ly; sz += lz }
+    let (n, ep_pair) = ((hi - mid) as f64, ());
+    let _ = ep_pair;
+    let (my, mz) = (sy / n, sz / n);
+    let (ep, ee) = best_eq(my, mz);
+    println!("settled dive: mean lambda ({my:.4}, {mz:.4}), lz/ly {:.4}  ->  equilibrium pitch {ep:.3}, \
+              gamma {:.4}, v_z {:.5}", mz / my, gamma(ee), ee.z);
+}
+
+/// Flight-path angle at ten points through the dive, so the *shape* is visible.
+///
+/// This is what settles the question `min gamma` was getting wrong: near w = 0 the dive dips
+/// and comes back up, so the minimum is a real plateau, but on the min-distance side gamma
+/// climbs monotonically and there is no floor at all -- there the minimum is just the start of
+/// the dive, and reading it as an asymptote invents a trend that is not there.
+fn cmd_gprofile(path: &str, tag: &str) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let Some((a0, t_snap, _, _, a1)) = segment(&ps, &st, tag) else { return };
+    let (lo, hi) = (a0 + (a1 - a0) / 8, t_snap);
+    let g: Vec<f64> = (lo..hi).map(|t| gamma(st[t].vel)).collect();
+    let m = g.len() - 1;
+    print!("{tag:>9} |");
+    for i in 0..=10 { print!(" {:>5.2}", g[m * i / 10]) }
+    println!(" | min {:>5.2} at {:>3.0}%",
+             g.iter().cloned().fold(f64::MAX, f64::min),
+             100.0 * g.iter().enumerate().min_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0 as f64 / m as f64);
 }
 
 // ---------------------------------------------------------------- the policy
@@ -400,15 +602,19 @@ fn main() {
     match a.get(1).map(String::as_str) {
         Some("profiles") => cmd_profiles(),
         Some("eq") => cmd_eq(),
+        Some("eqrate") => cmd_eqrate(),
         Some("polish") => cmd_polish(&a[2], a.get(3).map_or(40, |s| s.parse().unwrap()),
                                      a.get(4).map_or(0.0, |s| s.parse().unwrap())),
         Some("cycle") => cmd_cycle(&a[2], n(3)),
         Some("score") => cmd_score(&a[2], n(3), n(4), n(5)),
         Some("probe") => cmd_probe(&a[2], n(3), n(4), n(5)),
         Some("family") => cmd_family(&a[2], &a[3]),
+        Some("floor") => cmd_floor(&a[2], &a[3]),
+        Some("prices") => cmd_prices(&a[2], &a[3]),
+        Some("gprofile") => cmd_gprofile(&a[2], &a[3]),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
         Some("policy") => cmd_policy(a.get(2).map(String::as_str) == Some("opt")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|polish|cycle|score|probe|family|sweepn|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|sweepn|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }
