@@ -142,3 +142,31 @@ bad, but it still flies a cycle once the switch points re-tune around it.
 All of this uses `sim`'s libm trig. Vanilla's `Mth.cos` is a lookup table whose index truncates to
 exactly zero at −90°, which trips every `lookHorLength > 0` guard and makes the flight ballistic.
 The flick wants about −88, so it does not bite here, but do not port a −90° target across.
+
+## Open question: why does the dive's γ floor peak at w = 0?
+
+Worth chasing. Across the cycle family the dive's flight-path-angle floor is **non-monotonic in w**,
+and it peaks essentially exactly where the fastest-steady-glide derivation predicts:
+
+| w | -.010 | -.005 | -.002 | **0** | .002 | .005 | .010 | .020 |
+|---|-------|-------|-------|-------|------|------|------|------|
+| γ floor | 12.81 | 14.62 | 16.80 | **16.72** | 16.32 | 15.94 | 15.36 | 14.45 |
+
+`myopic eq` says the steady glide maximising forward speed has γ = **16.577°**. The pure-climb cycle
+sits at a maximum of the floor over the whole family, and weighting distance in *either* direction
+pulls the floor down. Naively you would expect it to move monotonically as you trade climb against
+ground covered — a shallower glide for more distance, a steeper one for less — and instead both
+directions are shallower.
+
+Things to try:
+
+- For each w, find the equilibrium maximising the *objective rate* at that equilibrium, i.e.
+  `argmax_pitch (GRAVITY * eq_vy + w * eq_vz)`, and compare it to the observed floor. If that
+  reduces to `argmax eq_vz` at w = 0 it would explain the peak; if it does not, the target is
+  something else and the w = 0 match may be a coincidence worth being suspicious of.
+- Resolve the peak with more w values in -.004..+.004; four points either side is thin.
+- The floor is currently reported as `min γ over the dive window`, which is a poor statistic once
+  the dive stops settling on a plateau (at |w| >= .010 it just sweeps). Try the γ at a fixed
+  fraction of the way through the dive, or fit the first-order decay and report its asymptote.
+- Re-polish the extreme cycles properly. w = ±.010 and +.020 were still improving at ~1e-3/pass
+  when they were stopped, so those rows are the softest numbers in the table.
