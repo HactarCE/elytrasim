@@ -108,10 +108,20 @@ the horizoned 300-tick problem the implied lookahead duly collapses to 1 near th
 it climbs past 40. Both are fitting sub-degree noise. The quantity is only determined in the first
 half of the gain phase, where the fan is wide.
 
-What *is* clean is a bracket: `n = 1` is nose-up of the optimum and `n = 48` is nose-down of it for
-**82 of 86 ticks** of the gain phase, so the optimum is squeezed between a short and a long
-lookahead almost everywhere. This is the useful property for a cloud-of-bugs display: the cloud's
-width is the uncertainty, and it is wide exactly where the choice matters.
+What *is* clean is a bracket. **`n = 12` is nose-up of the optimum at every tick of the gain phase
+and `n = 37` is nose-down at every tick** (76/76 ticks over rel 220-295, 82/86 over the whole
+phase), mean width 7.8°. Every lookahead between them crosses the optimum somewhere; nothing
+outside ever does.
+
+Narrower still is the set that is ever actually *right*. Over the window where the family still
+disagrees — rel 214-278, before the n=12..24 spread falls under a degree — the implied lookahead
+takes exactly nine values, **12 through 20**, and walks them **monotonically from 20 down to 12**.
+So the gain phase is not "use n = 20", it is "start on a twenty-tick horizon and shorten to twelve
+as you climb". A fixed 20 is the best single stand-in and costs about a degree.
+
+This is the useful property for a cloud-of-bugs display: draw n = 12..20, the cloud's width is the
+uncertainty, and the member you should be on migrates from the nose-down edge to the nose-up edge
+as the climb progresses.
 
 Note the ΔTE family is not merely imprecise in the **dive** — it is bimodal there, splitting
 between "stay level" (short n) and "give up and zoom now" (long n, around -40 to -52), and
