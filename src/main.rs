@@ -614,6 +614,46 @@ fn show_optimizer(
                 .on_hover_text(format!("tick: {}, pitch: {}", tick, pitch));
         }
 
+        // preserve_vel_angle
+        #[cfg(false)]
+        {
+            let y = value_to_y(-preserve_vel_angle(&state), 90.0);
+            dot_at(x, y, egui::Color32::from_rgb(200, 3, 198))
+                .on_hover_text(format!("tick: {}, preserve vel angle: {}", tick, pitch));
+        }
+
+        // // bug_dive no decay
+        // #[cfg(false)]
+        // {
+        //     let y = value_to_y(-bug_dive(&state, 16.8, 0.0), 90.0);
+        //     dot_at(x, y, egui::Color32::from_rgb(150, 3, 198))
+        //         .on_hover_text(format!("tick: {}, bug dive no decay: {}", tick, pitch));
+        // }
+
+        // // bug_dive decay
+        // #[cfg(false)]
+        // {
+        //     let y = value_to_y(-bug_dive(&state, 16.8, 0.05), 90.0);
+        //     dot_at(x, y, egui::Color32::from_rgb(100, 3, 198))
+        //         .on_hover_text(format!("tick: {}, bug dive decay: {}", tick, pitch));
+        // }
+
+        // argmax_dte_1
+        #[cfg(false)]
+        {
+            let y = value_to_y(-argmax_dte_n(&state, 1), 90.0);
+            dot_at(x, y, egui::Color32::from_rgb(250, 3, 150))
+                .on_hover_text(format!("tick: {}, argmax dte 1: {}", tick, pitch));
+        }
+
+        // argmax_dte_20
+        #[cfg(false)]
+        {
+            let y = value_to_y(-argmax_dte_n(&state, 20), 90.0);
+            dot_at(x, y, egui::Color32::from_rgb(250, 3, 100))
+                .on_hover_text(format!("tick: {}, argmax dte 20: {}", tick, pitch));
+        }
+
         // pitch gradient (purple)
         // actually this just goes to zero, so it's not very interesting
         // #[cfg(false)]

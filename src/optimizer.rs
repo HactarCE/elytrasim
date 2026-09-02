@@ -483,3 +483,107 @@ mod decay {
         pitches.copy_from_slice(&new_pitches);
     }
 }
+
+pub use myopic::*;
+mod myopic {
+    use super::*;
+
+    fn gamma(v: Vel3) -> f64 {
+        (-v.y).atan2(v.z).to_degrees()
+    }
+    fn ticked(s: &State, p: Pitch) -> State {
+        s.ticked(p)
+    }
+    fn run_n(s: &State, p: Pitch, n: usize) -> State {
+        let mut s = s.clone();
+        for _ in 0..n {
+            s = s.ticked(p)
+        }
+        s
+    }
+
+    fn argmax<F: Fn(Pitch) -> f64>(f: F, step: Pitch) -> Pitch {
+        let (mut best_pitch, mut best_value) = (0.0, f64::NEG_INFINITY);
+        let n = (180.0 / step).round() as i64;
+        for i in 0..=n {
+            let pitch = PitchUtil::clamped(-90.0 + step * i as Pitch);
+            let value = f(pitch);
+            if value > best_value {
+                best_value = value;
+                best_pitch = pitch
+            }
+        }
+        let (mut a, mut b) = (
+            (best_pitch - step).max(-90.0),
+            (best_pitch + step).min(90.0),
+        );
+        for _ in 0..60 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if f(m1) < f(m2) { a = m1 } else { b = m2 }
+        }
+        let p = 0.5 * (a + b);
+        if f(p) > best_value { p } else { best_pitch }
+    }
+
+    /// DIVE. Pitch whose next tick leaves the flight-path angle at `target`.
+    ///
+    /// gamma(v') is monotone in pitch at dive speeds, but not at low speed, where two branches
+    /// reach a given angle and only the nose-down one accelerates. So: scan for the last upward
+    /// crossing, then bisect. Picking the wrong branch stalls the dive completely.
+    pub fn bug_gamma_to(s: &State, target: f64) -> Pitch {
+        let h = |p: Pitch| gamma(ticked(s, p).vel) - target;
+        let (mut lo, mut hi) = (Pitch::NAN, Pitch::NAN);
+        let (mut prev, mut pp) = (h(-90.0), -90.0);
+        for i in 1..=1440 {
+            let p = -90.0 + 0.125 * i as Pitch;
+            let c = h(p);
+            if prev <= 0.0 && c > 0.0 {
+                lo = pp;
+                hi = p
+            }
+            prev = c;
+            pp = p;
+        }
+        if lo.is_nan() {
+            return if h(90.0) < 0.0 { 90.0 } else { -90.0 };
+        }
+        for _ in 0..60 {
+            let m = 0.5 * (lo + hi);
+            if h(m) <= 0.0 { lo = m } else { hi = m }
+        }
+        0.5 * (lo + hi)
+    }
+
+    pub fn bug_dive(s: &State, g_star: f64, k: f64) -> Pitch {
+        let g0 = gamma(s.vel);
+        bug_gamma_to(s, g0 + k * (g_star - g0))
+    }
+
+    /// the pitch st the next angle of travel is `target`.
+    fn pitch_for_flight_angle(s: &State, target: f64) -> Pitch {
+        let fa = gamma(s.vel);
+        argmax(|pitch| -(gamma(ticked(s, pitch).vel) - target).abs(), 1.0)
+    }
+
+    /// the pitch st the next angle of travel is preserved.
+    /// note that this is multimodal at the beginning,
+    /// and only becomes unimodal after a few seconds into the dive.
+    // pitch_for_preserved_flight_angle
+    pub fn preserve_vel_angle(s: &State) -> Pitch {
+        let fa = gamma(s.vel);
+        pitch_for_flight_angle(s, fa)
+    }
+
+    /// the pitch st the (delta) total energy is maximized,
+    /// if you were to hold that pitch for num_ticks.
+    ///
+    /// empirically `num_ticks = 20` is good.
+    // pitch_te_gain
+    pub fn argmax_dte_n(s: &State, num_ticks: usize) -> Pitch {
+        let te = s.total_energy();
+        argmax(
+            |pitch| run_n(s, pitch, num_ticks).total_energy() - te,
+            5.0,
+        )
+    }
+}
