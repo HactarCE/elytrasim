@@ -27,7 +27,7 @@
 //!   gprofile <file> <tag>                flight-path angle at ten points through the dive
 //!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick rule
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
-//!   policy   [opt]                       fly the four bugs; NGAIN=<n> sets the gain lookahead
+//!   policy   [opt] [leak|floor|hold]     fly the four bugs; NGAIN=<n> sets the gain lookahead
 //!
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
@@ -113,6 +113,22 @@ pub fn bug_gamma_to(s: &State, target: f64) -> f64 {
 pub fn bug_dive(s: &State, g_star: f64, k: f64) -> f64 {
     let g0 = gamma(s.vel);
     bug_gamma_to(s, g0 + k * (g_star - g0))
+}
+
+/// DIVE, leak-free: hold the current angle, but never shallower than `ceiling()`.
+///
+/// The floor is derived, not fitted: it is the flight-path angle of the fastest steady glide,
+/// which is what the dive's gamma settles onto. Entry overshoots it, and from there the rule is
+/// an exact hold -- no rate constant anywhere.
+pub fn bug_dive_floor(s: &State) -> f64 {
+    bug_gamma_to(s, gamma(s.vel).max(ceiling().1))
+}
+
+/// The fastest steady glide, `argmax_p eq_vz(p)`, as (pitch, gamma). Cached: each equilibrium is
+/// 40k iterations of the velocity map.
+pub fn ceiling() -> (f64, f64) {
+    static C: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
+    *C.get_or_init(|| { let p = argmax(|p| equilibrium(p).z, 0.25); (p, gamma(equilibrium(p))) })
 }
 
 /// Terminal glide for a constant pitch: iterate the velocity map to its fixed point.
@@ -243,6 +259,7 @@ fn cmd_score(path: &str, off: usize, lo: usize, hi: usize) {
     row("gamma -> 16.577".into(), &|s| bug_gamma_to(s, 16.577));
     row("max next speed".into(), &|s| argmax(|p| ticked(s, p).vel.length(), 0.125));
     row("min next |v_y|".into(), &|s| argmax(|p| -ticked(s, p).vel.y.abs(), 0.125));
+    row("hold gamma, floored".into(), &bug_dive_floor);
 }
 
 fn cmd_probe(path: &str, off: usize, lo: usize, hi: usize) {
@@ -668,12 +685,81 @@ fn cmd_singular(path: &str) {
     }
 }
 
+/// What does a pitch error at tick t actually cost the cycle?
+///
+/// The curvature of `mu . f` is a statement about a linear score in abstract units. This is the
+/// operational version: nudge one tick's pitch, let the schedule re-converge to its own limit
+/// cycle, and read the change in climb rate. Answers "does the pitch at this tick matter", in
+/// blocks per second, with no theory in between.
+fn cmd_sens(path: &str, delta: f64) {
+    let base = read_pitches(path);
+    let n = base.len();
+    let rate = |ps: &[f64]| -> f64 {
+        let mut v = V0;
+        for _ in 0..40 { for &p in ps { v = update_fall_flying_movement(v, rot(p)) } }
+        let mut s = State { pos: Vec3::ZERO, vel: v };
+        for &p in ps { s = ticked(&s, p) }
+        s.pos.y / n as f64 * 20.0
+    };
+    let base_rate = rate(&base);
+    println!("{path}: climb {base_rate:.5} b/s; cost of a {delta}deg pitch error at one tick");
+    let mut cost = vec![0.0; n];
+    for t in 0..n {
+        let mut up = base.clone(); up[t] += delta;
+        let mut dn = base.clone(); dn[t] -= delta;
+        // symmetric part: the second-order cost, which is what "flat" is really asking about
+        cost[t] = base_rate - 0.5 * (rate(&up) + rate(&dn));
+    }
+    let show = |name: &str, lo: usize, hi: usize| {
+        let mut v: Vec<f64> = cost[lo..hi].iter().cloned().collect();
+        let sum: f64 = v.iter().sum();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let _ = sum;
+        // a correlated shift of the whole phase is NOT the sum of the one-tick costs -- the cross
+        // terms dominate -- so shift it for real and re-converge
+        let corr = |d: f64| { let mut q = base.clone(); for t in lo..hi { q[t] += d } rate(&q) };
+        println!("{name:>11} {:>4}t | one tick: median {:>9.2e} max {:>9.2e} | whole phase off by \
+                  {delta}deg: {:>+8.4} / {:>+8.4} b/s",
+                 hi - lo, v[v.len() / 2], v[v.len() - 1], corr(delta) - base_rate, corr(-delta) - base_rate);
+    };
+    let st = replay(&base);
+    let v_top = (0..n).map(|t| st[t].vel.length()).fold(0.0, f64::max);
+    let t_snap = (30..n - 3).find(|&t| base[t] < 5.0 && base[t + 1] < 5.0 && base[t + 2] < 5.0
+                                    && st[t].vel.length() > 0.8 * v_top).unwrap_or(n * 2 / 3);
+    let t_gain = (t_snap..n).find(|&t| st[t].vel.y > 0.0).unwrap_or(t_snap);
+    let t_gend = (t_gain + 10..n).find(|&t| base[t] > 0.0).unwrap_or(n);
+    show("dive", 20, t_snap); show("snap+flick", t_snap, t_gain); show("gain", t_gain, t_gend);
+    if std::env::args().any(|a| a == "dump") {
+        println!("t,pitch,gamma,cost");
+        for t in 0..n { println!("{t},{:.4},{:.3},{:.6e}", base[t], gamma(st[t].vel), cost[t]) }
+    }
+}
+
+/// One tick, spelled out: how next tick's velocity swings with pitch, and where the price sits.
+fn cmd_swing(path: &str, t: usize) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let (v, p) = (st[t].vel, ps[t]);
+    println!("tick {t}: v = ({:.5}, {:.5}), gamma {:.2}, pitch {p:.3}", v.y, v.z, gamma(v));
+    println!("{:>8} {:>11} {:>11}", "pitch", "next v_y", "next v_z");
+    for d in [-2.0, -1.0, 0.0, 1.0, 2.0] {
+        let f = update_fall_flying_movement(v, rot(p + d));
+        println!("{:>8.3} {:>11.6} {:>11.6}", p + d, f.y, f.z);
+    }
+    let h = 1e-3;
+    let (a, b) = (update_fall_flying_movement(v, rot(p - h)), update_fall_flying_movement(v, rot(p + h)));
+    let (dy, dz) = ((b.y - a.y) / (2.0 * h), (b.z - a.z) / (2.0 * h));
+    println!("df/dp = ({dy:.6}, {dz:.6}) per degree  -- the direction next velocity slides as you pitch");
+    let (uy, uz) = costate_dir(v, p);
+    println!("price = ({uy:.6}, {uz:.6})  -- perpendicular to it: dot = {:.3e}", uy * dy + uz * dz);
+}
+
 /// Print one cycle of a schedule: the middle cycle of a 3x tiling, or the policy's limit cycle.
 /// Both are needed as controls for `consist`, which requires a genuinely closed cycle.
 fn cmd_cyclecut(what: &str) {
     let (ps, st, tag): (Vec<f64>, Vec<State>, &str) = if what == "policy" {
         let par = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
-                      s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: 20 };
+                      s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: 20, dive: Dive::Leak };
         let (ps, _, st) = fly(par, 2000);
         (ps, st, "policy")
     } else {
@@ -766,8 +852,11 @@ fn cmd_consist(path: &str, amp: f64) {
 
 // ---------------------------------------------------------------- the policy
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dive { Leak, Floor, Hold }
+
 #[derive(Clone, Copy, Debug)]
-struct P { g_star: f64, k: f64, s_switch: f64, vy_flick: f64, s_exit: f64, slew: f64, p_push: f64, p_flick: f64, n_gain: usize }
+struct P { g_star: f64, k: f64, s_switch: f64, vy_flick: f64, s_exit: f64, slew: f64, p_push: f64, p_flick: f64, n_gain: usize, dive: Dive }
 
 /// Fly the four bugs, switching on state rather than on the clock, with a pitch rate limit.
 fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
@@ -783,7 +872,13 @@ fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
             p => p,
         };
         let want = match phase {
-            0 => if gamma(s.vel) < 0.0 { par.p_push } else { bug_dive(&s, par.g_star, par.k) },
+            0 => if gamma(s.vel) < 0.0 { par.p_push } else {
+                match par.dive {
+                    Dive::Leak => bug_dive(&s, par.g_star, par.k),
+                    Dive::Floor => bug_dive_floor(&s),
+                    Dive::Hold => bug_gamma_to(&s, gamma(s.vel)),
+                }
+            },
             1 => 0.0,
             2 => par.p_flick,
             _ => bug_dte_n(&s, par.n_gain),
@@ -797,15 +892,17 @@ fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
 }
 fn rate_of(par: P, t: usize) -> f64 { fly(par, t).2[t].pos.y / t as f64 * 20.0 }
 
-fn cmd_policy(optimize: bool) {
+fn cmd_policy(optimize: bool, dive: Dive) {
     let ticks = 1500;
     let ng: usize = std::env::var("NGAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let mut par = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
-                      s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: ng };
+                      s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: ng, dive };
     if optimize {
+        // g_star and k exist only for the leaking dive; the others are shared
+        let js: Vec<usize> = if dive == Dive::Leak { (0..8).collect() } else { (2..8).collect() };
         let mut step = [3.0, 0.03, 0.30, 0.10, 0.08, 8.0, 6.0, 12.0];
         for _ in 0..26 {
-            for j in 0..8 {
+            for &j in &js {
                 let cur = rate_of(par, ticks);
                 let (mut bv, mut bp) = (cur, par);
                 for d in [-1.0f64, 1.0] {
@@ -827,6 +924,7 @@ fn cmd_policy(optimize: bool) {
     let (ps, ph, st) = fly(par, ticks);
     let r = rate_of(par, ticks);
     eprintln!("n_gain {:>2}  {r:.5} b/s  {:>5.1}% of the optimal cycle   {par:?}", par.n_gain, r / OPTIMAL_CYCLE_RATE * 100.0);
+    if dive != Dive::Leak { eprintln!("dive floor: gamma {:.4} at pitch {:.3}, derived", ceiling().1, ceiling().0) }
     println!("tick,phase,pitch,vy,vz,speed,gamma,te");
     for t in 0..ticks {
         println!("{t},{},{:.5},{:.6},{:.6},{:.6},{:.4},{:.6}", ph[t], ps[t],
@@ -850,13 +948,20 @@ fn main() {
         Some("floor") => cmd_floor(&a[2], &a[3]),
         Some("prices") => cmd_prices(&a[2], &a[3]),
         Some("gprofile") => cmd_gprofile(&a[2], &a[3]),
+        Some("sens") => cmd_sens(&a[2], a[3].parse().unwrap()),
+        Some("swing") => cmd_swing(&a[2], n(3)),
         Some("cyclecut") => cmd_cyclecut(&a[2]),
         Some("consist") => cmd_consist(&a[2], a[3].parse().unwrap()),
         Some("singular") => cmd_singular(&a[2]),
         Some("adjoint") => cmd_adjoint(&a[2], a.get(3).map_or(0.0, |s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
-        Some("policy") => cmd_policy(a.get(2).map(String::as_str) == Some("opt")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sweepn|policy> ...\n\
+        Some("policy") => cmd_policy(a.iter().any(|x| x == "opt"),
+                                     match a.iter().find(|x| ["leak", "floor", "hold"].contains(&x.as_str())) {
+                                         Some(x) if x == "floor" => Dive::Floor,
+                                         Some(x) if x == "hold" => Dive::Hold,
+                                         _ => Dive::Leak,
+                                     }),
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|sweepn|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }

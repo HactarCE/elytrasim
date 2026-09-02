@@ -250,7 +250,11 @@ It is very much a property of the optimum (`myopic consist`, median degrees off 
 | + 3° | 1.0289 | 1.46 | 27.6 |
 | + 10° | -3.70 | 24.6 | 65.9 |
 
-The gain column tracks quality cleanly. The dive column does not, and that is the interesting part.
+The gain column roughly tracks climb rate, with one inversion (`REPLAY_PITCHES_300` at 1.4334
+scores worse than the policy cycle at 1.3734). Do not oversell it: the residual tests
+*stationarity* — whether the cycle is a critical point of the problem — not how good it is. A
+cycle can sit at a critical point and still be beaten. The dive column does not track anything,
+and that is the interesting part.
 
 **Snap+flick sits at 26° even on the optimum** because the flick saturates near -88: it is a bang
 arc, the boundary binds, and there is no interior stationarity to satisfy. That is the formal
@@ -269,12 +273,34 @@ The dive's score is **15x flatter** than the gain's. A fraction of a percent of 
 the argmax by ten degrees there — which is exactly what happens with `REPLAY_PITCHES_300`, whose
 `mu` agrees with the tangency direction to ~1% and still shows a 10° argmax gap through the dive.
 
-**This is what ties the phases together.** The dive is a near-singular arc: the maximum principle
-barely determines the pitch, so the pitch has to be pinned by something else — and a state feedback
-law is exactly what fills that gap, which is why parameter-free "hold γ" fits it to 0.27° and why
-the ΔTE family is *bimodal* there rather than merely imprecise. The gain phase is a regular arc
-with real curvature, so the pitch *is* determined by an argmax, which is why a lookahead rule works
-there and why the horizon has to be about right.
+**In blocks per second**, which is the only unit that settles whether "flat" means anything.
+`myopic sens` nudges one tick's pitch, lets the schedule re-converge to its own limit cycle, and
+reads the change in climb. Cost of being 1° off at a single tick:
+
+| | dive | snap | flick | gain |
+|---|---|---|---|---|
+| b/s lost, median | 1.7e-6 | **5.0e-3** | 3e-6 | 2.5e-5 |
+| relative to the dive | 1x | **3000x** | 2x | 15x |
+
+The dive-to-gain ratio comes out at 15x, the same as the curvature ratio, which is a fair check
+that the abstract measure meant something. But the headline is the column I had not looked at:
+**the snap is where the pitch matters, by three orders of magnitude.** A correlated 3° error costs
+0.41 b/s across the snap (29% of the climb), 0.077 b/s across the whole dive (5%), 0.05 b/s across
+the gain (3.5%). The flick drops back to dive-level insensitivity, which is the quantitative
+version of "the flick's values do not matter".
+
+This is a caveat on everything above. The dive rule's 0.27° median error is worth about 5e-7 b/s —
+the dive fits a clean rule partly because nearly anything reasonable fits there. The rules are
+still the right description of what the optimum *does*; just do not read the dive's tight fit as
+evidence that the dive is where the cycle is won.
+
+**What the flatness does not explain.** It says the *linear* score `mu . f` is flat. The ΔTE rules
+optimise a different, non-linear objective, and nothing here explains why the ΔTE family is
+bimodal in the dive — that was an overclaim in an earlier version of this file and it is
+withdrawn. Likewise "the gain is a regular arc, so the pitch is an argmax" was circular phrasing:
+"arc" is only a label for a stretch of trajectory and implies nothing. The defensible claim is
+narrower — in the gain phase the score has enough curvature that an approximate `mu` still locates
+the pitch, and in the dive it does not.
 
 **And it explains the 1-tick failure quantitatively.** One-tick greedy is argmax of
 `TE(v') - TE(v)`, whose gradient in `v'` is `(v'_y + GRAVITY, v'_z)` — a price vector in its own
