@@ -16,12 +16,12 @@
 //! Subcommands:
 //!   profiles                             cycle closure and climb rate of the built-in profiles
 //!   eq                                   terminal-glide table, and the fastest steady glide
-//!   eqrate                               steady glide maximising the objective rate, per w
-//!   polish   <file> [passes] [w]         coordinate-ascent polish of a schedule; maximises TE + w*z
+//!   eqrate                               steady glide maximizing the objective rate, per w
+//!   polish   <file> [passes] [w]         coordinate-ascent polish of a schedule; maximizes TE + w*z
 //!   cycle    <file> <off>                per-tick dump: pitch, gamma, and each rule's answer
 //!   score    <file> <off> <lo> <hi>      RMS pitch error of a menu of rules, per phase
 //!   probe    <file> <off> <lo> <hi>      implied lookahead n*(t) through the gain phase
-//!   family   <file> <tag>                auto-detect the phases and summarise the fit
+//!   family   <file> <tag>                auto-detect the phases and summarize the fit
 //!   floor    <file> <tag>                fit the dive's first-order gamma decay and its asymptote
 //!   prices   <file> <tag>                shadow prices from the optimum, and the glide they pick
 //!   gprofile <file> <tag>                flight-path angle at ten points through the dive
@@ -81,7 +81,7 @@ fn argmax<F: Fn(f64) -> f64>(f: F, step: f64) -> f64 {
 
 // ---------------------------------------------------------------- the rules
 
-/// GAIN. Pitch maximising the total-energy change over `n` ticks held constant.
+/// GAIN. Pitch maximizing the total-energy change over `n` ticks held constant.
 /// n = 1 is elytrasim's `argmax_over_pitch_of_delta_energy`; the optimum wants n ~ 20.
 pub fn bug_dte_n(s: &State, n: usize) -> f64 {
     let te = s.total_energy();
@@ -193,7 +193,7 @@ fn cmd_polish(path: &str, passes: usize, w: f64) {
             let base = f(cur);
             if ns > base { improved += ns - base; pitches[t] = np }
             // the prefix must stay consistent with the pitches just changed, or the next
-            // tick's line search optimises against a stale state and the schedule diverges
+            // tick's line search optimizes against a stale state and the schedule diverges
             states[t + 1] = ticked(&states[t], pitches[t]);
         }
         let st = replay(&pitches);
@@ -336,16 +336,16 @@ fn cmd_family(path: &str, tag: &str) {
              hold_rms, hold_med, t_gend - t_gain, best.0, best.1, r1, r20, ns[ns.len() / 2]);
 }
 
-/// The steady glide that maximises the *objective rate* `GRAVITY*v_y + w*v_z`.
+/// The steady glide that maximizes the *objective rate* `GRAVITY*v_y + w*v_z`.
 ///
-/// Turnpike candidate for the dive's flight-path-angle floor. Maximising `TE + w*z` over a
-/// fixed number of ticks is maximising the time-average of `d/dt (TE + w*z) = g*v_y + w*v_z`,
+/// Turnpike candidate for the dive's flight-path-angle floor. Maximizing `TE + w*z` over a
+/// fixed number of ticks is maximizing the time-average of `d/dt (TE + w*z) = g*v_y + w*v_z`,
 /// so if the dive were asymptoting to the best available *steady* state for the objective,
 /// the floor would track this angle. Note what it reduces to at w = 0: the minimum-sink
 /// glide, not the fastest one.
 fn cmd_eqrate() {
     const G: f64 = GRAVITY;
-    // The locus is a curve in the (v_z, v_y) plane parameterised by pitch. Build it once;
+    // The locus is a curve in the (v_z, v_y) plane parameterized by pitch. Build it once;
     // each point is 40k iterations of the velocity map.
     let step = 0.05;
     let tab: Vec<(f64, Vec3)> = (0..=(180.0 / step) as i64)
@@ -441,7 +441,7 @@ fn cmd_floor(path: &str, tag: &str) {
 
 /// The costate direction, read off the optimum itself.
 ///
-/// The optimal pitch satisfies the stationarity condition `lambda_{t+1} . df/dp = 0`. With yaw
+/// The optimal pitch satisfies the stationary condition `lambda_{t+1} . df/dp = 0`. With yaw
 /// pinned the state is two-dimensional, so that one equation pins `lambda` up to sign and
 /// scale: it is the normal to the reachable curve's tangent. Sign is fixed by requiring height
 /// to be worth something. What comes back is the cycle's *actual* price of distance in units of
@@ -465,9 +465,9 @@ fn costate_dir(v: Vec3, p: f64) -> (f64, f64) {
 
 /// Does the dive's floor sit where the *measured* prices say a steady glide should?
 ///
-/// `eqrate` asks which equilibrium maximises `GRAVITY*v_y + w*v_z` and gets the wrong answer.
+/// `eqrate` asks which equilibrium maximizes `GRAVITY*v_y + w*v_z` and gets the wrong answer.
 /// This asks the same question with the shadow prices the optimum is actually using, recovered
-/// from its own stationarity condition, which is the only version of the turnpike claim that
+/// from its own stationary condition, which is the only version of the turnpike claim that
 /// has a chance of being true.
 fn cmd_prices(path: &str, tag: &str) {
     let ps = read_pitches(path);
@@ -552,7 +552,7 @@ fn jac(v: Vec3, p: f64) -> M2 {
 /// Is the optimum the one-tick argmax of a linear score on next tick's velocity?
 ///
 /// Over a closed cycle the objective is `sum_t c . v_{t+1}` with `c = (GRAVITY, w)`, because the
-/// kinetic terms cancel when the cycle closes. Pontryagin then says the optimum maximises
+/// kinetic terms cancel when the cycle closes. Pontryagin then says the optimum maximizes
 /// `mu_{t+1} . f(v_t, p)` at every tick -- a genuinely myopic, one-tick, horizon-free score --
 /// where the price vector obeys `mu_t = c + A_t^T mu_{t+1}`, `A_t = df/dv`.
 ///
@@ -622,7 +622,7 @@ fn cmd_adjoint(path: &str, w: f64) {
 
 /// How sharply does the one-tick score pick out the optimum's pitch?
 ///
-/// Pontryagin says the optimum maximises `mu . f(v, p)` over p every tick. That is exact, but it
+/// Pontryagin says the optimum maximizes `mu . f(v, p)` over p every tick. That is exact, but it
 /// only *determines* the pitch if the score has curvature at its maximum. Where the score is flat
 /// the condition is satisfied by a whole range of pitches and the maximum principle says nothing
 /// -- a singular arc -- and the control has to come from somewhere else, typically a feedback law
@@ -734,7 +734,7 @@ fn cmd_consist(path: &str, amp: f64) {
         mu[t] = (c.0 + am.0, c.1 + am.1);
     }
 
-    // angle between mu_{t+1} and the perpendicular to df/dp: the stationarity residual
+    // angle between mu_{t+1} and the perpendicular to df/dp: the stationary residual
     let mut res = vec![0.0; n];
     for t in 0..n {
         let h = 1e-3;
@@ -797,12 +797,12 @@ fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
 }
 fn rate_of(par: P, t: usize) -> f64 { fly(par, t).2[t].pos.y / t as f64 * 20.0 }
 
-fn cmd_policy(optimise: bool) {
+fn cmd_policy(optimize: bool) {
     let ticks = 1500;
     let ng: usize = std::env::var("NGAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let mut par = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
                       s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: ng };
-    if optimise {
+    if optimize {
         let mut step = [3.0, 0.03, 0.30, 0.10, 0.08, 8.0, 6.0, 12.0];
         for _ in 0..26 {
             for j in 0..8 {
