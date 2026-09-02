@@ -34,9 +34,11 @@ the tick equals γ before it to within 0.02–0.4°. It is parameter-free and fi
 Note this does *not* mean the nose points along the velocity vector — by the end of the dive the
 nose is ~30° below it. What is held is the velocity vector's direction.
 
-The hold is not exact, and the leak is the whole rule: γ decays first-order from ~25° toward a
-floor near 16.8° at roughly `k = 0.04–0.055` of the remaining gap per tick. An exact hold keeps
-whatever γ you entered with and the cycle loses height at −3.5 b/s.
+The hold is not exact: γ decays first-order from ~25° toward a floor near 16.8°, and flying an
+exact hold from the moment the dive starts keeps whatever γ you entered with and loses height.
+That was originally written up as "the leak is the whole rule", with a fitted rate `k ≈ 0.04–0.055`.
+**That was wrong, and the leak is now gone** — see "The leak was an entry correction" below. The
+dive after its first ~30–60 ticks needs no constant at all.
 
 **The floor is derivable.** The steady glide that maximises forward speed is at pitch `53.35°`,
 `v_z = 3.389`, and its flight-path angle is `16.58°` (`myopic eq`). The dive is a slow approach to
@@ -133,9 +135,11 @@ describing the optimum at neither.
 limit, and eight tuned scalars. It reaches **1.375 b/s, 96% of the optimal cycle**, in 299 ticks
 against 300, with every phase's energy budget within 0.11.
 
-Reassuringly, the tuner rediscovers things it was not told: `k ≈ 0.055` for the dive leak, and the
-optimum's own switch points (dive→snap at speed 2.40 where the optimum switches at 2.41;
-snap→flick at `v_y = −0.260` where the optimum switches at −0.259).
+Reassuringly, the tuner rediscovers the optimum's own switch points without being told them:
+dive→snap at speed 2.40 where the optimum switches at 2.41, snap→flick at `v_y = −0.260` where the
+optimum switches at −0.259. It also settled on `k ≈ 0.055` for the dive leak, which looked like a
+third rediscovery at the time and was not — `k` is nearly unidentified, and the leak turned out to
+be an entry correction rather than a rule.
 
 Performance is far less sensitive to the lookahead than the pitch fit is (`NGAIN=<n> myopic policy opt`):
 
@@ -313,3 +317,39 @@ right, just the wrong one. Against the true `mu`:
 In the gain phase the TE gradient consistently *overvalues* upward velocity relative to forward,
 which is precisely why one-tick greedy is nose-up of the optimum at every gain tick. Longer
 lookaheads are approximating `mu` better; n ≈ 20 is where the approximation is best on average.
+
+## The leak was an entry correction
+
+Hand the first T ticks of *every* dive to the optimum's own pitches, let a rule take the rest, and
+retune the switch speed for each cell (`myopic prefix`). `g_star` pinned at the derived 16.5773°.
+
+| prefix | hold current | target g\* | floor clamp | leak k=.04 |
+|---|---|---|---|---|
+| 0 | 0.6600 | -1.5215 | 1.2392 | 1.3722 |
+| 5 | 0.8635 | -1.5175 | 1.0349 | 1.3693 |
+| 10 | 1.1532 | -1.4936 | 1.1532 | 1.3746 |
+| 20 | 1.1672 | -1.5159 | 1.1672 | 1.4003 |
+| 30 | 1.3408 | -1.5205 | 1.3408 | 1.3977 |
+| 40 | 1.3343 | 1.3720 | 1.3343 | 1.3954 |
+| **60** | **1.4038** | 1.3893 | 1.4038 | 1.3938 |
+| 80 | 1.3983 | 1.3916 | 1.3983 | 1.3926 |
+| 120 | 1.3936 | 1.3928 | 1.3938 | 1.3930 |
+
+**The dive needs no constant.** The leak's advantage falls from 0.71 b/s to 0.06 by T = 30, and by
+T = 60 the exact hold *wins*: 1.4038 against 1.3938, which is 97.9% of the optimal cycle and better
+than the fully tuned leaking policy's 1.3745. Everything the leak was doing, it was doing in the
+first thirty-odd ticks.
+
+**Target the current angle, not the floor.** Steering straight at `g_star` is catastrophic until
+T = 40 — it saturates at -90° trying to drag γ down in one tick, the same failure the one-shot
+`γ → 16.58` rule showed — and once it does work it is *worse* than holding at every T from 60 on.
+The floor is the right description of where the dive ends up; it is the wrong thing to aim at.
+
+**The floor clamp is an entry device too.** From T = 10 onward `floor clamp` and `hold current` are
+the same number to four figures: once the entry is handled, γ never goes shallower than the ceiling
+angle, so the clamp never binds. It earns its keep only at T = 0 and 5 (1.2392 against 0.6600).
+
+So the dive proper is one parameter-free rule — hold the flight-path angle — and all the difficulty
+has moved into the phase before it, which needs a name and a rule of its own. That phase is the
+"weirdness at the start where it likes harshly pitching down" from the very first pass over this
+problem, and it is now the only part of the dive that is unexplained.

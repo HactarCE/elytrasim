@@ -33,6 +33,7 @@
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
 
 use elytrasim::sim::*;
+use rayon::prelude::*;
 
 pub const V0: Vec3 = Vec3::new(0.0, 0.167467, 0.200887);
 const OPTIMAL_CYCLE_RATE: f64 = 1.43335; // blocks/second, REPLAY_PITCHES_300
@@ -857,17 +858,25 @@ fn cmd_consist(path: &str, amp: f64) {
 // ---------------------------------------------------------------- the policy
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Dive { Leak, Floor, Hold }
+enum Dive { Leak, Floor, Hold, Target }
 
 #[derive(Clone, Copy, Debug)]
 struct P { g_star: f64, k: f64, s_switch: f64, vy_flick: f64, s_exit: f64, slew: f64, p_push: f64, p_flick: f64, n_gain: usize, dive: Dive }
 
 /// Fly the four bugs, switching on state rather than on the clock, with a pitch rate limit.
-fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
+fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) { fly_pre(par, ticks, &[]) }
+
+/// As `fly`, but the first `pre.len()` ticks of *every* dive replay `pre` open-loop instead of
+/// asking the rule. The prefix is part of the control law, not a one-off initial condition, so
+/// the limit cycle it settles into is the honest measure of "what does the rule cost once the
+/// early dive is handled for it".
+fn fly_pre(par: P, ticks: usize, pre: &[f64]) -> (Vec<f64>, Vec<u8>, Vec<State>) {
     let mut s = State { pos: Vec3::ZERO, vel: V0 };
     let (mut ps, mut ph, mut st) = (vec![], vec![], vec![s.clone()]);
     let (mut phase, mut last) = (0u8, 0.0f64);
+    let mut dive_t = 0usize;
     for _ in 0..ticks {
+        let was = phase;
         phase = match phase {
             0 if s.vel.length() >= par.s_switch => 1,     // dive  -> snap
             1 if s.vel.y >= par.vy_flick        => 2,     // snap  -> flick
@@ -875,19 +884,25 @@ fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
             3 if s.vel.length() <= par.s_exit   => 0,     // gain  -> dive
             p => p,
         };
+        if phase == 0 { if was != 0 { dive_t = 0 } } else { dive_t = 0 }
         let want = match phase {
+            0 if dive_t < pre.len() => pre[dive_t],
             0 => if gamma(s.vel) < 0.0 { par.p_push } else {
                 match par.dive {
                     Dive::Leak => bug_dive(&s, par.g_star, par.k),
                     Dive::Floor => bug_dive_floor(&s),
                     Dive::Hold => bug_gamma_to(&s, gamma(s.vel)),
+                    Dive::Target => bug_gamma_to(&s, ceiling().1),
                 }
             },
             1 => 0.0,
             2 => par.p_flick,
             _ => bug_dte_n(&s, par.n_gain),
         };
-        let p = want.clamp(last - par.slew, last + par.slew);
+        // the prefix is the optimum's own schedule, so do not slew-limit it
+        let p = if phase == 0 && dive_t < pre.len() { want }
+                else { want.clamp(last - par.slew, last + par.slew) };
+        if phase == 0 { dive_t += 1 }
         s = ticked(&s, p);
         last = p;
         ps.push(p); ph.push(phase); st.push(s.clone());
@@ -930,33 +945,112 @@ fn cmd_sides(path: &str, delta: f64) {
     }
 }
 
+/// Where in the dive does the leak actually earn its keep?
+///
+/// Josie's hypothesis: most of the difference between leak rates is spent early, around the
+/// stretch where the flight-path angle is still being dragged down and the delta-TE family is
+/// bimodal. If so, the leak is an *entry* correction rather than a rule for the whole dive, and
+/// an exact hold -- no constant at all -- should be nearly free once something else handles the
+/// first stretch.
+///
+/// Hands the first T ticks of every dive to the optimum's own pitches, then lets the rule take
+/// over, and retunes the switch speed for each cell so no rule is judged on constants tuned for
+/// another. `g_star` stays pinned to the derived ceiling throughout: it is the fastest steady
+/// glide's flight-path angle, which the physics fixes, and letting a tuner move it would turn a
+/// derived constant into a fitted one.
+fn cmd_prefix(path: &str) {
+    const TICKS: usize = 1500;
+    let opt = read_pitches(path);
+    let g_star = ceiling().1;
+    let ts = [0usize, 5, 10, 20, 30, 40, 60, 80, 120];
+    let rules: [(&str, Dive, f64); 4] = [("hold current", Dive::Hold, f64::NAN),
+                                         ("target g*", Dive::Target, f64::NAN),
+                                         ("floor clamp", Dive::Floor, f64::NAN),
+                                         ("leak k=.04", Dive::Leak, 0.040)];
+    let rate = |par: P, pre: &[f64]| fly_pre(par, TICKS, pre).2[TICKS].pos.y / TICKS as f64 * 20.0;
+    // best climb over the switch speed: a coarse global grid, because a single seed gets stuck,
+    // then a shrinking-step refine
+    let best = |par: P, pre: &[f64]| -> (f64, f64) {
+        let (mut bv, mut bs) = (f64::NEG_INFINITY, par.s_switch);
+        for i in 0..=32 {
+            let mut q = par; q.s_switch = 1.4 + 0.05 * i as f64;
+            let v = rate(q, pre);
+            if v > bv { bv = v; bs = q.s_switch }
+        }
+        let mut step = 0.05;
+        for _ in 0..25 {
+            let mut improved = false;
+            for d in [-1.0f64, 1.0] {
+                let mut q = par; q.s_switch = (bs + d * step).clamp(1.2, 3.2);
+                let v = rate(q, pre);
+                if v > bv { bv = v; bs = q.s_switch; improved = true }
+            }
+            if !improved { step *= 0.6 }
+        }
+        (bv, bs)
+    };
+    // the (prefix, rule) matrix is embarrassingly parallel
+    let cells: Vec<(usize, usize)> = (0..ts.len()).flat_map(|a| (0..rules.len()).map(move |b| (a, b))).collect();
+    let out: Vec<f64> = cells.par_iter()
+        .map(|&(a, b)| {
+            let (_, dive, k) = rules[b];
+            let par = P { g_star, k, s_switch: 2.40, vy_flick: -0.260, s_exit: 0.21,
+                          slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: 20, dive };
+            best(par, &opt[..ts[a]]).0
+        })
+        .collect();
+
+    println!("{path}: dive prefix flown open-loop from the optimum, rule takes over after");
+    println!("g_star pinned at {g_star:.4}; s_switch retuned for every cell");
+    println!("hold / target / floor are all parameter-free; the leak is the reference");
+    print!("{:>7}", "prefix");
+    for (n, _, _) in rules { print!(" {n:>13}") }
+    println!(" {:>12}", "leak - hold");
+    for (a, t) in ts.iter().enumerate() {
+        print!("{t:>7}");
+        for b in 0..rules.len() { print!(" {:>13.4}", out[a * rules.len() + b]) }
+        println!(" {:>12.4}", out[a * rules.len() + 3] - out[a * rules.len()]);
+    }
+}
+
 fn cmd_ksweep() {
     let ticks = 1500;
-    let base = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
+    // g_star is NOT free: it is the flight-path angle of the fastest steady glide, which the
+    // physics fixes. Letting a tuner move it turns a derived constant into a fitted one and
+    // makes k look redundant when it is only being absorbed.
+    let g_star = ceiling().1;
+    let base = P { g_star, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
                    s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: 20, dive: Dive::Leak };
-    println!("{:>7} {:>13} {:>13} {:>10} {:>9}", "k", "as tuned", "retuned", "g_star", "s_switch");
+    println!("g_star pinned at the derived ceiling, {g_star:.4} deg; only s_switch is retuned");
+    println!("{:>7} {:>13} {:>13} {:>9}", "k", "as tuned", "retuned", "s_switch");
     for k in [0.005, 0.01, 0.02, 0.03, 0.04, 0.055, 0.07, 0.10, 0.15, 0.25, 0.50, 1.00] {
         let mut p = base; p.k = k;
         let asis = rate_of(p, ticks);
-        // let the two constants that could stand in for the leak try to absorb the change
+        // Let the two constants that could stand in for the leak try to absorb the change.
+        // Coordinate descent from a single seed is not enough: from the k = 0.055 constants it
+        // gets stuck against the s_switch clamp for k = 0.15 and 0.25 while k = 0.5 finds 1.28,
+        // which is an optimiser artefact and not the leak rate failing. Seed on a grid instead.
         let mut q = p;
-        let mut step = [3.0, 0.30];
-        for _ in 0..30 {
-            for j in 0..2 {
-                let cur = rate_of(q, ticks);
-                let (mut bv, mut bq) = (cur, q);
-                for d in [-1.0f64, 1.0] {
-                    let mut r = q;
-                    // s_switch has to stay in the basin: the descent will happily drive it to
-                    // zero, which fires the dive->snap switch immediately and scores -1.2 b/s
-                    if j == 0 { r.g_star += d * step[0] } else { r.s_switch = (r.s_switch + d * step[1]).clamp(1.2, 3.2) }
-                    let v = rate_of(r, ticks);
-                    if v > bv { bv = v; bq = r }
-                }
-                if bv > cur { q = bq } else { step[j] *= 0.6 }
-            }
+        let mut best = f64::NEG_INFINITY;
+        for si in 0..=32 {
+            let mut r = p;
+            r.s_switch = 1.4 + 0.05 * si as f64;
+            let v = rate_of(r, ticks);
+            if v > best { best = v; q = r }
         }
-        println!("{k:>7.3} {asis:>13.4} {:>13.4} {:>10.2} {:>9.3}", rate_of(q, ticks), q.g_star, q.s_switch);
+        let mut step = 0.05;
+        for _ in 0..25 {
+            let cur = rate_of(q, ticks);
+            let (mut bv, mut bq) = (cur, q);
+            for d in [-1.0f64, 1.0] {
+                let mut r = q;
+                r.s_switch = (r.s_switch + d * step).clamp(1.2, 3.2);
+                let v = rate_of(r, ticks);
+                if v > bv { bv = v; bq = r }
+            }
+            if bv > cur { q = bq } else { step *= 0.6 }
+        }
+        println!("{k:>7.3} {asis:>13.4} {:>13.4} {:>9.3}", rate_of(q, ticks), q.s_switch);
     }
 }
 
@@ -973,6 +1067,10 @@ fn cmd_policy(optimize: bool, dive: Dive) {
                            s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain: ng, dive },
         Dive::Hold => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.127, vy_flick: -0.260,
                           s_exit: 0.29, slew: 8.34, p_push: 47.0, p_flick: -41.51, n_gain: ng, dive },
+        // steer straight at the derived floor rather than holding what you have; wants its own
+        // constants, so `policy opt target` before reading anything into its score
+        Dive::Target => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.177, vy_flick: -0.2685,
+                            s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain: ng, dive },
     };
     if optimize {
         // g_star and k exist only for the leaking dive; the others are shared
@@ -1027,6 +1125,7 @@ fn main() {
         Some("gprofile") => cmd_gprofile(&a[2], &a[3]),
         Some("sides") => cmd_sides(&a[2], a[3].parse().unwrap()),
         Some("ksweep") => cmd_ksweep(),
+        Some("prefix") => cmd_prefix(&a[2]),
         Some("sens") => cmd_sens(&a[2], a[3].parse().unwrap()),
         Some("swing") => cmd_swing(&a[2], n(3)),
         Some("cyclecut") => cmd_cyclecut(&a[2]),
@@ -1035,12 +1134,13 @@ fn main() {
         Some("adjoint") => cmd_adjoint(&a[2], a.get(3).map_or(0.0, |s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
         Some("policy") => cmd_policy(a.iter().any(|x| x == "opt"),
-                                     match a.iter().find(|x| ["leak", "floor", "hold"].contains(&x.as_str())) {
+                                     match a.iter().find(|x| ["leak", "floor", "hold", "target"].contains(&x.as_str())) {
                                          Some(x) if x == "floor" => Dive::Floor,
                                          Some(x) if x == "hold" => Dive::Hold,
+                                         Some(x) if x == "target" => Dive::Target,
                                          _ => Dive::Leak,
                                      }),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|sweepn|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }

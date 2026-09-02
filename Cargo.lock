@@ -1033,6 +1033,7 @@ dependencies = [
  "egui",
  "itertools 0.14.0",
  "kdtree",
+ "rayon",
 ]
 
 [[package]]
