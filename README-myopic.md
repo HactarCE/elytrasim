@@ -218,3 +218,72 @@ Still open, but smaller:
   every nose-down pitch and switches on linearly in `-sin(lean_angle)` the moment the nose comes
   up, so `df/dp` is discontinuous at exactly zero. Not an open question any more, but worth
   knowing — a pitch of exactly 0 is a special point of the physics, not just a round number.
+
+## The exact one-tick rule, and why you cannot fly it
+
+There *is* a myopic metric the optimum follows exactly, in every phase. Over a closed cycle the
+kinetic terms cancel, so the objective is `sum_t c . v_{t+1}` with `c = (GRAVITY, w)`, and
+Pontryagin says the optimal pitch maximises
+
+    mu_{t+1} . f(v_t, p)
+
+over pitch at every tick — one tick, no horizon. `mu` is a price vector on velocity: how much an
+extra unit of upward velocity and an extra unit of forward velocity are each worth. The score is
+the price-weighted value of the velocity you are left with next tick.
+
+**Reading `mu` off the optimum's own pitch is circular** — every schedule has, at each tick, some
+direction making its pitch stationary, namely the normal to `df/dp`. That was the weakness in the
+first version of this. The non-circular version is that `mu` is not free: it obeys
+`mu_t = c + A_t^T mu_{t+1}` with `A_t = df/dv`, and periodicity `mu_N = mu_0` closes it, so
+`(I - M) mu_0 = b` determines it with **no free parameters at all**. The N tangency conditions are
+then N falsifiable predictions against zero degrees of freedom. `myopic adjoint` solves it;
+`myopic consist` measures how far the solved `mu` lands from perpendicular to `df/dp`.
+
+It is very much a property of the optimum (`myopic consist`, median degrees off perpendicular):
+
+| cycle | climb b/s | dive | gain |
+|---|---|---|---|
+| polished optimum (`cyclecut polished900`) | 1.4406 | **0.019** | **0.066** |
+| `REPLAY_PITCHES_300` | 1.4334 | 0.496 | 4.22 |
+| the four bugs' own limit cycle | 1.3734 | 0.659 | 3.85 |
+| `REPLAY_PITCHES_300` + 1° wobble | 1.3513 | 0.308 | 10.22 |
+| + 3° | 1.0289 | 1.46 | 27.6 |
+| + 10° | -3.70 | 24.6 | 65.9 |
+
+The gain column tracks quality cleanly. The dive column does not, and that is the interesting part.
+
+**Snap+flick sits at 26° even on the optimum** because the flick saturates near -88: it is a bang
+arc, the boundary binds, and there is no interior stationarity to satisfy. That is the formal
+version of "nothing to find in the flick".
+
+**Two reasons it is not a bug.** First, `mu` is a shadow price — computing it needs the whole
+future, which is the thing a myopic rule is supposed to avoid. Second, and worse, `myopic singular`
+measures the curvature of the score at the optimum's own pitch:
+
+| | dive | snap | flick | gain |
+|---|---|---|---|---|
+| `d^2 S/dp^2` | 1.5e-6 | 1.3e-6 | 2.8e-5 | 2.25e-5 |
+| half-width within 1e-6 of the max | 1.17° | 7.35° | 7.37° | 0.43° |
+
+The dive's score is **15x flatter** than the gain's. A fraction of a percent of error in `mu` throws
+the argmax by ten degrees there — which is exactly what happens with `REPLAY_PITCHES_300`, whose
+`mu` agrees with the tangency direction to ~1% and still shows a 10° argmax gap through the dive.
+
+**This is what ties the phases together.** The dive is a near-singular arc: the maximum principle
+barely determines the pitch, so the pitch has to be pinned by something else — and a state feedback
+law is exactly what fills that gap, which is why parameter-free "hold γ" fits it to 0.27° and why
+the ΔTE family is *bimodal* there rather than merely imprecise. The gain phase is a regular arc
+with real curvature, so the pitch *is* determined by an argmax, which is why a lookahead rule works
+there and why the horizon has to be about right.
+
+**And it explains the 1-tick failure quantitatively.** One-tick greedy is argmax of
+`TE(v') - TE(v)`, whose gradient in `v'` is `(v'_y + GRAVITY, v'_z)` — a price vector in its own
+right, just the wrong one. Against the true `mu`:
+
+| | dive start | dive end | gain |
+|---|---|---|---|
+| angle between the TE gradient and `mu` | 0.4° | 10.9° | 13–30° |
+
+In the gain phase the TE gradient consistently *overvalues* upward velocity relative to forward,
+which is precisely why one-tick greedy is nose-up of the optimum at every gain tick. Longer
+lookaheads are approximating `mu` better; n ≈ 20 is where the approximation is best on average.

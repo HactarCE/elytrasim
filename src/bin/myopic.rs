@@ -25,6 +25,7 @@
 //!   floor    <file> <tag>                fit the dive's first-order gamma decay and its asymptote
 //!   prices   <file> <tag>                shadow prices from the optimum, and the glide they pick
 //!   gprofile <file> <tag>                flight-path angle at ten points through the dive
+//!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick rule
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
 //!   policy   [opt]                       fly the four bugs; NGAIN=<n> sets the gain lookahead
 //!
@@ -526,6 +527,243 @@ fn cmd_gprofile(path: &str, tag: &str) {
              100.0 * g.iter().enumerate().min_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0 as f64 / m as f64);
 }
 
+// ------------------------------------------------- the price vector, non-circularly
+
+type M2 = [f64; 4];                                          // row-major [a b; c d] over (y, z)
+fn mt_vec(m: &M2, v: (f64, f64)) -> (f64, f64) {             // M^T v
+    (m[0] * v.0 + m[2] * v.1, m[1] * v.0 + m[3] * v.1)
+}
+fn mt_mat(a: &M2, m: &M2) -> M2 {                            // A^T M
+    [a[0] * m[0] + a[2] * m[2], a[0] * m[1] + a[2] * m[3],
+     a[1] * m[0] + a[3] * m[2], a[1] * m[1] + a[3] * m[3]]
+}
+/// d(next velocity)/d(velocity), central differences in the (v_y, v_z) plane.
+fn jac(v: Vec3, p: f64) -> M2 {
+    let h = 1e-6;
+    let r = rot(p);
+    let (ya, yb) = (update_fall_flying_movement(Vec3::new(0.0, v.y - h, v.z), r),
+                    update_fall_flying_movement(Vec3::new(0.0, v.y + h, v.z), r));
+    let (za, zb) = (update_fall_flying_movement(Vec3::new(0.0, v.y, v.z - h), r),
+                    update_fall_flying_movement(Vec3::new(0.0, v.y, v.z + h), r));
+    [(yb.y - ya.y) / (2.0 * h), (zb.y - za.y) / (2.0 * h),
+     (yb.z - ya.z) / (2.0 * h), (zb.z - za.z) / (2.0 * h)]
+}
+
+/// Is the optimum the one-tick argmax of a linear score on next tick's velocity?
+///
+/// Over a closed cycle the objective is `sum_t c . v_{t+1}` with `c = (GRAVITY, w)`, because the
+/// kinetic terms cancel when the cycle closes. Pontryagin then says the optimum maximises
+/// `mu_{t+1} . f(v_t, p)` at every tick -- a genuinely myopic, one-tick, horizon-free score --
+/// where the price vector obeys `mu_t = c + A_t^T mu_{t+1}`, `A_t = df/dv`.
+///
+/// That recursion plus periodicity (`mu_N = mu_0`) pins `mu` completely: solve `(I - M) mu_0 = b`
+/// where `M` and `b` accumulate the recursion around the loop. **No free parameters.** So the
+/// tangency at each of the N ticks is a separate falsifiable prediction, unlike reading `mu` off
+/// the optimum's own pitch, which is stationary by construction. Reported as the gap in degrees
+/// between the optimum's pitch and the argmax of the score.
+fn cmd_adjoint(path: &str, w: f64) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let n = ps.len();
+    let close = (st[n].vel - st[0].vel).length();
+    println!("{path}: {n} ticks, |v_N - v_0| = {close:.3e}, w = {w}");
+    if close > 1e-3 { println!("  !! not a closed cycle; the periodic adjoint does not apply") }
+    let c = (GRAVITY, w);
+
+    let (mut b, mut m) = ((0.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
+    for t in (0..n).rev() {
+        let a = jac(st[t].vel, ps[t]);
+        let ab = mt_vec(&a, b);
+        b = (c.0 + ab.0, c.1 + ab.1);
+        m = mt_mat(&a, &m);
+    }
+    // (I - M) mu_0 = b
+    let d = [1.0 - m[0], -m[1], -m[2], 1.0 - m[3]];
+    let det = d[0] * d[3] - d[1] * d[2];
+    println!("  monodromy M = [{:.4} {:.4}; {:.4} {:.4}], det(I-M) = {det:.4e}", m[0], m[1], m[2], m[3]);
+    if det.abs() < 1e-12 { println!("  !! singular; mu is not determined"); return }
+    let mut mu = vec![(0.0, 0.0); n + 1];
+    mu[n] = ((d[3] * b.0 - d[1] * b.1) / det, (-d[2] * b.0 + d[0] * b.1) / det);
+    for t in (0..n).rev() {
+        let a = jac(st[t].vel, ps[t]);
+        let am = mt_vec(&a, mu[t + 1]);
+        mu[t] = (c.0 + am.0, c.1 + am.1);
+    }
+    let drift = ((mu[0].0 - mu[n].0).hypot(mu[0].1 - mu[n].1)) / mu[0].0.hypot(mu[0].1);
+    println!("  mu_0 = ({:.4}, {:.4}), periodicity residual {drift:.2e}", mu[0].0, mu[0].1);
+
+    // the prediction: p_t is the global argmax over pitch of mu_{t+1} . f(v_t, p)
+    let mut err: Vec<f64> = vec![];
+    for t in 0..n {
+        let (my, mz) = mu[t + 1];
+        let q = argmax(|p| { let f = update_fall_flying_movement(st[t].vel, rot(p)); my * f.y + mz * f.z }, 0.125);
+        err.push(q - ps[t]);
+    }
+    let rms = |a: &[f64]| (a.iter().map(|x| x * x).sum::<f64>() / a.len() as f64).sqrt();
+    let mut srt: Vec<f64> = err.iter().map(|x| x.abs()).collect();
+    srt.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("  argmax gap over all {n} ticks: RMS {:.4}deg  median {:.4}  p90 {:.4}  max {:.4}",
+             rms(&err), srt[n / 2], srt[n * 9 / 10], srt[n - 1]);
+    if let Some((a0, t_snap, t_gain, t_gend, a1)) = segment(&ps, &st, path) {
+        for (name, lo, hi) in [("dive", a0, t_snap), ("snap", t_snap, t_gain),
+                               ("flick", t_gain, t_gend), ("gain", t_gend, a1)] {
+            if hi > lo { println!("    {name:<6} {:>3}t  RMS {:>8.4}  max {:>8.4}",
+                                  hi - lo, rms(&err[lo..hi]), err[lo..hi].iter().fold(0.0f64, |m, x| m.max(x.abs()))) }
+        }
+    }
+    if std::env::args().any(|a| a == "dump") {
+        println!("t,pitch,vy,vz,gamma,mu_y,mu_z,ratio,gap");
+        for t in 0..n {
+            println!("{t},{:.4},{:.6},{:.6},{:.4},{:.6},{:.6},{:.6},{:.4}", ps[t], st[t].vel.y, st[t].vel.z,
+                     gamma(st[t].vel), mu[t + 1].0, mu[t + 1].1, mu[t + 1].1 / mu[t + 1].0, err[t]);
+        }
+    }
+}
+
+/// How sharply does the one-tick score pick out the optimum's pitch?
+///
+/// Pontryagin says the optimum maximises `mu . f(v, p)` over p every tick. That is exact, but it
+/// only *determines* the pitch if the score has curvature at its maximum. Where the score is flat
+/// the condition is satisfied by a whole range of pitches and the maximum principle says nothing
+/// -- a singular arc -- and the control has to come from somewhere else, typically a feedback law
+/// in the state. Which is exactly the shape of "hold the flight-path angle".
+///
+/// Uses the per-tick tangency direction, so `p_t` is stationary by construction and the curvature
+/// there is clean. Reports `d^2 S/dp^2` in degrees^-2 and the half-width over which the score
+/// stays within 1e-6 of its maximum.
+fn cmd_singular(path: &str) {
+    let ps = read_pitches(path);
+    let st = replay(&ps);
+    let n = ps.len();
+    let mut curv = vec![0.0; n];
+    let mut half = vec![0.0; n];
+    for t in 0..n {
+        let (uy, uz) = costate_dir(st[t].vel, ps[t]);
+        let sc = |p: f64| { let f = update_fall_flying_movement(st[t].vel, rot(p)); uy * f.y + uz * f.z };
+        let (h, s0) = (0.5, sc(ps[t]));
+        curv[t] = (sc(ps[t] + h) - 2.0 * s0 + sc(ps[t] - h)) / (h * h);
+        let (mut lo, mut hi) = (0.0, 90.0);
+        for _ in 0..40 {
+            let m = 0.5 * (lo + hi);
+            if s0 - sc(ps[t] + m).max(sc(ps[t] - m)) < 1e-6 { lo = m } else { hi = m }
+        }
+        half[t] = 0.5 * (lo + hi);
+    }
+    println!("{path}: curvature of the one-tick score at the optimum's own pitch");
+    println!("{:>7} {:>5} {:>12} {:>12}", "phase", "t", "d2S/dp2", "half-width");
+    let show = |name: &str, lo: usize, hi: usize| {
+        let c: Vec<f64> = curv[lo..hi].iter().map(|x| x.abs()).collect();
+        let w: Vec<f64> = half[lo..hi].to_vec();
+        let med = |mut v: Vec<f64>| { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[v.len() / 2] };
+        println!("{name:>7} {:>5} {:>12.2e} {:>10.2}deg", hi - lo, med(c), med(w));
+    };
+    if let Some((a0, t_snap, t_gain, t_gend, a1)) = segment(&ps, &st, path) {
+        show("dive", a0, t_snap); show("snap", t_snap, t_gain);
+        show("flick", t_gain, t_gend); show("gain", t_gend, a1);
+    } else {
+        show("all", 0, n);
+        for (name, lo, hi) in [("dive", 20, 190), ("snap", 190, 205), ("flick", 205, 213), ("gain", 213, 295)] {
+            show(name, lo, hi);
+        }
+    }
+}
+
+/// Print one cycle of a schedule: the middle cycle of a 3x tiling, or the policy's limit cycle.
+/// Both are needed as controls for `consist`, which requires a genuinely closed cycle.
+fn cmd_cyclecut(what: &str) {
+    let (ps, st, tag): (Vec<f64>, Vec<State>, &str) = if what == "policy" {
+        let par = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
+                      s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: 20 };
+        let (ps, _, st) = fly(par, 2000);
+        (ps, st, "policy")
+    } else {
+        let ps = read_pitches(what);
+        let st = replay(&ps);
+        (ps, st, "file")
+    };
+    // last two apexes, so the policy has settled onto its limit cycle
+    let apex: Vec<usize> = (1..ps.len() - 1).filter(|&t| st[t].vel.y > 0.0 && st[t + 1].vel.y <= 0.0).collect();
+    let k = apex.len();
+    if k < 3 { eprintln!("{tag}: {k} apexes, need 3"); return }
+    let (a0, a1) = (apex[k - 2], apex[k - 1]);
+    eprintln!("{tag}: cycle {a0}..{a1} ({} ticks)", a1 - a0);
+    for t in a0..a1 { println!("{}", ps[t]) }
+}
+
+/// Is the price vector's consistency special to the optimum, or does any profile have it?
+///
+/// Every schedule has, at each tick, *some* direction making its pitch stationary -- just take
+/// the normal to `df/dp`. That part is vacuous. What is not vacuous is whether the directions
+/// found tick by tick are mutually consistent: the true costate must satisfy
+/// `mu_t = c + A_t^T mu_{t+1}` and close on itself around the cycle, which leaves no freedom at
+/// all. So solve for `mu` from the recursion alone and then measure, at every tick, the angle
+/// between it and the perpendicular to `df/dp`. Zero for an optimum; the control is a
+/// deliberately perturbed schedule, re-closed into its own limit cycle.
+///
+/// The angle is the right metric rather than the argmax gap, because the one-tick score is very
+/// flat in the dive (see `singular`) and a fraction of a percent in `mu` throws the argmax by ten
+/// degrees there without meaning anything.
+fn cmd_consist(path: &str, amp: f64) {
+    let tag = path.rsplit('/').next().unwrap().trim_end_matches(".txt");
+    let base = read_pitches(path);
+    let n = base.len();
+    let ps: Vec<f64> = base.iter().enumerate()
+        .map(|(t, &p)| p + amp * (std::f64::consts::TAU * t as f64 / n as f64).sin()).collect();
+    // the cycle map is strongly contracting, so iterating the schedule lands on its limit cycle
+    let mut v = V0;
+    for _ in 0..60 { for &p in &ps { v = update_fall_flying_movement(v, rot(p)) } }
+    let mut st = vec![State { pos: Vec3::ZERO, vel: v }];
+    for &p in &ps { let s = ticked(st.last().unwrap(), p); st.push(s) }
+    let close = (st[n].vel - st[0].vel).length();
+    let c = (GRAVITY, 0.0);
+
+    let (mut b, mut m) = ((0.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
+    for t in (0..n).rev() {
+        let a = jac(st[t].vel, ps[t]);
+        let ab = mt_vec(&a, b);
+        b = (c.0 + ab.0, c.1 + ab.1);
+        m = mt_mat(&a, &m);
+    }
+    let d = [1.0 - m[0], -m[1], -m[2], 1.0 - m[3]];
+    let det = d[0] * d[3] - d[1] * d[2];
+    let mut mu = vec![(0.0, 0.0); n + 1];
+    mu[n] = ((d[3] * b.0 - d[1] * b.1) / det, (-d[2] * b.0 + d[0] * b.1) / det);
+    for t in (0..n).rev() {
+        let a = jac(st[t].vel, ps[t]);
+        let am = mt_vec(&a, mu[t + 1]);
+        mu[t] = (c.0 + am.0, c.1 + am.1);
+    }
+
+    // angle between mu_{t+1} and the perpendicular to df/dp: the stationarity residual
+    let mut res = vec![0.0; n];
+    for t in 0..n {
+        let h = 1e-3;
+        let (a, bb) = (update_fall_flying_movement(st[t].vel, rot(ps[t] - h)),
+                       update_fall_flying_movement(st[t].vel, rot(ps[t] + h)));
+        let (dy, dz) = ((bb.y - a.y) / (2.0 * h), (bb.z - a.z) / (2.0 * h));
+        let (my, mz) = mu[t + 1];
+        let cosang = (my * dy + mz * dz).abs() / (my.hypot(mz) * dy.hypot(dz));
+        res[t] = cosang.min(1.0).asin().to_degrees();
+    }
+    let med = |lo: usize, hi: usize| {
+        if hi <= lo { return f64::NAN }
+        let mut v: Vec<f64> = res[lo..hi].to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    // the cycle starts at an apex, so segment it in place rather than needing a 3x tiling
+    let v_top = (0..n).map(|t| st[t].vel.length()).fold(0.0, f64::max);
+    let t_snap = (30..n - 3).find(|&t| ps[t] < 5.0 && ps[t + 1] < 5.0 && ps[t + 2] < 5.0
+                                    && st[t].vel.length() > 0.8 * v_top).unwrap_or(n * 2 / 3);
+    let t_gain = (t_snap..n).find(|&t| st[t].vel.y > 0.0).unwrap_or(t_snap);
+    let t_gend = (t_gain + 10..n).find(|&t| ps[t] > 0.0).unwrap_or(n);
+    println!("{tag:>11} amp {amp:>4.1} | climb {:>7.4} b/s | closure {close:>8.1e} | median degrees off perpendicular: \
+              all {:>6.3} | dive({:>3}) {:>6.3} | snap+flick({:>2}) {:>6.3} | gain({:>3}) {:>6.3}",
+             st[n].pos.y / n as f64 * 20.0, med(0, n),
+             t_snap - 20, med(20, t_snap), t_gain - t_snap, med(t_snap, t_gain),
+             t_gend - t_gain, med(t_gain, t_gend));
+}
+
 // ---------------------------------------------------------------- the policy
 
 #[derive(Clone, Copy, Debug)]
@@ -612,9 +850,13 @@ fn main() {
         Some("floor") => cmd_floor(&a[2], &a[3]),
         Some("prices") => cmd_prices(&a[2], &a[3]),
         Some("gprofile") => cmd_gprofile(&a[2], &a[3]),
+        Some("cyclecut") => cmd_cyclecut(&a[2]),
+        Some("consist") => cmd_consist(&a[2], a[3].parse().unwrap()),
+        Some("singular") => cmd_singular(&a[2]),
+        Some("adjoint") => cmd_adjoint(&a[2], a.get(3).map_or(0.0, |s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
         Some("policy") => cmd_policy(a.get(2).map(String::as_str) == Some("opt")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|sweepn|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sweepn|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }
