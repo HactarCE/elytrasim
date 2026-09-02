@@ -455,7 +455,7 @@ fn main() -> eframe::Result {
                         egui::pos2(rect.left(), rect.center().y),
                         egui::pos2(rect.right(), rect.center().y),
                     ],
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(250)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_gray(250)),
                 );
 
                 // vertical lines for seconds
@@ -467,7 +467,7 @@ fn main() -> eframe::Result {
                                 * rect.width();
                         ui.painter().line_segment(
                             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                            egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(150)),
                         );
                     }
                 }
@@ -525,7 +525,7 @@ fn main() -> eframe::Result {
                                     egui::pos2(screen_x, rect.top()),
                                     egui::pos2(screen_x, rect.bottom()),
                                 ],
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+                                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(50)),
                             );
                         }
                     }
@@ -544,7 +544,7 @@ fn main() -> eframe::Result {
                                     egui::pos2(rect.right(), screen_y),
                                 ],
                                 egui::Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     if y == 0.0 {
                                         egui::Color32::from_gray(150)
                                     } else {
@@ -667,11 +667,7 @@ fn show_optimizer(
                 jitter,
                 tick,
             );
-            let approx_max_grad = 0.0003
-                * match goodness_params.energy_or_y {
-                    EnergyOrY::Energy => 1.5,
-                    EnergyOrY::Y => 20.0,
-                };
+            let approx_max_grad = 0.0003;
             let y = value_to_y(
                 -grad.clamp(-approx_max_grad, approx_max_grad),
                 approx_max_grad,
@@ -680,11 +676,13 @@ fn show_optimizer(
                 .on_hover_text(format!("tick: {}, pitch gradient: {}", tick, grad));
         }
 
-        // pos.y (dark green)
+        let approx_max_energy = 100.0;
+
+        // pos.y = potential energy (dark green)
         {
-            let y = value_to_y(state.pos.y as f32, 100.0);
+            let y = value_to_y(state.pos.y as f32, approx_max_energy);
             dot_at(x, y, egui::Color32::from_rgb(0, 100, 0))
-                .on_hover_text(format!("tick: {}, pos.y: {}", tick, state.pos.y));
+                .on_hover_text(format!("tick: {}, pos.y = potential energy: {}", tick, state.pos.y));
         }
 
         // pos.z (dark blue)
@@ -708,7 +706,6 @@ fn show_optimizer(
                 .on_hover_text(format!("tick: {}, vel.z: {}", tick, state.vel.z));
         }
 
-        let approx_max_energy = 7.0;
         // kinetic energy (yellow)
         {
             let ke = state.kinetic_energy();
@@ -718,6 +715,7 @@ fn show_optimizer(
         }
 
         // potential energy (red)
+        #[cfg(false)]
         {
             let pe = state.potential_energy();
             let y = value_to_y(pe as f32, approx_max_energy);
@@ -788,8 +786,8 @@ impl GoodnessParams {
             // vaguely normalize them so blending feels more uniform
             let goodness_left = match energy_or_y {
                 EnergyOrY::Energy => state.total_energy(),
-                EnergyOrY::Y => state.pos.y / 20.0,
-            };
+                EnergyOrY::Y => state.pos.y,
+            } / 20.0;
             let goodness_right = state.pos.z / 300.0;
             goodness_left * (1.0 - y_z_blend) + goodness_right * y_z_blend
         }

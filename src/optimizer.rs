@@ -135,16 +135,22 @@ impl State {
         }
     }
 
-    /// kilograms * blocks^2 / ticks^2
+    /// blocks of height
+    /// 
+    /// kilograms * blocks^2 / (ticks^2 * gravity)
     pub fn kinetic_energy(&self) -> Energy {
-        self.vel.length_sq() * 0.5
+        self.vel.length_sq() / (2.0 * GRAVITY)
     }
 
-    /// kilograms * blocks^2 / ticks^2
+    /// blocks of height
+    /// 
+    /// kilograms * blocks^2 / (ticks^2 * gravity)
     pub fn potential_energy(&self) -> Energy {
-        self.pos.y * GRAVITY
+        self.pos.y
     }
 
+    /// blocks of height
+    /// 
     /// kilograms * blocks^2 / ticks^2
     pub fn total_energy(&self) -> Energy {
         self.kinetic_energy() + self.potential_energy()
