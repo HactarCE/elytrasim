@@ -894,6 +894,72 @@ fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) {
     }
     (ps, ph, st)
 }
+/// Two things the flatness result raises but does not answer.
+///
+/// `sides`: the one-tick sensitivity in `sens` is a symmetric second difference, which hides
+/// whether the two directions cost the same. At the snap the pitch sits a tenth of a degree above
+/// zero, and zero is a corner of the physics -- the forward-to-up conversion is gated on
+/// `lean_angle < 0.0` -- so there is every reason to expect one side to be free and the other a
+/// cliff.
+///
+/// `ksweep`: independent per-tick jitter in the dive costs nothing, but `k` is not per-tick
+/// jitter, it sets the dive's whole trend. Sweeps it with the other constants fixed, and again
+/// with the two that could absorb it re-tuned, which is the test of whether it is a real degree
+/// of freedom or a redundant one.
+fn cmd_sides(path: &str, delta: f64) {
+    let base = read_pitches(path);
+    let n = base.len();
+    let rate = |ps: &[f64]| -> f64 {
+        let mut v = V0;
+        for _ in 0..40 { for &p in ps { v = update_fall_flying_movement(v, rot(p)) } }
+        let mut s = State { pos: Vec3::ZERO, vel: v };
+        for &p in ps { s = ticked(&s, p) }
+        s.pos.y / n as f64 * 20.0
+    };
+    let r0 = rate(&base);
+    let st = replay(&base);
+    println!("{path}: climb {r0:.5} b/s; cost of {delta}deg at one tick, each side separately");
+    println!("{:>5} {:>8} {:>8} {:>13} {:>13}", "t", "pitch", "gamma", "nose down", "nose up");
+    for t in 0..n {
+        let interesting = (190..215).contains(&t) || t % 30 == 0;
+        if !interesting { continue }
+        let (mut up, mut dn) = (base.clone(), base.clone());
+        up[t] += delta; dn[t] -= delta;
+        println!("{t:>5} {:>8.3} {:>8.2} {:>13.2e} {:>13.2e}",
+                 base[t], gamma(st[t].vel), rate(&up) - r0, rate(&dn) - r0);
+    }
+}
+
+fn cmd_ksweep() {
+    let ticks = 1500;
+    let base = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
+                   s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: 20, dive: Dive::Leak };
+    println!("{:>7} {:>13} {:>13} {:>10} {:>9}", "k", "as tuned", "retuned", "g_star", "s_switch");
+    for k in [0.005, 0.01, 0.02, 0.03, 0.04, 0.055, 0.07, 0.10, 0.15, 0.25, 0.50, 1.00] {
+        let mut p = base; p.k = k;
+        let asis = rate_of(p, ticks);
+        // let the two constants that could stand in for the leak try to absorb the change
+        let mut q = p;
+        let mut step = [3.0, 0.30];
+        for _ in 0..30 {
+            for j in 0..2 {
+                let cur = rate_of(q, ticks);
+                let (mut bv, mut bq) = (cur, q);
+                for d in [-1.0f64, 1.0] {
+                    let mut r = q;
+                    // s_switch has to stay in the basin: the descent will happily drive it to
+                    // zero, which fires the dive->snap switch immediately and scores -1.2 b/s
+                    if j == 0 { r.g_star += d * step[0] } else { r.s_switch = (r.s_switch + d * step[1]).clamp(1.2, 3.2) }
+                    let v = rate_of(r, ticks);
+                    if v > bv { bv = v; bq = r }
+                }
+                if bv > cur { q = bq } else { step[j] *= 0.6 }
+            }
+        }
+        println!("{k:>7.3} {asis:>13.4} {:>13.4} {:>10.2} {:>9.3}", rate_of(q, ticks), q.g_star, q.s_switch);
+    }
+}
+
 fn rate_of(par: P, t: usize) -> f64 { fly(par, t).2[t].pos.y / t as f64 * 20.0 }
 
 fn cmd_policy(optimize: bool, dive: Dive) {
@@ -959,6 +1025,8 @@ fn main() {
         Some("floor") => cmd_floor(&a[2], &a[3]),
         Some("prices") => cmd_prices(&a[2], &a[3]),
         Some("gprofile") => cmd_gprofile(&a[2], &a[3]),
+        Some("sides") => cmd_sides(&a[2], a[3].parse().unwrap()),
+        Some("ksweep") => cmd_ksweep(),
         Some("sens") => cmd_sens(&a[2], a[3].parse().unwrap()),
         Some("swing") => cmd_swing(&a[2], n(3)),
         Some("cyclecut") => cmd_cyclecut(&a[2]),
