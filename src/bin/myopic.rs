@@ -124,11 +124,20 @@ pub fn bug_dive_floor(s: &State) -> f64 {
     bug_gamma_to(s, gamma(s.vel).max(ceiling().1))
 }
 
-/// The fastest steady glide, `argmax_p eq_vz(p)`, as (pitch, gamma). Cached: each equilibrium is
-/// 40k iterations of the velocity map.
+/// The fastest steady glide, `argmax_p eq_vz(p)`, as (pitch, gamma). Swept rather than refined:
+/// eq_vz is flat to 1e-9 across the top, so a ternary search there just wanders. Cached, because
+/// each equilibrium is 40k iterations of the velocity map.
 pub fn ceiling() -> (f64, f64) {
     static C: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
-    *C.get_or_init(|| { let p = argmax(|p| equilibrium(p).z, 0.25); (p, gamma(equilibrium(p))) })
+    *C.get_or_init(|| {
+        let (mut bz, mut bp) = (f64::NEG_INFINITY, 0.0);
+        for i in 0..=1800 {
+            let p = 0.05 * i as f64;
+            let z = equilibrium(p).z;
+            if z > bz { bz = z; bp = p }
+        }
+        (bp, gamma(equilibrium(bp)))
+    })
 }
 
 /// Terminal glide for a constant pitch: iterate the velocity map to its fixed point.
@@ -162,14 +171,9 @@ fn cmd_profiles() {
 }
 
 fn cmd_eq() {
-    let (mut bz, mut bzp) = (f64::NEG_INFINITY, 0.0);
-    for i in 0..=1800 {
-        let p = 0.05 * i as f64;
-        let e = equilibrium(p);
-        if e.z > bz { bz = e.z; bzp = p }
-    }
+    let (bzp, _) = ceiling();
     let e = equilibrium(bzp);
-    println!("fastest steady glide: pitch {bzp:.3}  v_z {bz:.5}  v_y {:.5}  gamma {:.4}", e.y, gamma(e));
+    println!("fastest steady glide: pitch {bzp:.3}  v_z {:.5}  v_y {:.5}  gamma {:.4}", e.z, e.y, gamma(e));
     println!("  -- this angle is the floor the dive's flight-path angle settles onto.\n");
     println!("{:>6} {:>10} {:>10} {:>9} {:>8}", "pitch", "eq v_y", "eq v_z", "|eq|", "gamma");
     for p in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 53.35, 60.0, 75.0, 90.0] {
@@ -895,8 +899,15 @@ fn rate_of(par: P, t: usize) -> f64 { fly(par, t).2[t].pos.y / t as f64 * 20.0 }
 fn cmd_policy(optimize: bool, dive: Dive) {
     let ticks = 1500;
     let ng: usize = std::env::var("NGAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    let mut par = P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
-                      s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: ng, dive };
+    // the shared constants, as tuned by `policy opt <rule>` for each dive rule in turn
+    let mut par = match dive {
+        Dive::Leak => P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
+                          s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: ng, dive },
+        Dive::Floor => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.177, vy_flick: -0.2685,
+                           s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain: ng, dive },
+        Dive::Hold => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.127, vy_flick: -0.260,
+                          s_exit: 0.29, slew: 8.34, p_push: 47.0, p_flick: -41.51, n_gain: ng, dive },
+    };
     if optimize {
         // g_star and k exist only for the leaking dive; the others are shared
         let js: Vec<usize> = if dive == Dive::Leak { (0..8).collect() } else { (2..8).collect() };
@@ -924,7 +935,7 @@ fn cmd_policy(optimize: bool, dive: Dive) {
     let (ps, ph, st) = fly(par, ticks);
     let r = rate_of(par, ticks);
     eprintln!("n_gain {:>2}  {r:.5} b/s  {:>5.1}% of the optimal cycle   {par:?}", par.n_gain, r / OPTIMAL_CYCLE_RATE * 100.0);
-    if dive != Dive::Leak { eprintln!("dive floor: gamma {:.4} at pitch {:.3}, derived", ceiling().1, ceiling().0) }
+    if dive == Dive::Floor { eprintln!("dive floor: gamma {:.4}, the glide at pitch {:.3}", ceiling().1, ceiling().0) }
     println!("tick,phase,pitch,vy,vz,speed,gamma,te");
     for t in 0..ticks {
         println!("{t},{},{:.5},{:.6},{:.6},{:.6},{:.4},{:.6}", ph[t], ps[t],
