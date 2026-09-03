@@ -295,9 +295,21 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
             cands.push(rescale(a, obj.n));      // one cycle of period n
         }
         if cands.is_empty() { cands.push(seed_from_policy(&obj)) }
-        let init = cands.into_iter()
-            .max_by(|x, y| obj.eval(x).partial_cmp(&obj.eval(y)).unwrap())
-            .unwrap();
+        // Score the candidates *after a short polish*, not before it. Judged cold the BFS
+        // parent always wins -- it is a solved schedule and the others are not -- but going up
+        // in n it then polishes straight into chatter, while a tiled seed that starts lower
+        // ends far higher. Judged cold, the n axis came back with a band from 350 to 530 losing
+        // 0.71 blocks per 10 ticks at lag-1 -0.87, with n = 530 scoring 6.94 where n = 540,
+        // which the tiled seed reached, scored 16.56.
+        let init = if cands.len() == 1 {
+            cands.pop().unwrap()
+        } else {
+            let probe = PolishOpts { max_passes: 2, tol: 0.0, ..opts };
+            cands.into_iter()
+                .map(|c| { let r = polish(&obj, &c, probe); (r.j, r.pitches) })
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                .unwrap().1
+        };
         // Resume: a cell whose file already matches this objective and physics is not redone,
         // but its pitches still seed the neighbours, so a killed job costs one cell.
         let existing = (!force).then(|| std::fs::read_to_string(&path).ok()).flatten()
