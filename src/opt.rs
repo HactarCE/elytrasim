@@ -441,6 +441,10 @@ impl Profile {
         w(&format!("# dy          {:.6}", sn.pos.y - s0.pos.y));
         w(&format!("# dz          {:.6}", sn.pos.z - s0.pos.z));
         w(&format!("# v_end       {:.9} {:.9}", sn.vel.y, sn.vel.z));
+        // Derived from the pitches, like dy and dz, and recorded for the same reason: the first
+        // thing any analysis does is separate the pump cycles from the glides, and needing a
+        // forward pass to do it is friction. See opt::shape.
+        w(&format!("# structure   {}", shape(&self.pitches).structure));
         w(&format!("# certified   full global pass at {:.2}deg, exact tail eval, improves J by {:.2e} ({} passes)",
                    PolishOpts::default().global_step, self.residual, self.passes));
         for p in &self.pitches { w(&format!("{p}")) }
