@@ -55,7 +55,8 @@ fn a_converged_certificate_does_not_mean_a_good_profile() {
 fn profiles_round_trip_through_the_file_format() {
     let o = obj(50, -1.25);
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 3, ..Default::default() });
-    let p = Profile { obj: o, trig: trig_mode(), commit: commit_hash().into(),
+    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(),
+                      commit: commit_hash().into(),
                       pitches: r.pitches.clone(), residual: r.residual, passes: r.passes };
     let back = Profile::parse(&p.to_string()).expect("must parse");
     assert_eq!(back.obj, o);
@@ -71,7 +72,52 @@ fn certify_catches_a_damaged_schedule() {
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 20, ..Default::default() });
     let mut hurt = r.pitches.clone();
     hurt[250] += 30.0;
-    let res = certify(&o, &hurt, 0.25);
+    let res = certify(&o, &hurt, 0.25, Jitter::default());
     assert!(res > 10.0 * r.residual.max(1e-9),
             "damage went unnoticed: clean {:.2e}, damaged {res:.2e}", r.residual);
+}
+
+/// Jitter is part of the utility function, so it has to survive the file and it has to be
+/// reproducible: the same sigma and seed must give the same perturbations on any machine.
+#[test]
+fn jitter_is_reproducible_and_round_trips() {
+    let j = Jitter { sigma: 1.5, draws: 4, seed: 12345 };
+    let a = j.table(50);
+    assert_eq!(a.len(), 4);
+    assert_eq!(a, j.table(50), "same seed must give the same draws");
+    assert_ne!(a, Jitter { seed: 999, ..j }.table(50), "a different seed must differ");
+    let sd = (a.iter().flatten().map(|x| x * x).sum::<f64>() / 200.0).sqrt();
+    assert!((sd - 1.5).abs() < 0.3, "sigma should be about 1.5, measured {sd:.3}");
+    assert!(Jitter { sigma: 0.0, ..j }.table(50)[0].iter().all(|&x| x == 0.0));
+
+    let o = obj(40, 0.0);
+    let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 2, jitter: j, ..Default::default() });
+    let p = Profile { obj: o, trig: trig_mode(), jitter: j, commit: commit_hash().into(),
+                      pitches: r.pitches, residual: r.residual, passes: r.passes };
+    assert_eq!(Profile::parse(&p.to_string()).unwrap().jitter, j);
+}
+
+/// Polishing under jitter maximizes the *smoothed* objective, and should be judged on it.
+///
+/// Note what is deliberately not asserted here. Jitter does not punish chatter in general --
+/// perturbing an arbitrary chattering schedule *improves* it, because arbitrary chatter is not
+/// at a maximum of anything. The claim is narrower: chatter that the optimizer converged to
+/// sits on a knife edge of the exact objective, and only that kind loses its value when the
+/// schedule is flown imprecisely. Testing it needs a schedule polished hard enough to have
+/// found the singular arc, which is minutes of work, so it lives in the sweep's measurements
+/// rather than here.
+#[test]
+fn polishing_under_jitter_improves_the_smoothed_objective() {
+    let o = obj(80, 0.0);
+    let jit = Jitter { sigma: 1.0, draws: 6, seed: 11 };
+    let eps = jit.table(o.n);
+    let seed = seed_from_policy(&o);
+    let before = o.eval_jittered(&seed, &eps);
+    let r = polish(&o, &seed, PolishOpts { max_passes: 6, tol: 0.0, jitter: jit, ..Default::default() });
+    let after = o.eval_jittered(&r.pitches, &eps);
+    assert!(after >= before - 1e-9, "smoothed J fell from {before} to {after}");
+    for (t, &p) in r.pitches.iter().enumerate() {
+        assert_eq!(p, p as f32 as f64, "pitch {t} is not an f32");
+        assert!((-90.0..=90.0).contains(&p), "pitch {t} = {p} out of range");
+    }
 }

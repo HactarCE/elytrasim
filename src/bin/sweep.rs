@@ -33,7 +33,10 @@ impl Args {
     }
     fn cell(&self) -> Objective {
         Objective {
-            v0: Vec3::new(0.0, self.num("--vy", 0.167467), self.num("--vz", 0.200887)),
+            // Zero, not the reference cycle's start: (0.167467, 0.200887) is the velocity
+            // REPLAY_PITCHES_300 happens to close on, which makes it special for that one
+            // profile and for nothing else.
+            v0: Vec3::new(0.0, self.num("--vy", 0.0), self.num("--vz", 0.0)),
             n: self.num("--n", 300usize),
             lambda: self.num("--lambda", 0.0),
         }
@@ -43,6 +46,12 @@ impl Args {
             max_passes: self.num("--passes", 200usize),
             tol: self.num("--tol", PolishOpts::default().tol),
             block: self.num("--block", PolishOpts::default().block),
+            jitter: Jitter {
+                sigma: self.num("--jitter", 0.0),
+                draws: self.num("--draws", 4usize),
+                resample: !self.0.iter().any(|x| x == "--fixed-draws"),
+                seed: self.num("--seed", Jitter::default().seed),
+            },
             ..Default::default()
         }
     }
@@ -62,7 +71,8 @@ fn write_profile(path: &str, p: &Profile) {
 fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> Profile {
     let r = polish(obj, init, opts);
     Profile {
-        obj: *obj, trig: trig_mode(), commit: commit_hash().to_string(),
+        obj: *obj, trig: trig_mode(), jitter: opts.jitter,
+        commit: commit_hash().to_string(),
         pitches: r.pitches, residual: r.residual, passes: r.passes,
     }
 }
@@ -97,7 +107,7 @@ fn cmd_verify(files: &[String]) {
         let p = match Profile::parse(&text) { Ok(p) => p, Err(e) => { println!("{f}: BAD HEADER: {e}"); bad += 1; continue } };
         // the header is authoritative: replay under the physics it claims, not the shell's
         set_trig_mode(p.trig);
-        let res = certify(&p.obj, &p.pitches, PolishOpts::default().global_step);
+        let res = certify(&p.obj, &p.pitches, PolishOpts::default().global_step, p.jitter);
         let claimed = p.residual;
         let ok = res <= claimed.max(1e-6) * 1.5 + 1e-9;
         println!("{f}: n {:>4} lambda {:+.4} trig {} | claimed {:.2e}, found {:.2e}  {}",
@@ -351,7 +361,7 @@ fn main() {
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
             let pr = Profile::parse(&text).unwrap_or_else(|e| panic!("{f}: {e}"));
             set_trig_mode(pr.trig);
-            let r = residuals(&pr.obj, &pr.pitches, PolishOpts::default().global_step);
+            let r = residuals(&pr.obj, &pr.pitches, PolishOpts::default().global_step, pr.jitter);
             let (pos, neg) = (r.iter().filter(|x| x.0 > 1e-9).count(),
                               r.iter().filter(|x| x.0 < -1e-9).count());
             let sum: f64 = r.iter().map(|x| x.0).sum();
@@ -369,7 +379,7 @@ fn main() {
             eprint!("  energy in the first k cosine modes:");
             for (k, e) in &ks { eprint!("  k={k}: {:.0}%", 100.0 * e) }
             eprintln!();
-            match jacobi_step(&pr.obj, &pr.pitches, PolishOpts::default().global_step) {
+            match jacobi_step(&pr.obj, &pr.pitches, PolishOpts::default().global_step, pr.jitter) {
                 Some((_, alpha, g)) => eprintln!(
                     "  best whole-schedule step: alpha {alpha:.3} worth {g:.4} blocks \
                      ({:.1}% of the per-tick total)", 100.0 * g / gain.max(1e-12)),
