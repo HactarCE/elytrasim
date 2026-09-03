@@ -6,6 +6,12 @@ Run things with `cargo run --release --bin myopic -- <subcommand>`; the subcomma
 documented at the top of `src/bin/myopic.rs`. Everything is measured against `sim`'s physics
 with yaw pinned to zero, so the state is just `(v_y, v_z)` plus height.
 
+> **Units note.** Energies are now in **blocks** — `KE = |v|^2/(2g)`, `PE = y` exactly — so the
+> objective is `TE + w*z` with both terms in blocks. Every `w` in this document predates that and
+> is in the old convention, where `PE = g*y`; multiply by `1/g = 12.5` to read it in current
+> units, so the family below spans `w = -0.125 .. 0.250` today. Only the labels move: every
+> angle, rate and pitch here is unchanged, because rescaling the objective cannot move an argmax.
+
 ## The reference
 
 `REPLAY_PITCHES_300` is a genuine closed cycle — replaying it returns the velocity to its start

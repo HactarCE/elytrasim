@@ -233,15 +233,16 @@ fn cmd_family(path: &str, tag: &str) {
              hold_rms, hold_med, t_gend - t_gain, best.0, best.1, r1, r20, ns[ns.len() / 2]);
 }
 
-/// The steady glide that maximizes the *objective rate* `GRAVITY*v_y + w*v_z`.
+/// The steady glide that maximizes the *objective rate* `v_y + w*v_z`.
 ///
 /// Turnpike candidate for the dive's flight-path-angle floor. Maximizing `TE + w*z` over a
-/// fixed number of ticks is maximizing the time-average of `d/dt (TE + w*z) = g*v_y + w*v_z`,
+/// fixed number of ticks is maximizing the time-average of `d/dt (TE + w*z) = v_y + w*v_z`,
 /// so if the dive were asymptoting to the best available *steady* state for the objective,
 /// the floor would track this angle. Note what it reduces to at w = 0: the minimum-sink
 /// glide, not the fastest one.
 fn cmd_eqrate() {
-    const G: f64 = GRAVITY;
+    // TE is in blocks, so potential energy is exactly height and v_y carries weight 1.
+    const G: f64 = 1.0;
     // The locus is a curve in the (v_z, v_y) plane parameterized by pitch. Build it once;
     // each point is 40k iterations of the velocity map.
     let step = 0.05;
@@ -273,14 +274,16 @@ fn cmd_eqrate() {
     }
 
     // The observed floors, from README-myopic.md's family table.
-    let obs: &[(f64, f64)] = &[(-0.010, 12.81), (-0.005, 14.62), (-0.002, 16.80), (0.0, 16.72),
-                               (0.002, 16.32), (0.005, 15.94), (0.010, 15.36), (0.020, 14.45)];
+    // w is in the block convention; README-myopic.md's family table predates it, so its
+    // w column is these divided by GRAVITY. The gammas are unchanged.
+    let obs: &[(f64, f64)] = &[(-0.125, 12.81), (-0.0625, 14.62), (-0.025, 16.80), (0.0, 16.72),
+                               (0.025, 16.32), (0.0625, 15.94), (0.125, 15.36), (0.250, 14.45)];
     println!("\nturnpike glide for the objective TE + w*z, vs the observed dive floor");
     println!("{:>7} {:>8} {:>10} {:>10} {:>9} {:>9} {:>12} {:>9}",
              "w", "pitch", "eq v_y", "eq v_z", "|eq|", "gamma_eq", "rate", "observed");
     for &(w, g_obs) in obs {
         let (p, e) = pick(&|e: Vec3| G * e.y + w * e.z);
-        println!("{w:>7.3} {p:>8.3} {:>10.5} {:>10.5} {:>9.5} {:>9.4} {:>12.6} {g_obs:>9.2}",
+        println!("{w:>7.4} {p:>8.3} {:>10.5} {:>10.5} {:>9.5} {:>9.4} {:>12.6} {g_obs:>9.2}",
                  e.y, e.z, e.length(), gamma(e), G * e.y + w * e.z);
     }
     if std::env::args().any(|a| a == "locus") {
@@ -291,7 +294,7 @@ fn cmd_eqrate() {
     }
     println!("\nthe same sweep, wider, to show which way the turnpike actually moves");
     println!("{:>9} {:>8} {:>10} {:>10} {:>9}", "w", "pitch", "eq v_y", "eq v_z", "gamma_eq");
-    for w in [-1.0, -0.2, -0.08, -0.04, -0.02, -0.01, 0.0, 0.01, 0.02, 0.04, 0.08, 0.2, 1.0, 10.0] {
+    for w in [-12.5, -2.5, -1.0, -0.5, -0.25, -0.125, 0.0, 0.125, 0.25, 0.5, 1.0, 2.5, 12.5, 125.0] {
         let (p, e) = pick(&|e: Vec3| G * e.y + w * e.z);
         println!("{w:>9.3} {p:>8.3} {:>10.5} {:>10.5} {:>9.4}", e.y, e.z, gamma(e));
     }
@@ -342,7 +345,7 @@ fn cmd_floor(path: &str, tag: &str) {
 /// pinned the state is two-dimensional, so that one equation pins `lambda` up to sign and
 /// scale: it is the normal to the reachable curve's tangent. Sign is fixed by requiring height
 /// to be worth something. What comes back is the cycle's *actual* price of distance in units of
-/// height, `lambda_z / lambda_y`, which is the number the objective weight `w / GRAVITY` was
+/// height, `lambda_z / lambda_y`, which is the number the objective weight `w` was
 /// standing in for.
 fn costate_dir(v: Vec3, p: f64) -> (f64, f64) {
     let h = 1e-3;
@@ -362,7 +365,7 @@ fn costate_dir(v: Vec3, p: f64) -> (f64, f64) {
 
 /// Does the dive's floor sit where the *measured* prices say a steady glide should?
 ///
-/// `eqrate` asks which equilibrium maximizes `GRAVITY*v_y + w*v_z` and gets the wrong answer.
+/// `eqrate` asks which equilibrium maximizes `v_y + w*v_z` and gets the wrong answer.
 /// This asks the same question with the shadow prices the optimum is actually using, recovered
 /// from its own stationary condition, which is the only version of the turnpike claim that
 /// has a chance of being true.
@@ -378,7 +381,7 @@ fn cmd_prices(path: &str, tag: &str) {
         for &(p, e) in &tab { let v = ly * e.y + lz * e.z; if v > bs { bs = v; bp = p; be = e } }
         (bp, be)
     };
-    println!("{tag}: costate through the dive (w/GRAVITY is what eqrate assumed)");
+    println!("{tag}: costate through the dive (w is what eqrate assumed)");
     println!("{:>5} {:>8} {:>8} {:>8} {:>8} {:>9} {:>10} {:>9} {:>9} {:>9}",
              "rel", "pitch", "gamma", "l_y", "l_z", "lz/ly", "eq pitch", "eq gamma", "eq v_z", "argmax-p");
     println!("{:>88}   (last column: global argmax of lambda.f minus the optimum's pitch)", "");
@@ -427,7 +430,7 @@ fn cmd_gprofile(path: &str, tag: &str) {
 
 /// Is the optimum the one-tick argmax of a linear score on next tick's velocity?
 ///
-/// Over a closed cycle the objective is `sum_t c . v_{t+1}` with `c = (GRAVITY, w)`, because the
+/// Over a closed cycle the objective is `sum_t c . v_{t+1}` with `c = (1, w)`, because the
 /// kinetic terms cancel when the cycle closes. Pontryagin then says the optimum maximizes
 /// `mu_{t+1} . f(v_t, p)` at every tick -- a genuinely myopic, one-tick, horizon-free score --
 /// where the price vector obeys `mu_t = c + A_t^T mu_{t+1}`, `A_t = df/dv`.
@@ -444,7 +447,7 @@ fn cmd_adjoint(path: &str, w: f64) {
     let close = (st[n].vel - st[0].vel).length();
     println!("{path}: {n} ticks, |v_N - v_0| = {close:.3e}, w = {w}");
     if close > 1e-3 { println!("  !! not a closed cycle; the periodic adjoint does not apply") }
-    let c = (GRAVITY, w);
+    let c = (1.0, w);
 
     let (mut b, mut m) = ((0.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
     for t in (0..n).rev() {
@@ -661,7 +664,7 @@ fn cmd_consist(path: &str, amp: f64) {
     let mut st = vec![State { pos: Vec3::ZERO, vel: v }];
     for &p in &ps { let s = ticked(st.last().unwrap(), p); st.push(s) }
     let close = (st[n].vel - st[0].vel).length();
-    let c = (GRAVITY, 0.0);
+    let c = (1.0, 0.0);
 
     let (mut b, mut m) = ((0.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
     for t in (0..n).rev() {

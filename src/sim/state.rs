@@ -43,17 +43,21 @@ impl State {
     //     state.ticked(Rot { x: pitch, y: 0. }).sub(&state)
     // }
 
-    /// kilograms * blocks^2 / ticks^2
+    // Energies are in *blocks*: the height you could trade the energy for. That makes
+    // potential energy exactly the height, and total energy directly comparable with the
+    // z-distance term in the sweep's objective. It is the old convention divided by GRAVITY.
+
+    /// blocks -- the height this speed buys, `|v|^2 / 2g`
     pub fn kinetic_energy(&self) -> KineticEnergy {
-        self.vel.length_sq() * 0.5
+        self.vel.length_sq() * 0.5 / GRAVITY
     }
 
-    /// kilograms * blocks^2 / ticks^2
+    /// blocks -- exactly the height
     pub fn potential_energy(&self) -> PotentialEnergy {
-        self.pos.y * GRAVITY
+        self.pos.y
     }
 
-    /// kilograms * blocks^2 / ticks^2
+    /// blocks
     pub fn total_energy(&self) -> TotalEnergy {
         self.kinetic_energy() + self.potential_energy()
     }
