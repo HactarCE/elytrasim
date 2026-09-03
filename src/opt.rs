@@ -428,7 +428,12 @@ impl Default for PolishOpts {
         PolishOpts {
             max_passes: 200, global_every: 4, global_step: 0.25,
             local_span: 8.0, local_step: 0.05, ternary_iters: 70, tol: 0.1, block: 0, stall_window: 12,
-            lag1_floor: 0.2,
+            // Off by default. It reads well but interacts badly with continuation: a warm
+            // start arrives with a seam where `stretch` joined, that reads as chatter, and the
+            // guard then stops the polish that would have repaired it -- freezing a chain of
+            // cells at an unimproved copy of their parent. Stopping time is applied as a pass
+            // budget instead. Set it explicitly for a single cold polish, where it works.
+            lag1_floor: f64::NEG_INFINITY,
             jitter: Jitter::default(),
         }
     }
@@ -729,7 +734,13 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         // The regularizer: if this pass pushed the schedule into chatter, throw the pass away
         // and stop. Discarding rather than merely stopping matters -- the crossing pass is the
         // one that did the damage, and keeping it would write out exactly what we are avoiding.
-        if lag1(&pitches) < opts.lag1_floor {
+        // Only a pass that makes it *worse* stops the polish. A warm start can arrive already
+        // below the floor -- `stretch` leaves a seam at the join, which reads as chatter -- and
+        // an absolute test would then revert every pass and freeze the schedule, propagating an
+        // unimproved copy down the whole continuation chain. Measured: three consecutive cells
+        // with identical lag-1 and falling dy, each writing out its stretched parent untouched.
+        let l1_now = lag1(&pitches);
+        if l1_now < opts.lag1_floor && l1_now < lag1(&prev) {
             pitches = prev;
             stopped_degenerate = true;
             break;
@@ -911,8 +922,13 @@ pub fn seed_from_reference(n: usize) -> Vec<f64> {
 }
 
 /// Adapt a solved neighbor's schedule to a different horizon, for continuation along `n`.
-/// Trimming takes the head; extending repeats the reference cycle's tail, which is the dive
-/// the schedule would be entering anyway.
+///
+/// Trimming takes the head; extending continues the reference cycle, indexed by absolute
+/// tick, so a 300-tick schedule extended to 310 picks up the cycle's first ten pitches -- the
+/// start of the next cycle, which is what a schedule that has just finished one is about to do.
+///
+/// Holding the terminal pitch instead was tried and is worse: the tail is a glide easing down,
+/// and holding it for the extra ticks bleeds energy, taking dy at n = 360 from +14.7 to -4.0.
 pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
     if pitches.len() >= n { return pitches[..n].to_vec() }
     let mut out = pitches.to_vec();
