@@ -12,7 +12,15 @@
 //!   pilot   [--out <dir>]           the coarse grid: axis bounds, strides, seed quality
 //!   run     --out <dir> [--shard vy=<i>,vz=<j>]      the full sweep
 //!
-//! Cell options: --n, --lambda, --vy, --vz, --passes, --trig, --init <file>
+//! Cell options: --n, --lambda, --vy, --vz, --passes, --tol, --trig, --init <file>
+//!
+//! Jitter options: --jitter <sigma>, --draws <k>, --fixed-draws, --seed <s>
+//!   `--jitter` is the standard deviation of the *initial velocity* error, in blocks/tick,
+//!   applied independently to v_y and v_z. It is the regularizer: polished against one exact
+//!   starting state the optimizer converges onto knife edges in the state and chatters between
+//!   0 and 90 degrees; polished against a spread of starting states it cannot, because the
+//!   draws are never on the edge at the same tick. Perturbing the pitches instead does not
+//!   work and was measured -- see `Jitter` in `opt.rs`.
 
 use elytrasim::opt::*;
 use elytrasim::sim::*;
@@ -46,9 +54,10 @@ impl Args {
             max_passes: self.num("--passes", 200usize),
             tol: self.num("--tol", PolishOpts::default().tol),
             block: self.num("--block", PolishOpts::default().block),
+            lag1_floor: self.num("--lag1-floor", PolishOpts::default().lag1_floor),
             jitter: Jitter {
                 sigma: self.num("--jitter", 0.0),
-                draws: self.num("--draws", 4usize),
+                draws: self.num("--draws", 8usize),
                 resample: !self.0.iter().any(|x| x == "--fixed-draws"),
                 seed: self.num("--seed", Jitter::default().seed),
             },
@@ -68,13 +77,16 @@ fn write_profile(path: &str, p: &Profile) {
 
 // ---------------------------------------------------------------- one cell
 
-fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> Profile {
+/// Returns the profile and the polish record: the record carries *why* the polish stopped,
+/// which the file deliberately does not (the file states the objective, not the provenance).
+fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> (Profile, Polished) {
     let r = polish(obj, init, opts);
-    Profile {
+    let profile = Profile {
         obj: *obj, trig: trig_mode(), jitter: opts.jitter,
         commit: commit_hash().to_string(),
-        pitches: r.pitches, residual: r.residual, passes: r.passes,
-    }
+        pitches: r.pitches.clone(), residual: r.residual, passes: r.passes,
+    };
+    (profile, r)
 }
 
 fn cmd_polish_cell(a: &Args) {
@@ -90,9 +102,11 @@ fn cmd_polish_cell(a: &Args) {
         None => seed_from_policy(&obj),
     };
     let t = Instant::now();
-    let p = solve(&obj, &init, a.opts());
-    eprintln!("n {:>4}  lambda {:+.4}  v0 ({:.6}, {:.6})  J {:.6}  residual {:.2e}  {} passes  {:.1}s",
-              obj.n, obj.lambda, obj.v0.y, obj.v0.z, obj.eval(&p.pitches), p.residual, p.passes,
+    let (p, r) = solve(&obj, &init, a.opts());
+    eprintln!("n {:>4}  lambda {:+.4}  v0 ({:.6}, {:.6})  J {:.6}  residual {:.2e}  \
+lag1 {:+.3}  {} passes{}  {:.1}s",
+              obj.n, obj.lambda, obj.v0.y, obj.v0.z, obj.eval(&p.pitches), p.residual,
+              lag1(&p.pitches), p.passes, if r.stopped_degenerate { " (stopped: degenerate)" } else { "" },
               t.elapsed().as_secs_f64());
     match a.get("--out") {
         Some(f) => write_profile(f, &p),
@@ -190,7 +204,7 @@ fn cmd_pilot(a: &Args) {
     let rows: Vec<String> = cells.par_iter().map(|obj| {
         let seed = seed_from_policy(obj);
         let j_seed = obj.eval(&seed);
-        let p = solve(obj, &seed, PolishOpts { max_passes: passes, ..Default::default() });
+        let (p, _) = solve(obj, &seed, PolishOpts { max_passes: passes, ..Default::default() });
         let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if k % 10 == 0 || k == total {
             eprintln!("  {k}/{total} cells, {:.0}s elapsed", t0.elapsed().as_secs_f64());
@@ -237,7 +251,8 @@ impl Grid {
 /// neighbor that reached it. Continuation is the whole speedup, and it also keeps the heuristic
 /// seed out of the parts of the grid where it has no reason to work -- it is asked once, at the
 /// anchor, and never again.
-fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: bool) -> (usize, usize) {
+fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: bool,
+             anchor: Option<&[f64]>) -> (usize, usize) {
     let ns_f: Vec<f64> = g.ns.iter().map(|&n| n as f64).collect();
     let (ni, li) = (Grid::nearest(&ns_f, 300.0), Grid::nearest(&g.lams, 0.0));
     let (nn, nl) = (g.ns.len(), g.lams.len());
@@ -255,9 +270,16 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         let obj = cell(i, j);
         let path = cell_path(dir, &obj);
         // Warm start from whichever solved neighbor got here first; the anchor has none.
+        // The anchor is the one cell with no solved neighbour. `seed_from_policy` was tuned
+        // against the reference cycle's operating point, so away from it -- v0 = 0 especially --
+        // an explicit anchor schedule is the difference between seeding the cyclic branch and
+        // seeding a collapsed one, and the BFS propagates whichever it gets to the whole shard.
         let init = match from.and_then(|(a, b)| solved[a * nl + b].clone()) {
             Some(prev) => stretch(&prev, obj.n),
-            None => seed_from_policy(&obj),
+            None => match anchor {
+                Some(a) => stretch(a, obj.n),
+                None => seed_from_policy(&obj),
+            },
         };
         // Resume: a cell whose file already matches this objective and physics is not redone,
         // but its pitches still seed the neighbours, so a killed job costs one cell.
@@ -267,7 +289,7 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         let pitches = match existing {
             Some(p) => { skipped += 1; p.pitches }
             None => {
-                let prof = solve(&obj, &init, opts);
+                let (prof, _) = solve(&obj, &init, opts);
                 write_profile(&path, &prof);
                 done += 1;
                 if done % 25 == 0 { eprintln!("  vy{vy:+.3} vz{vz:+.3}: {done} solved, {skipped} resumed") }
@@ -320,6 +342,13 @@ fn cmd_run(a: &Args) {
     let g = Grid::from(a);
     let opts = a.opts();
     let force = a.0.iter().any(|x| x == "--force");
+    let anchor: Option<Vec<f64>> = a.get("--anchor").map(|f| {
+        let t = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+        Profile::parse(&t).map(|p| p.pitches).unwrap_or_else(|_| {
+            t.lines().flat_map(|l| l.split('#').next().unwrap_or("").split_whitespace())
+             .map(|x| x.parse().unwrap()).collect()
+        })
+    });
     // A shard is one (vy0, vz0) cell, so it is a directory and an independent job.
     let mut shards: Vec<(f64, f64)> = vec![];
     for &vy in &g.vys { for &vz in &g.vzs { shards.push((vy, vz)) } }
@@ -332,7 +361,7 @@ fn cmd_run(a: &Args) {
               shards.len(), g.ns.len() * g.lams.len(), opts.max_passes, trig_mode(), commit_hash());
     let t0 = Instant::now();
     let totals: Vec<(usize, usize)> = shards.par_iter()
-        .map(|&(vy, vz)| run_shard(&dir, &g, vy, vz, opts, force)).collect();
+        .map(|&(vy, vz)| run_shard(&dir, &g, vy, vz, opts, force, anchor.as_deref())).collect();
     let (d, s): (usize, usize) = totals.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
     eprintln!("sweep: {d} solved, {s} resumed, {:.0}s", t0.elapsed().as_secs_f64());
 }

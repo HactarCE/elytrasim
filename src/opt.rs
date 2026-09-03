@@ -271,71 +271,83 @@ impl Objective {
         self.j(&s)
     }
 
-    /// `J` averaged over the jitter draws: the value of flying this schedule imprecisely.
-    pub fn eval_jittered(&self, pitches: &[f64], eps: &[Vec<f64>]) -> f64 {
-        eps.iter().map(|e| {
-            let mut s = State { pos: Vec3::ZERO, vel: self.v0 };
-            for (t, &p) in pitches.iter().enumerate() { s = ticked(&s, p + e[t]) }
+    /// `J` averaged over the jitter draws: the value of flying this schedule from a starting
+    /// velocity you do not know exactly.
+    pub fn eval_jittered(&self, pitches: &[f64], dv: &[Vec3]) -> f64 {
+        dv.iter().map(|d| {
+            let mut s = State { pos: Vec3::ZERO, vel: self.v0 + *d };
+            for &p in pitches { s = ticked(&s, p) }
             self.j(&s)
-        }).sum::<f64>() / eps.len() as f64
+        }).sum::<f64>() / dv.len() as f64
     }
 }
 
 // ---------------------------------------------------------------- robustness
 
-/// Optimize against a *jittered* schedule rather than the exact one.
+/// Optimize against a *distribution of starting states* rather than one exact state.
 ///
-/// Polished hard, the optimizer finds a singular arc and chatters between 0 and 90 degrees
-/// every tick through the late dive. That is not a numerical artifact: at 90 degrees
-/// `cos(lean_angle)` is zero, so the lift force vanishes *and* `look_hor_length` vanishes,
-/// which gates off both the descent-to-forward conversion and the turning term. Bang-bang
-/// between "full aero" and "no aero" really does beat any fixed pitch there -- and no human
-/// can fly it.
+/// Polished hard against a single exact trajectory, the optimizer finds a singular arc and
+/// chatters between 0 and 90 degrees every tick through the late dive. That is not a numerical
+/// artifact: at 90 degrees `cos(lean_angle)` is zero, so the lift force vanishes *and*
+/// `look_hor_length` vanishes, which gates off both the descent-to-forward conversion and the
+/// turning term. Bang-bang between "full aero" and "no aero" really does beat any fixed pitch
+/// there -- and no human can fly it.
 ///
 /// A slew-rate limit does not fix this, because the cycle contains genuine flicks: the snap
 /// drops to 0 and the flick covers ~88 degrees in about six ticks. Any limit loose enough to
 /// keep those is loose enough to keep the chatter.
 ///
-/// Jitter fixes it at the root. Maximizing `E[J(p + eps)]` prices a schedule by what it scores
-/// when flown imprecisely, so a knife-edge arc stops paying, while a real flick -- which is
-/// robust, it just has to happen -- keeps its value. It also puts the mouse-jitter question
-/// inside the objective instead of leaving it to post-hoc analysis.
+/// Perturbing the *pitches* does not fix it either, and was measured: held-fixed draws made the
+/// chatter worse (total variation 2406 against 3493), and per-pass resampling cut it only 29%
+/// while costing 2.3 blocks of climb. The reason is that the schedule is not especially
+/// sensitive to pitch at the chattering end -- `lift_force = cos^2(lean_angle)` is flat at 90
+/// degrees, so a degree of pitch error there barely moves anything.
 ///
-/// The draws are *common random numbers*: one fixed set, reused for every candidate at every
-/// tick. That makes the smoothed objective a deterministic function of the schedule, so the
-/// line search is not chasing sampling noise and the result is reproducible from the header.
+/// What works is perturbing the **initial velocity**. A knife-edge gain is knife-edge in the
+/// *state*: it exists at one point in `(v_y, v_z)` and the tick that reaches it. Start from a
+/// spread of velocities and no single schedule can sit on that point, because the draws arrive
+/// at different states at every tick -- while a real flick, which is robust and merely has to
+/// happen, keeps its value across the whole spread. This also states the honest problem: you do
+/// not know your velocity to three decimals when you start a cycle.
+///
+/// `sigma` 0.1 on each component is what this was settled on with, against a reference start of
+/// about `(0.17, 0.20)` -- a perturbation of the same order as the velocity itself, so the
+/// schedule is being asked to work over a genuinely wide basin rather than to be locally smooth.
+/// The draws are *common random numbers* within a pass: one set, reused for every candidate at
+/// every tick, so the smoothed objective is a deterministic function of the schedule and the
+/// line search is not chasing sampling noise.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Jitter {
-    /// Standard deviation of the per-tick pitch error, in degrees. 0 disables smoothing.
+    /// Standard deviation of the initial-velocity error, in blocks/tick, applied independently
+    /// to `v_y` and `v_z`. 0 disables jitter.
     pub sigma: f64,
     /// How many draws to average over. Cost is linear in this.
     pub draws: usize,
     /// Redraw the perturbations every pass instead of holding one set fixed.
     ///
     /// This is the difference between smoothing and regularizing, and it matters. Held fixed,
-    /// the draws define a deterministic surrogate objective, and the optimizer simply finds
-    /// *its* knife edges -- measured, that made the chatter worse, not better (total variation
-    /// 2406 at sigma 0 against 3493 at sigma 1). Redrawn each pass, no single realization can
-    /// be exploited, so a gain has to survive fresh noise to be kept.
+    /// the draws define a deterministic surrogate objective with knife edges of its own, and
+    /// the optimizer finds those instead. Redrawn each pass, no single realization can be
+    /// exploited, so a gain has to survive fresh draws to be kept.
     pub resample: bool,
     pub seed: u64,
 }
 
 impl Default for Jitter {
-    fn default() -> Self { Jitter { sigma: 0.0, draws: 1, resample: true, seed: 0x5eed_1eaf } }
+    fn default() -> Self { Jitter { sigma: 0.0, draws: 8, resample: true, seed: 0x5eed_1eaf } }
 }
 
 impl Jitter {
     pub fn is_on(&self) -> bool { self.sigma > 0.0 && self.draws > 0 }
     pub fn k(&self) -> usize { if self.is_on() { self.draws.max(1) } else { 1 } }
 
-    /// The fixed perturbation table, `k` by `n`. Deterministic in `seed`, so a profile can be
+    /// The velocity offsets, one per draw. Deterministic in `seed`, so a profile can be
     /// re-certified against the same smoothed objective it was optimized under.
-    pub fn table(&self, n: usize) -> Vec<Vec<f64>> { self.table_at(n, 0) }
+    pub fn draws_at_0(&self) -> Vec<Vec3> { self.draws_at(0) }
 
-    /// The table for pass `pass`. Identical for every pass unless `resample` is set.
-    pub fn table_at(&self, n: usize, pass: u64) -> Vec<Vec<f64>> {
-        if !self.is_on() { return vec![vec![0.0; n]] }
+    /// The offsets for pass `pass`. Identical for every pass unless `resample` is set.
+    pub fn draws_at(&self, pass: u64) -> Vec<Vec3> {
+        if !self.is_on() { return vec![Vec3::ZERO] }
         let salt = if self.resample { pass.wrapping_mul(0x9e37_79b9_7f4a_7c15) } else { 0 };
         let mut st = self.seed.wrapping_add(salt).wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut next = || -> f64 {                       // splitmix64 -> uniform in (0, 1)
@@ -346,11 +358,14 @@ impl Jitter {
             z ^= z >> 31;
             ((z >> 11) as f64 + 0.5) / (1u64 << 53) as f64
         };
-        (0..self.draws).map(|_| (0..n).map(|_| {
-            // Box-Muller
+        let mut normal = || {                            // Box-Muller
             let (u1, u2) = (next(), next());
             self.sigma * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
-        }).collect()).collect()
+        };
+        (0..self.draws).map(|_| {
+            let (y, z) = (normal(), normal());
+            Vec3 { x: 0.0, y, z }
+        }).collect()
     }
 }
 
@@ -389,6 +404,23 @@ pub struct PolishOpts {
     /// this problem stalls and then jumps -- a global pass finds a new basin every so often --
     /// so a single quiet pass means nothing.
     pub stall_window: usize,
+    /// Stop as soon as the schedule turns degenerate: the lag-1 correlation of its per-tick
+    /// changes falling below this ends the polish and *discards* the pass that crossed it.
+    ///
+    /// This is the regularizer. Polished to convergence the exact objective genuinely prefers a
+    /// chattering singular arc -- residual 9.4e-6 at 200 passes, so it is a real coordinate
+    /// optimum, not a failure to converge -- and no perturbation of the objective that was
+    /// measured avoids it: initial-velocity jitter is flat in schedule smoothness across an 8x
+    /// range of sigma (total variation 925, 871, 838, 826, 884 at sigma 0, 0.05, 0.1, 0.2, 0.4
+    /// over 60 passes) while costing up to 8 blocks of distance. Stopping time is what works.
+    ///
+    /// It matters more under continuation than it looks: a warm-started cell inherits its
+    /// neighbour's polish, so a per-cell pass budget accumulates along the path and a cell far
+    /// from the anchor has been polished many times over. A budget cannot bound that; a
+    /// property of the schedule can.
+    ///
+    /// `f64::NEG_INFINITY` disables the guard.
+    pub lag1_floor: f64,
 }
 
 impl Default for PolishOpts {
@@ -396,6 +428,7 @@ impl Default for PolishOpts {
         PolishOpts {
             max_passes: 200, global_every: 4, global_step: 0.25,
             local_span: 8.0, local_step: 0.05, ternary_iters: 70, tol: 0.1, block: 0, stall_window: 12,
+            lag1_floor: 0.2,
             jitter: Jitter::default(),
         }
     }
@@ -411,20 +444,27 @@ pub struct Polished {
     /// What a fresh full global pass can still find, from `certify`. This is the number that
     /// makes the file's claim checkable; it does not depend on how the schedule was reached.
     pub residual: f64,
+    /// The degeneracy statistic at the schedule that was kept. See `lag1`.
+    pub lag1: f64,
+    /// Whether the polish ended because the schedule was turning degenerate rather than
+    /// because it stopped gaining. Recorded because it changes what the residual means: the
+    /// profile is deliberately short of the coordinate optimum, not converged to it.
+    pub stopped_degenerate: bool,
 }
 
 /// Best pitch for tick `t`, holding every other tick fixed: a global sweep, then a ternary
 /// refine inside the winning cell, scored on the exact tail. Returns `(pitch, J)` with the
 /// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
 /// returned is the one that will actually be flown, and its score is the score of flying it.
-fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64], eps: &[Vec<f64>], t0: usize,
+fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
                  cur: f64, lo: f64, hi: f64, step: f64, ternary_iters: usize) -> (f64, f64, f64) {
-    // One prefix state per jitter draw, and the tail is flown with that draw's errors too, so
-    // this is an unbiased estimate of E[J(p + eps)] under common random numbers.
+    // One prefix state per jitter draw. The draws differ only in where they started, so the
+    // tail is the exact schedule flown from each of them -- this is E[J | v0 + dv] under common
+    // random numbers, with no per-tick noise to average away.
     let score = |p: f64| -> f64 {
-        s.iter().zip(eps).map(|(s0, e)| {
-            let mut st = ticked(s0, p + e[t0]);
-            for (i, &q) in tail.iter().enumerate() { st = ticked(&st, q + e[t0 + 1 + i]) }
+        s.iter().map(|s0| {
+            let mut st = ticked(s0, p);
+            for &q in tail { st = ticked(&st, q) }
             obj.j(&st)
         }).sum::<f64>() / s.len() as f64
     };
@@ -458,24 +498,25 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64], eps: &[Vec<f64>], t
 /// it implies, and what that move is worth. This is the raw material for both `certify` (the
 /// largest gain) and for asking whether the moves point the same way.
 pub fn residuals(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> Vec<(f64, f64)> {
-    let eps = jit.table(pitches.len());
-    let states = jittered_replays(obj, pitches, &eps);
+    let dv = jit.draws_at_0();
+    let states = jittered_replays(obj, pitches, &dv);
     (0..pitches.len())
         .map(|t| {
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
-            let (p, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], &eps, t, pitches[t],
+            let (p, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], pitches[t],
                                               -90.0, 90.0, step, 70);
             (p - pitches[t], j - j_cur)
         })
         .collect()
 }
 
-/// One replay per jitter draw. `out[k][t]` is the state at tick `t` under draw `k`.
-fn jittered_replays(obj: &Objective, pitches: &[f64], eps: &[Vec<f64>]) -> Vec<Vec<State>> {
-    eps.iter().map(|e| {
-        let mut v = vec![State { pos: Vec3::ZERO, vel: obj.v0 }];
-        for (t, &p) in pitches.iter().enumerate() {
-            let s = ticked(v.last().unwrap(), p + e[t]);
+/// One replay per jitter draw. `out[k][t]` is the state at tick `t` having started from
+/// `v0 + dv[k]`.
+fn jittered_replays(obj: &Objective, pitches: &[f64], dv: &[Vec3]) -> Vec<Vec<State>> {
+    dv.iter().map(|d| {
+        let mut v = vec![State { pos: Vec3::ZERO, vel: obj.v0 + *d }];
+        for &p in pitches {
+            let s = ticked(v.last().unwrap(), p);
             v.push(s);
         }
         v
@@ -559,8 +600,8 @@ pub fn delta_structure(d: &[f64]) -> (f64, f64, Vec<(usize, f64)>) {
 pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter)
     -> Option<(Vec<f64>, f64, f64)> {
     let d = residuals(obj, pitches, step, jit);
-    let eps = jit.table(pitches.len());
-    let base = obj.eval_jittered(pitches, &eps);
+    let dv = jit.draws_at_0();
+    let base = obj.eval_jittered(pitches, &dv);
     let at = |alpha: f64| -> Vec<f64> {
         pitches.iter().zip(&d)
             .map(|(p, (delta, _))| (p + alpha * delta).clamp(-90.0, 90.0) as f32 as f64)
@@ -611,8 +652,8 @@ pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter)
 pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit: Jitter)
     -> Option<(Vec<f64>, f64)> {
     let d = residuals(obj, pitches, step, jit);
-    let eps = jit.table(pitches.len());
-    let base = obj.eval_jittered(pitches, &eps);
+    let dv = jit.draws_at_0();
+    let base = obj.eval_jittered(pitches, &dv);
     let mut cur = pitches.to_vec();
     let mut best_j = base;
     for start in (0..pitches.len()).step_by(block) {
@@ -643,17 +684,19 @@ pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit
 pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
     let mut pitches: Vec<f64> = init.iter().map(|&p| p as f32 as f64).collect();
-    let mut eps = opts.jitter.table_at(obj.n, 0);
-    let mut states = jittered_replays(obj, &pitches, &eps);
+    let mut dv = opts.jitter.draws_at(0);
+    let mut states = jittered_replays(obj, &pitches, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
+    let mut stopped_degenerate = false;
     let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
 
     for pass in 0..opts.max_passes {
         if opts.jitter.is_on() && opts.jitter.resample && pass > 0 {
-            eps = opts.jitter.table_at(obj.n, pass as u64);
-            states = jittered_replays(obj, &pitches, &eps);
+            dv = opts.jitter.draws_at(pass as u64);
+            states = jittered_replays(obj, &pitches, &dv);
         }
-        let before = obj.eval_jittered(&pitches, &eps);
+        let before = obj.eval_jittered(&pitches, &dv);
+        let prev = pitches.clone();
         let global = pass % opts.global_every == 0;
         // Before each global pass, try moving the whole schedule at once. When the per-tick
         // moves point the same way this leaps; when they do not it finds no step and costs
@@ -661,7 +704,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         if global && opts.block > 0 {
             if let Some((next, gain)) = block_step(obj, &pitches, opts.global_step, opts.block,
                                                    opts.jitter) {
-                if gain > 0.0 { pitches = next; states = jittered_replays(obj, &pitches, &eps) }
+                if gain > 0.0 { pitches = next; states = jittered_replays(obj, &pitches, &dv) }
             }
         }
         let mut worst_tick = 0.0f64;
@@ -673,18 +716,26 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
                 ((cur - opts.local_span).max(-90.0), (cur + opts.local_span).min(90.0), opts.local_step)
             };
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
-            let (np, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], &eps, t, cur,
+            let (np, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], cur,
                                                lo, hi, step, opts.ternary_iters);
             if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
             // every draw's prefix must stay consistent with the pitch just changed, or the
             // next tick's line search optimizes against a stale state and the schedule diverges
-            for (k, e) in eps.iter().enumerate() {
-                states[k][t + 1] = ticked(&states[k][t], pitches[t] + e[t]);
+            for k in 0..states.len() {
+                states[k][t + 1] = ticked(&states[k][t], pitches[t]);
             }
         }
+        // The regularizer: if this pass pushed the schedule into chatter, throw the pass away
+        // and stop. Discarding rather than merely stopping matters -- the crossing pass is the
+        // one that did the damage, and keeping it would write out exactly what we are avoiding.
+        if lag1(&pitches) < opts.lag1_floor {
+            pitches = prev;
+            stopped_degenerate = true;
+            break;
+        }
         passes = pass + 1;
-        last_gain = obj.eval_jittered(&pitches, &eps) - before;
+        last_gain = obj.eval_jittered(&pitches, &dv) - before;
         let _ = worst_tick;
         recent.push_back(last_gain);
         if recent.len() > opts.stall_window { recent.pop_front(); }
@@ -695,7 +746,8 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
 
     let j = obj.eval(&pitches);
     let residual = certify(obj, &pitches, opts.global_step, opts.jitter);
-    Polished { pitches, j, passes, last_gain, residual }
+    let l1 = lag1(&pitches);
+    Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate }
 }
 
 // ---------------------------------------------------------------- the profile file
@@ -737,10 +789,10 @@ impl Profile {
         w(&format!("# n           {}", o.n));
         w(&format!("# trig        {}", self.trig));
         if self.jitter.is_on() {
-            w(&format!("# jitter      {} {} {}    # pitch error sigma in deg, draws, seed",
+            w(&format!("# jitter      {} {} {}    # v0 sigma in blocks/tick, draws, seed",
                        self.jitter.sigma, self.jitter.draws, self.jitter.seed));
         } else {
-            w("# jitter      0                     # optimized against the exact schedule");
+            w("# jitter      0                     # optimized from the exact starting velocity");
         }
         w(&format!("# commit      {}", self.commit));
         w(&format!("# dJ          {:.6}              # J(s_n) - J(s_0)", o.j(sn) - o.j(s0)));
@@ -756,6 +808,7 @@ impl Profile {
         // in the header: the reference cycle sits near 35 degrees, a hard-polished one at 3000+.
         w(&format!("# variation   {:.1}                 # summed |pitch change|, deg",
                    total_variation(&self.pitches)));
+        w(&format!("# lag1        {:+.3}                # lag-1 correlation of the per-tick changes; below ~0.2 is chatter", lag1(&self.pitches)));
         w(&format!("# certified   full global pass at {:.2}deg, exact tail eval, improves J by {:.2e} ({} passes)",
                    PolishOpts::default().global_step, self.residual, self.passes));
         for p in &self.pitches { w(&format!("{p}")) }
@@ -933,6 +986,22 @@ pub struct Shape {
 /// 300-tick schedule reaches 3243 degrees against the reference cycle's 35.
 pub fn total_variation(pitches: &[f64]) -> f64 {
     pitches.windows(2).map(|w| (w[1] - w[0]).abs()).sum()
+}
+
+/// Lag-1 correlation of the per-tick pitch changes: the degeneracy statistic.
+///
+/// Total variation cannot tell a flick from chatter -- both are large moves. What separates
+/// them is whether neighbouring ticks move *together*. A real manoeuvre is a run of same-signed
+/// steps, so the deltas correlate positively; chatter alternates, so they correlate negatively.
+/// Measured on the reference cycle this reads +0.48, on the same schedule polished 200 passes
+/// -0.74, and the sign flip is the whole diagnosis.
+pub fn lag1(pitches: &[f64]) -> f64 {
+    if pitches.len() < 3 { return 0.0 }
+    let d: Vec<f64> = pitches.windows(2).map(|w| w[1] - w[0]).collect();
+    let mean = d.iter().sum::<f64>() / d.len() as f64;
+    let den: f64 = d.iter().map(|x| (x - mean).powi(2)).sum();
+    if den <= 0.0 { return 1.0 }        // constant or perfectly linear: maximally smooth
+    d.windows(2).map(|w| (w[0] - mean) * (w[1] - mean)).sum::<f64>() / den
 }
 
 pub fn shape(pitches: &[f64]) -> Shape {

@@ -81,14 +81,17 @@ fn certify_catches_a_damaged_schedule() {
 /// reproducible: the same sigma and seed must give the same perturbations on any machine.
 #[test]
 fn jitter_is_reproducible_and_round_trips() {
-    let j = Jitter { sigma: 1.5, draws: 4, seed: 12345 };
-    let a = j.table(50);
-    assert_eq!(a.len(), 4);
-    assert_eq!(a, j.table(50), "same seed must give the same draws");
-    assert_ne!(a, Jitter { seed: 999, ..j }.table(50), "a different seed must differ");
-    let sd = (a.iter().flatten().map(|x| x * x).sum::<f64>() / 200.0).sqrt();
-    assert!((sd - 1.5).abs() < 0.3, "sigma should be about 1.5, measured {sd:.3}");
-    assert!(Jitter { sigma: 0.0, ..j }.table(50)[0].iter().all(|&x| x == 0.0));
+    let j = Jitter { sigma: 0.1, draws: 400, resample: true, seed: 12345 };
+    let a = j.draws_at_0();
+    assert_eq!(a.len(), 400);
+    assert_eq!(a, j.draws_at_0(), "same seed must give the same draws");
+    assert_ne!(a, Jitter { seed: 999, ..j }.draws_at_0(), "a different seed must differ");
+    // Only v_y and v_z are perturbed; yaw is pinned to 0, so v_x must stay exactly zero.
+    assert!(a.iter().all(|d| d.x == 0.0), "jitter must not touch v_x");
+    let sq: f64 = a.iter().map(|d| d.y * d.y + d.z * d.z).sum();
+    let sd = (sq / 800.0).sqrt();
+    assert!((sd - 0.1).abs() < 0.02, "sigma should be about 0.1, measured {sd:.4}");
+    assert_eq!(Jitter { sigma: 0.0, ..j }.draws_at_0(), vec![Vec3::ZERO]);
 
     let o = obj(40, 0.0);
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 2, jitter: j, ..Default::default() });
@@ -102,19 +105,19 @@ fn jitter_is_reproducible_and_round_trips() {
 /// Note what is deliberately not asserted here. Jitter does not punish chatter in general --
 /// perturbing an arbitrary chattering schedule *improves* it, because arbitrary chatter is not
 /// at a maximum of anything. The claim is narrower: chatter that the optimizer converged to
-/// sits on a knife edge of the exact objective, and only that kind loses its value when the
-/// schedule is flown imprecisely. Testing it needs a schedule polished hard enough to have
-/// found the singular arc, which is minutes of work, so it lives in the sweep's measurements
-/// rather than here.
+/// sits on a knife edge in the *state*, and only that kind loses its value once the starting
+/// velocity is uncertain. Testing it needs a schedule polished hard enough to have found the
+/// singular arc, which is minutes of work, so it lives in the sweep's measurements rather
+/// than here.
 #[test]
 fn polishing_under_jitter_improves_the_smoothed_objective() {
     let o = obj(80, 0.0);
-    let jit = Jitter { sigma: 1.0, draws: 6, seed: 11 };
-    let eps = jit.table(o.n);
+    let jit = Jitter { sigma: 0.1, draws: 6, resample: false, seed: 11 };
+    let dv = jit.draws_at_0();
     let seed = seed_from_policy(&o);
-    let before = o.eval_jittered(&seed, &eps);
+    let before = o.eval_jittered(&seed, &dv);
     let r = polish(&o, &seed, PolishOpts { max_passes: 6, tol: 0.0, jitter: jit, ..Default::default() });
-    let after = o.eval_jittered(&r.pitches, &eps);
+    let after = o.eval_jittered(&r.pitches, &dv);
     assert!(after >= before - 1e-9, "smoothed J fell from {before} to {after}");
     for (t, &p) in r.pitches.iter().enumerate() {
         assert_eq!(p, p as f32 as f64, "pitch {t} is not an f32");
