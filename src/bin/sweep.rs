@@ -274,13 +274,30 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         // against the reference cycle's operating point, so away from it -- v0 = 0 especially --
         // an explicit anchor schedule is the difference between seeding the cyclic branch and
         // seeding a collapsed one, and the BFS propagates whichever it gets to the whole shard.
-        let init = match from.and_then(|(a, b)| solved[a * nl + b].clone()) {
-            Some(prev) => stretch(&prev, obj.n),
-            None => match anchor {
-                Some(a) => stretch(a, obj.n),
-                None => seed_from_policy(&obj),
-            },
-        };
+        // Two candidate seeds, and the cell takes whichever actually scores better. They fail
+        // in opposite places, so picking per cell is worth the two replays it costs.
+        //
+        // The BFS parent is right where the answer changes slowly -- along lambda, and along n
+        // below the anchor, where trimming holds the cyclic branch that a cold seed collapses
+        // out of. It is wrong going *up* in n by small steps: each hop tiles the parent, so a
+        // chain 300 -> 350 -> ... -> 600 never composes into the cycle flown twice, and eight
+        // passes cannot restructure the difference. Measured, that chain lands dJ -0.72 at
+        // n = 600.
+        //
+        // Tiling the anchor is right exactly there: the optimal long-horizon flight is
+        // approximately a repeated cycle, so tiling the anchor to 600 *is* two cycles, and the
+        // same cell lands dJ +41.09.
+        let parent = from.and_then(|(a, b)| solved[a * nl + b].clone())
+            .map(|prev| stretch(&prev, obj.n));
+        let mut cands: Vec<Vec<f64>> = parent.into_iter().collect();
+        if let Some(a) = anchor {
+            cands.push(stretch(a, obj.n));      // the cycle repeated
+            cands.push(rescale(a, obj.n));      // one cycle of period n
+        }
+        if cands.is_empty() { cands.push(seed_from_policy(&obj)) }
+        let init = cands.into_iter()
+            .max_by(|x, y| obj.eval(x).partial_cmp(&obj.eval(y)).unwrap())
+            .unwrap();
         // Resume: a cell whose file already matches this objective and physics is not redone,
         // but its pitches still seed the neighbours, so a killed job costs one cell.
         let existing = (!force).then(|| std::fs::read_to_string(&path).ok()).flatten()

@@ -921,19 +921,54 @@ pub fn seed_from_reference(n: usize) -> Vec<f64> {
     (0..n).map(|i| r[i % r.len()] as f64).collect()
 }
 
+/// Resample a schedule to length `n`, linearly: a cycle of period 300 becomes a cycle of
+/// period `n`.
+///
+/// The third seed for continuation, and the one that covers the gap tiling leaves. Tiling only
+/// lands well at integer multiples of the cycle -- at n = 400 a tiled 300-tick cycle ends 100
+/// ticks into the next one, mid-dive, which is where the energy goes. Rescaling instead asks
+/// for a single cycle that happens to take n ticks.
+///
+/// Phases do have absolute durations, so this is not physically exact for large ratios; it is a
+/// seed, and it competes with the others on measured `J` rather than on principle.
+pub fn rescale(pitches: &[f64], n: usize) -> Vec<f64> {
+    if pitches.is_empty() { return vec![0.0; n] }
+    if pitches.len() == 1 { return vec![pitches[0]; n] }
+    let m = pitches.len();
+    (0..n).map(|i| {
+        let x = i as f64 * (m - 1) as f64 / (n.max(2) - 1) as f64;
+        let (lo, f) = (x.floor() as usize, x - x.floor());
+        let hi = (lo + 1).min(m - 1);
+        ((1.0 - f) * pitches[lo] + f * pitches[hi]) as f32 as f64
+    }).collect()
+}
+
 /// Adapt a solved neighbor's schedule to a different horizon, for continuation along `n`.
 ///
-/// Trimming takes the head; extending continues the reference cycle, indexed by absolute
-/// tick, so a 300-tick schedule extended to 310 picks up the cycle's first ten pitches -- the
-/// start of the next cycle, which is what a schedule that has just finished one is about to do.
+/// Trimming takes the head; extending repeats *this schedule's own* pitches cyclically, so a
+/// 300-tick schedule extended to 600 is that schedule flown twice.
 ///
-/// Holding the terminal pitch instead was tried and is worse: the tail is a glide easing down,
-/// and holding it for the extra ticks bleeds energy, taking dy at n = 360 from +14.7 to -4.0.
+/// This is the whole ballgame on the `n` axis. The optimal long-horizon flight is approximately
+/// a repeated cycle, so tiling starts continuation next door to the answer; anything else
+/// starts it somewhere the optimizer cannot walk back from in a few passes.
+///
+/// Two worse extensions were measured at n = 600, v0 = 0, lambda 0, 8 passes:
+///
+/// | extension                      | dJ    | lag-1  | TV   |
+/// |--------------------------------|-------|--------|------|
+/// | tile this schedule             | 41.09 | +0.365 |  781 |
+/// | `REPLAY_PITCHES_300[i % 300]`  | -0.69 | -0.841 | 3828 |
+/// | hold the terminal pitch        | worse still, the held glide bleeds energy |
+///
+/// Splicing in the *reference* cycle's pitches is nonsense once the schedule has diverged from
+/// the reference, which it has by a few continuation hops. Its signature was a dJ that fell
+/// perfectly linearly with `n`, -0.706 blocks per 10 ticks: not a schedule being restructured
+/// for a longer horizon, just a losing glide being extended at a fixed rate.
 pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
     if pitches.len() >= n { return pitches[..n].to_vec() }
+    if pitches.is_empty() { return vec![0.0; n] }
     let mut out = pitches.to_vec();
-    let r = crate::replay_pitches::REPLAY_PITCHES_300;
-    while out.len() < n { out.push(r[out.len() % r.len()] as f64) }
+    while out.len() < n { out.push(pitches[out.len() % pitches.len()]) }
     out
 }
 
