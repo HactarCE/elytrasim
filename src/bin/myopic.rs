@@ -36,6 +36,10 @@
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
 //!   policy   [opt] [leak|floor|hold]     fly the four bugs; NGAIN=<n> sets the gain lookahead
 //!
+//! `--trig libm|mth_lut` picks the trig implementation for any subcommand. `mth_lut` is
+//! Minecraft's own 65536-entry sine table; `libm` (the default) is the platform's, which is
+//! what every number in README-myopic.md was measured with.
+//!
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
 
@@ -911,7 +915,14 @@ fn cmd_policy(optimize: bool, dive: Dive) {
 }
 
 fn main() {
-    let a: Vec<String> = std::env::args().collect();
+    let mut a: Vec<String> = std::env::args().collect();
+    // --trig <libm|mth_lut> anywhere in the line, stripped before positional parsing
+    if let Some(i) = a.iter().position(|x| x == "--trig") {
+        set_trig_mode(a.get(i + 1).unwrap_or_else(|| panic!("--trig needs a mode"))
+                       .parse().unwrap_or_else(|e| panic!("{e}")));
+        a.drain(i..=i + 1);
+    }
+    let a = a;
     let n = |i: usize| a[i].parse().unwrap();
     match a.get(1).map(String::as_str) {
         Some("profiles") => cmd_profiles(),

@@ -6,7 +6,7 @@ mod vec3;
 
 pub use entity::Entity;
 pub use entity::update_fall_flying_movement;
-pub use mth::Mth;
+pub use mth::{Mth, TrigMode, set_trig_mode, sin_table, trig_mode};
 pub use rot::{Pitch, Rot, Yaw};
 pub use state::{
     DeltaKineticEnergy, DeltaPotentialEnergy, DeltaTotalEnergy, KineticEnergy, PotentialEnergy,
