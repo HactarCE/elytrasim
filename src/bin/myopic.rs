@@ -1,14 +1,21 @@
 //! Which *myopic* metrics does the globally optimal climb cycle agree with, phase by phase?
 //!
-//! The optimal cycle splits into four phases, and each one turns out to follow a rule that
-//! needs only the current velocity:
+//! The optimal cycle splits into five phases. Four of them follow a rule that needs only the
+//! current velocity; the entry does not, and is the open problem:
 //!
-//! | phase | ticks | rule                                              |
-//! |-------|-------|---------------------------------------------------|
-//! | dive  | ~190  | hold the flight-path angle (leaking toward ~16.6°) |
-//! | snap  | ~14   | pitch 0                                           |
-//! | flick | ~6    | ramp to about -88°; the values do not matter      |
-//! | gain  | ~86   | argmax over pitch of delta TE over ~20 ticks      |
+//! | phase | ticks | rule                                                  |
+//! |-------|-------|-------------------------------------------------------|
+//! | entry | ~40   | **no rule known** -- pitches hard down, unexplained    |
+//! | dive  | ~150  | hold the flight-path angle exactly; no constants       |
+//! | snap  | ~14   | pitch 0                                               |
+//! | flick | ~6    | ramp to about -88 deg; the values do not matter       |
+//! | gain  | ~86   | argmax over pitch of delta TE over ~20 ticks          |
+//!
+//! The dive was long described as leaking toward ~16.6 deg at a rate `k`. That was an artifact
+//! of asking one rule to cover the entry as well: hand the first ~60 ticks to the optimum and
+//! the exact hold beats every leaking variant (97.9% of the cycle). `k`, `g_star` and the floor
+//! clamp are all entry corrections, kept here only because they still fly the whole cycle
+//! open-loop. See "The leak was an entry correction" in README-myopic.md.
 //!
 //! Everything here is measured against `sim`'s physics with yaw pinned to zero, so the whole
 //! problem lives in the (v_y, v_z) plane. See README-myopic.md for the numbers.
@@ -32,121 +39,9 @@
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
 
+use elytrasim::opt::*;
 use elytrasim::sim::*;
 use rayon::prelude::*;
-
-pub const V0: Vec3 = Vec3::new(0.0, 0.167467, 0.200887);
-const OPTIMAL_CYCLE_RATE: f64 = 1.43335; // blocks/second, REPLAY_PITCHES_300
-
-fn rot(p: f64) -> Rot { Rot { x: p as f32, y: 0.0 } }
-fn gamma(v: Vec3) -> f64 { (-v.y).atan2(v.z).to_degrees() }
-
-fn ticked(s: &State, p: f64) -> State { s.ticked(rot(p)) }
-fn run_n(s: &State, p: f64, n: usize) -> State {
-    let r = rot(p);
-    let mut s = s.clone();
-    for _ in 0..n { s = s.ticked(r) }
-    s
-}
-fn replay(pitches: &[f64]) -> Vec<State> {
-    let mut v = vec![State { pos: Vec3::ZERO, vel: V0 }];
-    for &p in pitches { let s = ticked(v.last().unwrap(), p); v.push(s) }
-    v
-}
-fn read_pitches(path: &str) -> Vec<f64> {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{path}: {e}"))
-        .split_whitespace()
-        .map(|s| s.parse().unwrap())
-        .collect()
-}
-
-/// Coarse sweep for the global argmax, then a ternary refine inside the winning cell.
-/// The objective is not unimodal in pitch, so the sweep has to be global.
-fn argmax<F: Fn(f64) -> f64>(f: F, step: f64) -> f64 {
-    let (mut bp, mut bs) = (0.0, f64::NEG_INFINITY);
-    let n = (180.0 / step).round() as i64;
-    for i in 0..=n {
-        let p = -90.0 + step * i as f64;
-        let v = f(p);
-        if v > bs { bs = v; bp = p }
-    }
-    let (mut a, mut b) = ((bp - step).max(-90.0), (bp + step).min(90.0));
-    for _ in 0..60 {
-        let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-        if f(m1) < f(m2) { a = m1 } else { b = m2 }
-    }
-    let p = 0.5 * (a + b);
-    if f(p) > bs { p } else { bp }
-}
-
-// ---------------------------------------------------------------- the rules
-
-/// GAIN. Pitch maximizing the total-energy change over `n` ticks held constant.
-/// n = 1 is elytrasim's `argmax_over_pitch_of_delta_energy`; the optimum wants n ~ 20.
-pub fn bug_dte_n(s: &State, n: usize) -> f64 {
-    let te = s.total_energy();
-    argmax(|p| run_n(s, p, n).total_energy() - te, 0.125)
-}
-
-/// DIVE. Pitch whose next tick leaves the flight-path angle at `target`.
-///
-/// gamma(v') is monotone in pitch at dive speeds, but not at low speed, where two branches
-/// reach a given angle and only the nose-down one accelerates. So: scan for the last upward
-/// crossing, then bisect. Picking the wrong branch stalls the dive completely.
-pub fn bug_gamma_to(s: &State, target: f64) -> f64 {
-    let h = |p: f64| gamma(ticked(s, p).vel) - target;
-    let (mut lo, mut hi) = (f64::NAN, f64::NAN);
-    let (mut prev, mut pp) = (h(-90.0), -90.0);
-    for i in 1..=1440 {
-        let p = -90.0 + 0.125 * i as f64;
-        let c = h(p);
-        if prev <= 0.0 && c > 0.0 { lo = pp; hi = p }
-        prev = c;
-        pp = p;
-    }
-    if lo.is_nan() { return if h(90.0) < 0.0 { 90.0 } else { -90.0 } }
-    for _ in 0..60 { let m = 0.5 * (lo + hi); if h(m) <= 0.0 { lo = m } else { hi = m } }
-    0.5 * (lo + hi)
-}
-/// DIVE, as flown: hold the current angle, leaking toward `g_star` at rate `k` per tick.
-/// k = 0 is an exact hold, which keeps whatever angle you entered the dive with and loses.
-pub fn bug_dive(s: &State, g_star: f64, k: f64) -> f64 {
-    let g0 = gamma(s.vel);
-    bug_gamma_to(s, g0 + k * (g_star - g0))
-}
-
-/// DIVE, leak-free: hold the current angle, but never shallower than `ceiling()`.
-///
-/// The floor is derived, not fitted: it is the flight-path angle of the fastest steady glide,
-/// which is what the dive's gamma settles onto. Entry overshoots it, and from there the rule is
-/// an exact hold -- no rate constant anywhere.
-pub fn bug_dive_floor(s: &State) -> f64 {
-    bug_gamma_to(s, gamma(s.vel).max(ceiling().1))
-}
-
-/// The fastest steady glide, `argmax_p eq_vz(p)`, as (pitch, gamma). Swept rather than refined:
-/// eq_vz is flat to 1e-9 across the top, so a ternary search there just wanders. Cached, because
-/// each equilibrium is 40k iterations of the velocity map.
-pub fn ceiling() -> (f64, f64) {
-    static C: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
-    *C.get_or_init(|| {
-        let (mut bz, mut bp) = (f64::NEG_INFINITY, 0.0);
-        for i in 0..=1800 {
-            let p = 0.05 * i as f64;
-            let z = equilibrium(p).z;
-            if z > bz { bz = z; bp = p }
-        }
-        (bp, gamma(equilibrium(bp)))
-    })
-}
-
-/// Terminal glide for a constant pitch: iterate the velocity map to its fixed point.
-pub fn equilibrium(p: f64) -> Vec3 {
-    let mut v = Vec3::new(0.0, -0.5, 1.0);
-    for _ in 0..40000 { v = update_fall_flying_movement(v, rot(p)) }
-    v
-}
 
 // ---------------------------------------------------------------- subcommands
 
@@ -301,26 +196,6 @@ fn cmd_sweepn(path: &str, off: usize, lo: usize, hi: usize, nmax: usize) {
 /// dive and gain rules fit it. Used to check the rules across a family of optimal cycles.
 /// Middle cycle of a 3x-tiled schedule, split into its four phases: `(a0, t_snap, t_gain,
 /// t_gend, a1)`. Apex to apex, so the dive is `a0..t_snap` and the gain is `t_gain..t_gend`.
-fn segment(ps: &[f64], st: &[State], tag: &str) -> Option<(usize, usize, usize, usize, usize)> {
-    let apex: Vec<usize> = (1..ps.len() - 1).filter(|&t| st[t].vel.y > 0.0 && st[t + 1].vel.y <= 0.0).collect();
-    if apex.len() < 3 { eprintln!("{tag}: only {} apexes, need 3", apex.len()); return None }
-    let (a0, a1) = (apex[1], apex[2]);                       // middle cycle, apex to apex
-    // The dive ends where the nose comes down and stays down. Require most of the cycle's
-    // speed to be built first: a polished dive often has a level stretch early on, which
-    // otherwise reads as the snap and collapses every window downstream.
-    let v_top = (a0..a1).map(|t| st[t].vel.length()).fold(0.0, f64::max);
-    let t_snap = (a0 + 30..a1 - 3)
-        .find(|&t| ps[t] < 5.0 && ps[t + 1] < 5.0 && ps[t + 2] < 5.0 && st[t].vel.length() > 0.8 * v_top)
-        .unwrap_or(a1);
-    let t_gain = (t_snap..a1).find(|&t| st[t].vel.y > 0.0).unwrap_or(a1);
-    let t_gend = (t_gain + 10..a1).find(|&t| ps[t] > 0.0).unwrap_or(a1);
-    if t_snap <= a0 + 30 || t_gend <= t_gain + 5 {
-        eprintln!("{tag}: could not segment the cycle (snap {t_snap}, gain {t_gain}..{t_gend} in {a0}..{a1})");
-        return None;
-    }
-    Some((a0, t_snap, t_gain, t_gend, a1))
-}
-
 fn cmd_family(path: &str, tag: &str) {
     let ps = read_pitches(path);
     let st = replay(&ps);
@@ -549,27 +424,6 @@ fn cmd_gprofile(path: &str, tag: &str) {
              100.0 * g.iter().enumerate().min_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0 as f64 / m as f64);
 }
 
-// ------------------------------------------------- the price vector, non-circularly
-
-type M2 = [f64; 4];                                          // row-major [a b; c d] over (y, z)
-fn mt_vec(m: &M2, v: (f64, f64)) -> (f64, f64) {             // M^T v
-    (m[0] * v.0 + m[2] * v.1, m[1] * v.0 + m[3] * v.1)
-}
-fn mt_mat(a: &M2, m: &M2) -> M2 {                            // A^T M
-    [a[0] * m[0] + a[2] * m[2], a[0] * m[1] + a[2] * m[3],
-     a[1] * m[0] + a[3] * m[2], a[1] * m[1] + a[3] * m[3]]
-}
-/// d(next velocity)/d(velocity), central differences in the (v_y, v_z) plane.
-fn jac(v: Vec3, p: f64) -> M2 {
-    let h = 1e-6;
-    let r = rot(p);
-    let (ya, yb) = (update_fall_flying_movement(Vec3::new(0.0, v.y - h, v.z), r),
-                    update_fall_flying_movement(Vec3::new(0.0, v.y + h, v.z), r));
-    let (za, zb) = (update_fall_flying_movement(Vec3::new(0.0, v.y, v.z - h), r),
-                    update_fall_flying_movement(Vec3::new(0.0, v.y, v.z + h), r));
-    [(yb.y - ya.y) / (2.0 * h), (zb.y - za.y) / (2.0 * h),
-     (yb.z - ya.z) / (2.0 * h), (zb.z - za.z) / (2.0 * h)]
-}
 
 /// Is the optimum the one-tick argmax of a linear score on next tick's velocity?
 ///
@@ -856,60 +710,6 @@ fn cmd_consist(path: &str, amp: f64) {
              t_gend - t_gain, med(t_gain, t_gend));
 }
 
-// ---------------------------------------------------------------- the policy
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Dive { Leak, Floor, Hold, Target }
-
-#[derive(Clone, Copy, Debug)]
-struct P { g_star: f64, k: f64, s_switch: f64, vy_flick: f64, s_exit: f64, slew: f64, p_push: f64, p_flick: f64, n_gain: usize, dive: Dive }
-
-/// Fly the four bugs, switching on state rather than on the clock, with a pitch rate limit.
-fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) { fly_pre(par, ticks, &[]) }
-
-/// As `fly`, but the first `pre.len()` ticks of *every* dive replay `pre` open-loop instead of
-/// asking the rule. The prefix is part of the control law, not a one-off initial condition, so
-/// the limit cycle it settles into is the honest measure of "what does the rule cost once the
-/// early dive is handled for it".
-fn fly_pre(par: P, ticks: usize, pre: &[f64]) -> (Vec<f64>, Vec<u8>, Vec<State>) {
-    let mut s = State { pos: Vec3::ZERO, vel: V0 };
-    let (mut ps, mut ph, mut st) = (vec![], vec![], vec![s.clone()]);
-    let (mut phase, mut last) = (0u8, 0.0f64);
-    let mut dive_t = 0usize;
-    for _ in 0..ticks {
-        let was = phase;
-        phase = match phase {
-            0 if s.vel.length() >= par.s_switch => 1,     // dive  -> snap
-            1 if s.vel.y >= par.vy_flick        => 2,     // snap  -> flick
-            2 if last <= par.p_flick + 1e-9     => 3,     // flick -> gain, once the ramp lands
-            3 if s.vel.length() <= par.s_exit   => 0,     // gain  -> dive
-            p => p,
-        };
-        if phase == 0 { if was != 0 { dive_t = 0 } } else { dive_t = 0 }
-        let want = match phase {
-            0 if dive_t < pre.len() => pre[dive_t],
-            0 => if gamma(s.vel) < 0.0 { par.p_push } else {
-                match par.dive {
-                    Dive::Leak => bug_dive(&s, par.g_star, par.k),
-                    Dive::Floor => bug_dive_floor(&s),
-                    Dive::Hold => bug_gamma_to(&s, gamma(s.vel)),
-                    Dive::Target => bug_gamma_to(&s, ceiling().1),
-                }
-            },
-            1 => 0.0,
-            2 => par.p_flick,
-            _ => bug_dte_n(&s, par.n_gain),
-        };
-        // the prefix is the optimum's own schedule, so do not slew-limit it
-        let p = if phase == 0 && dive_t < pre.len() { want }
-                else { want.clamp(last - par.slew, last + par.slew) };
-        if phase == 0 { dive_t += 1 }
-        s = ticked(&s, p);
-        last = p;
-        ps.push(p); ph.push(phase); st.push(s.clone());
-    }
-    (ps, ph, st)
-}
 /// Two things the flatness result raises but does not answer.
 ///
 /// `sides`: the one-tick sensitivity in `sens` is a symmetric second difference, which hides
@@ -1055,7 +855,6 @@ fn cmd_ksweep() {
     }
 }
 
-fn rate_of(par: P, t: usize) -> f64 { fly(par, t).2[t].pos.y / t as f64 * 20.0 }
 
 fn cmd_policy(optimize: bool, dive: Dive) {
     let ticks = 1500;
