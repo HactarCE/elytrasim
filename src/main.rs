@@ -105,7 +105,7 @@ fn main() -> eframe::Result {
                                 ui.label("y/z blend:");
                                 ui.add(egui::Slider::new(
                                     &mut goodness_params.y_z_blend,
-                                    0.0..=1.0,
+                                    -1.0..=1.0,
                                 ));
                             });
 
@@ -194,9 +194,9 @@ fn main() -> eframe::Result {
                                 ui.label("pitch:");
                                 ui.add(egui::Slider::new(&mut pitches[pitch_idx], -90.0..=90.0));
 
-                                // if ui.button("print pitches").clicked() {
-                                //     println!("{:#?}", pitches);
-                                // }
+                                if ui.button("print pitches").clicked() {
+                                    println!("{:#?}", pitches);
+                                }
                                 // if ui.button("print speed pitches").clicked() {
                                 //     for tick in (0..pitches.len()).step_by(5) {
                                 //         let state = Pitches(pitches[..tick].to_owned())
