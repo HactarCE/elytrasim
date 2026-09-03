@@ -684,7 +684,8 @@ fn cmd_singular(path: &str) {
         show("flick", t_gain, t_gend); show("gain", t_gend, a1);
     } else {
         show("all", 0, n);
-        for (name, lo, hi) in [("dive", 20, 190), ("snap", 190, 205), ("flick", 205, 213), ("gain", 213, 295)] {
+        for (name, lo, hi) in [("entry", 1, 20), ("entry30", 1, 30), ("dive", 20, 190),
+                               ("snap", 190, 205), ("flick", 205, 213), ("gain", 213, 295)] {
             show(name, lo, hi);
         }
     }

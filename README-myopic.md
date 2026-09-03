@@ -273,6 +273,10 @@ measures the curvature of the score at the optimum's own pitch:
 | `d^2 S/dp^2` | 1.5e-6 | 1.3e-6 | 2.8e-5 | 2.25e-5 |
 | half-width within 1e-6 of the max | 1.17° | 7.35° | 7.37° | 0.43° |
 
+The **entry** is flatter still — `5.8e-7`, half-width `2.0°`, 2.5x flatter than the dive and 38x
+flatter than the gain. `mu` is least able to pin the pitch in exactly the phase that is still
+unsolved.
+
 The dive's score is **15x flatter** than the gain's. A fraction of a percent of error in `mu` throws
 the argmax by ten degrees there — which is exactly what happens with `REPLAY_PITCHES_300`, whose
 `mu` agrees with the tangency direction to ~1% and still shows a 10° argmax gap through the dive.
@@ -292,6 +296,20 @@ that the abstract measure meant something. But the headline is the column I had 
 0.41 b/s across the snap (29% of the climb), 0.077 b/s across the whole dive (5%), 0.05 b/s across
 the gain (3.5%). The flick drops back to dive-level insensitivity, which is the quantitative
 version of "the flick's values do not matter".
+
+**Flatness is not on its own an argument that errors are dangerous, and it is not on its own an
+argument that they are safe.** It says both "hard to find the top" and "cheap to miss it". What
+decides between them is whether the error is *correlated*. Independent per-tick jitter in the dive
+is free; a one-signed bias is not, because the cross terms dominate:
+
+| whole-dive shift | 1° | 3° | 5° | 10° |
+|---|---|---|---|---|
+| b/s lost | 0.001–0.013 | 0.050–0.077 | 0.17–0.18 | **0.57–0.86** |
+
+A 10° correlated shift costs 40–60% of the climb rate, roughly 30x what the same amplitude costs
+applied tick-independently. This is the form the `mu` hazard actually takes: a biased `mu` produces
+a one-signed offset across the whole dive (the adjoint on `REPLAY_PITCHES_300` sits at a steady
++10 to +13° over ticks 40–180, not scatter), which lands in the expensive column, not the cheap one.
 
 This is a caveat on everything above. The dive rule's 0.27° median error is worth about 5e-7 b/s —
 the dive fits a clean rule partly because nearly anything reasonable fits there. The rules are
