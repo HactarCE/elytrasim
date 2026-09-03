@@ -144,22 +144,42 @@ fn cmd_pilot(a: &Args) {
         |s| s.split(',').map(|x| x.parse().unwrap()).collect());
     let lams: Vec<f64> = a.get("--lams").map_or(vec![-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0],
         |s| s.split(',').map(|x| x.parse().unwrap()).collect());
-    let vys: Vec<f64> = a.get("--vys").map_or(vec![0.0, 0.1, 0.2], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
-    let vzs: Vec<f64> = a.get("--vzs").map_or(vec![0.0, 0.1, 0.2], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
+    // --vels gives explicit (vy:vz) points; --vys/--vzs give their outer product. The critical
+    // points of the velocity box are its four corners, its centre, and the reference operating
+    // point, which is not a corner and is the only one with a known answer.
+    let vels: Vec<(f64, f64)> = match a.get("--vels") {
+        Some(s) => s.split(',').map(|p| {
+            let (y, z) = p.split_once(':').unwrap_or_else(|| panic!("--vels wants vy:vz, got {p:?}"));
+            (y.parse().unwrap(), z.parse().unwrap())
+        }).collect(),
+        None => {
+            let f = |k: &str| -> Vec<f64> {
+                a.get(k).map_or(vec![0.0, 0.1, 0.2], |s| s.split(',').map(|x| x.parse().unwrap()).collect())
+            };
+            let (vys, vzs) = (f("--vys"), f("--vzs"));
+            vys.iter().flat_map(|&y| vzs.iter().map(move |&z| (y, z))).collect()
+        }
+    };
 
     let mut cells: Vec<Objective> = vec![];
-    for &n in &ns { for &lambda in &lams { for &vy in &vys { for &vz in &vzs {
+    for &n in &ns { for &lambda in &lams { for &(vy, vz) in &vels {
         cells.push(Objective { v0: Vec3::new(0.0, vy, vz), n, lambda });
-    }}}}
+    }}}
     eprintln!("pilot: {} cells, {passes} passes each, trig {}", cells.len(), trig_mode());
 
     println!("{:>5} {:>8} {:>8} {:>8} {:>10} {:>10} {:>9} {:>9} {:>10} {:>10} {:>8}",
              "n", "lambda", "vy0", "vz0", "J_seed", "J_opt", "dy", "dz", "residual", "close", "passes");
     let t0 = Instant::now();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let total = cells.len();
     let rows: Vec<String> = cells.par_iter().map(|obj| {
         let seed = seed_from_policy(obj);
         let j_seed = obj.eval(&seed);
         let p = solve(obj, &seed, PolishOpts { max_passes: passes, ..Default::default() });
+        let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if k % 10 == 0 || k == total {
+            eprintln!("  {k}/{total} cells, {:.0}s elapsed", t0.elapsed().as_secs_f64());
+        }
         let st = obj.replay(&p.pitches);
         let sn = st.last().unwrap();
         write_profile(&cell_path(&dir, obj), &p);
@@ -169,6 +189,141 @@ fn cmd_pilot(a: &Args) {
     }).collect();
     for r in rows { println!("{r}") }
     eprintln!("pilot: {:.1}s total", t0.elapsed().as_secs_f64());
+}
+
+// ---------------------------------------------------------------- the full sweep
+
+/// The grid. Kept in one place so `run`, `manifest` and the resume check cannot disagree.
+struct Grid { ns: Vec<usize>, lams: Vec<f64>, vys: Vec<f64>, vzs: Vec<f64> }
+
+impl Grid {
+    fn from(a: &Args) -> Grid {
+        let f = |k: &str, d: Vec<f64>| -> Vec<f64> {
+            a.get(k).map_or(d, |s| s.split(',').map(|x| x.parse().unwrap()).collect())
+        };
+        Grid {
+            ns: a.get("--ns").map_or((100..=500).step_by(10).collect(),
+                |s| s.split(',').map(|x| x.parse().unwrap()).collect()),
+            lams: f("--lams", (-20..=20).map(|i| i as f64 * 0.05).collect()),
+            vys: f("--vys", (0..=10).map(|i| i as f64 * 0.02).collect()),
+            vzs: f("--vzs", (0..=10).map(|i| i as f64 * 0.02).collect()),
+        }
+    }
+    /// Index of the value nearest `x`, for placing the anchor.
+    fn nearest(v: &[f64], x: f64) -> usize {
+        (0..v.len()).min_by(|&i, &j| {
+            (v[i] - x).abs().partial_cmp(&(v[j] - x).abs()).unwrap()
+        }).unwrap()
+    }
+}
+
+/// Solve one `(vy0, vz0)` shard: anchor at the cell nearest the reference operating point, then
+/// breadth-first outward over the `(n, lambda)` plane, each cell warm-started from the solved
+/// neighbor that reached it. Continuation is the whole speedup, and it also keeps the heuristic
+/// seed out of the parts of the grid where it has no reason to work -- it is asked once, at the
+/// anchor, and never again.
+fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: bool) -> (usize, usize) {
+    let ns_f: Vec<f64> = g.ns.iter().map(|&n| n as f64).collect();
+    let (ni, li) = (Grid::nearest(&ns_f, 300.0), Grid::nearest(&g.lams, 0.0));
+    let (nn, nl) = (g.ns.len(), g.lams.len());
+    let cell = |i: usize, j: usize| Objective {
+        v0: Vec3::new(0.0, vy, vz), n: g.ns[i], lambda: g.lams[j],
+    };
+
+    let mut solved: Vec<Option<Vec<f64>>> = vec![None; nn * nl];
+    let mut queue = std::collections::VecDeque::from([(ni, li, None::<(usize, usize)>)]);
+    let mut seen = vec![false; nn * nl];
+    seen[ni * nl + li] = true;
+    let (mut done, mut skipped) = (0, 0);
+
+    while let Some((i, j, from)) = queue.pop_front() {
+        let obj = cell(i, j);
+        let path = cell_path(dir, &obj);
+        // Warm start from whichever solved neighbor got here first; the anchor has none.
+        let init = match from.and_then(|(a, b)| solved[a * nl + b].clone()) {
+            Some(prev) => stretch(&prev, obj.n),
+            None => seed_from_policy(&obj),
+        };
+        // Resume: a cell whose file already matches this objective and physics is not redone,
+        // but its pitches still seed the neighbours, so a killed job costs one cell.
+        let existing = (!force).then(|| std::fs::read_to_string(&path).ok()).flatten()
+            .and_then(|t| Profile::parse(&t).ok())
+            .filter(|p| p.obj == obj && p.trig == trig_mode() && p.pitches.len() == obj.n);
+        let pitches = match existing {
+            Some(p) => { skipped += 1; p.pitches }
+            None => {
+                let prof = solve(&obj, &init, opts);
+                write_profile(&path, &prof);
+                done += 1;
+                if done % 25 == 0 { eprintln!("  vy{vy:+.3} vz{vz:+.3}: {done} solved, {skipped} resumed") }
+                prof.pitches
+            }
+        };
+        solved[i * nl + j] = Some(pitches);
+
+        for (di, dj) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+            let (a, b) = (i as i64 + di, j as i64 + dj);
+            if a < 0 || b < 0 || a as usize >= nn || b as usize >= nl { continue }
+            let (a, b) = (a as usize, b as usize);
+            if std::mem::replace(&mut seen[a * nl + b], true) { continue }
+            queue.push_back((a, b, Some((i, j))));
+        }
+    }
+    (done, skipped)
+}
+
+fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
+    let list = |v: &[f64]| v.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(", ");
+    let text = format!(
+"{{
+  \"commit\": \"{}\",
+  \"trig\": \"{}\",
+  \"objective\": \"J = TE(s_n) + w*z_n, TE in blocks (KE = |v|^2/(2g), PE = y), v_n free\",
+  \"y_ref\": {Y_REF}, \"z_ref\": {Z_REF},
+  \"axes\": {{
+    \"n\": [{}],
+    \"lambda\": [{}],
+    \"vy0\": [{}],
+    \"vz0\": [{}]
+  }},
+  \"cells\": {},
+  \"polish\": {{ \"max_passes\": {}, \"global_every\": {}, \"global_step\": {}, \"local_span\": {}, \"local_step\": {}, \"tol\": {} }},
+  \"fingerprint\": \"{:016x}\"
+}}
+", commit_hash(), trig_mode(),
+   g.ns.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "),
+   list(&g.lams), list(&g.vys), list(&g.vzs),
+   g.ns.len() * g.lams.len() * g.vys.len() * g.vzs.len(),
+   opts.max_passes, opts.global_every, opts.global_step, opts.local_span, opts.local_step, opts.tol,
+   physics_fingerprint());
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(format!("{dir}/manifest.json"), text).unwrap();
+}
+
+fn cmd_run(a: &Args) {
+    let dir = a.get("--out").unwrap_or("sweep").to_string();
+    let g = Grid::from(a);
+    let opts = a.opts();
+    let force = a.0.iter().any(|x| x == "--force");
+    // A shard is one (vy0, vz0) cell, so it is a directory and an independent job.
+    let mut shards: Vec<(f64, f64)> = vec![];
+    for &vy in &g.vys { for &vz in &g.vzs { shards.push((vy, vz)) } }
+    if let Some(sel) = a.get("--shard") {
+        let pick: Vec<usize> = sel.split(',').map(|x| x.parse().unwrap()).collect();
+        shards = pick.iter().map(|&i| shards[i]).collect();
+    }
+    write_manifest(&dir, &g, opts);
+    eprintln!("sweep: {} shards x {} cells, {} passes, trig {}, commit {}",
+              shards.len(), g.ns.len() * g.lams.len(), opts.max_passes, trig_mode(), commit_hash());
+    let t0 = Instant::now();
+    let totals: Vec<(usize, usize)> = shards.par_iter()
+        .map(|&(vy, vz)| run_shard(&dir, &g, vy, vz, opts, force)).collect();
+    let (d, s): (usize, usize) = totals.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    eprintln!("sweep: {d} solved, {s} resumed, {:.0}s", t0.elapsed().as_secs_f64());
+}
+
+fn cmd_fingerprint() {
+    println!("{:016x}  trig {}  commit {}", physics_fingerprint(), trig_mode(), commit_hash());
 }
 
 // ---------------------------------------------------------------- main
@@ -184,7 +339,21 @@ fn main() {
         Some("verify") => cmd_verify(&a.0[2..].iter().filter(|s| !s.starts_with("--")).cloned().collect::<Vec<_>>()),
         Some("bench") => cmd_bench(&a),
         Some("pilot") => cmd_pilot(&a),
-        _ => eprintln!("{}", "usage: sweep <polish|verify|bench|pilot|run> ...\n\
+        Some("run") => cmd_run(&a),
+        Some("fingerprint") => cmd_fingerprint(),
+        Some("structure") => {
+            for f in a.0[2..].iter().filter(|s| !s.starts_with("--")) {
+                let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+                let ps = Profile::parse(&text).map(|p| p.pitches).unwrap_or_else(|_|
+                    text.lines().flat_map(|l| l.split('#').next().unwrap_or("").split_whitespace())
+                        .map(|s| s.parse().unwrap()).collect());
+                let sh = shape(&ps);
+                println!("{:<28} n {:>4}  {:>9}  pitch [{:>7.2}, {:>6.2}]  flat {:>3}",
+                         f.rsplit('/').next().unwrap(), ps.len(), sh.structure.to_string(),
+                         sh.pitch_min, sh.pitch_max, sh.flat_ticks);
+            }
+        }
+        _ => eprintln!("{}", "usage: sweep <polish|verify|bench|pilot|run|structure|fingerprint> ...\n\
                              see the module docs at the top of src/bin/sweep.rs"),
     }
 }

@@ -538,3 +538,81 @@ pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
     while out.len() < n { out.push(r[out.len() % r.len()] as f64) }
     out
 }
+
+// ---------------------------------------------------------------- determinism
+
+/// FNV-1a over the raw bits of a canonical replay, for checking that two machines agree.
+///
+/// The `Mth` table removes the f32 trig divergence between platforms, but `lift_force` still
+/// goes through f64 `cos` in `entity.rs` -- faithfully, because vanilla's `liftForce` really is
+/// `Math.cos` on a double -- so bit-identity across libms is *not* guaranteed. This makes any
+/// drift a number that shows up in a diff rather than a silent change in the corpus.
+pub fn physics_fingerprint() -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut feed = |b: u64| { h ^= b; h = h.wrapping_mul(0x100000001b3) };
+    let mut v = Vec3::new(0.0, 0.167467, 0.200887);
+    for i in 0..20_000i32 {
+        // sweep the whole pitch range, and restart when the state runs away so the walk stays
+        // in the region the sweep actually visits
+        let p = ((i % 361) - 180) as f64 * 0.5;
+        v = update_fall_flying_movement(v, rot(p));
+        if !v.y.is_finite() || v.y.abs() > 1e6 { v = Vec3::new(0.0, 0.167467, 0.200887) }
+        feed(v.y.to_bits());
+        feed(v.z.to_bits());
+    }
+    h
+}
+
+// ---------------------------------------------------------------- structure
+
+/// Whether a schedule still flies the pump cycle, or has fallen into the glide.
+///
+/// This is *not* the same question as whether it gains energy, and conflating the two is a
+/// mistake: at short horizons a genuine cycle can lose height and still be a cycle. A 120-tick
+/// optimum loses 10.5 blocks while showing the full dive / snap / flick / gain structure, and
+/// is not collapsed. What collapse means is that the schedule stops pumping and just holds a
+/// glide -- pitch stays in a narrow band a few degrees below level, never noses down to build
+/// speed and never flicks up to cash it in.
+///
+/// The two regimes are separated by a mile, so the thresholds are not delicate: measured
+/// against known-collapsed and known-uncollapsed 110-, 115- and 120-tick optima, the cyclic
+/// ones span roughly [-55, +90] degrees and the collapsed ones [-15.3, +0.10].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Structure {
+    /// Dives to build speed, snaps flat, flicks up, and eases down through the gain.
+    Cyclic,
+    /// Holds a glide. No nose-down dive and no flick.
+    Collapsed,
+}
+
+/// A schedule noses down past this to build speed. The collapsed glide never exceeds +0.11.
+const DIVE_PITCH: f64 = 20.0;
+/// And flicks up past this to convert it. The collapsed glide bottoms out near -15.3.
+const FLICK_PITCH: f64 = -30.0;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Shape {
+    pub structure: Structure,
+    pub pitch_min: f64,
+    pub pitch_max: f64,
+    /// Ticks spent within 1 degree of level after the dive -- the snap.
+    pub flat_ticks: usize,
+}
+
+pub fn shape(pitches: &[f64]) -> Shape {
+    let pitch_max = pitches.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let pitch_min = pitches.iter().cloned().fold(f64::INFINITY, f64::min);
+    let flat_ticks = pitches.iter().filter(|p| p.abs() <= 1.0).count();
+    let structure = if pitch_max > DIVE_PITCH && pitch_min < FLICK_PITCH {
+        Structure::Cyclic
+    } else {
+        Structure::Collapsed
+    };
+    Shape { structure, pitch_min, pitch_max, flat_ticks }
+}
+
+impl std::fmt::Display for Structure {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self { Structure::Cyclic => "cyclic", Structure::Collapsed => "COLLAPSED" })
+    }
+}
