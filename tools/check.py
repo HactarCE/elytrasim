@@ -25,7 +25,8 @@ def fl(h, k, d=float('nan')):
     except Exception: return d
 
 bad  = [r for r in rows if fl(r[1], 'lag1') < 0.2]
-coll = [r for r in rows if r[1].get('structure') == 'collapsed']
+coll = [r for r in rows if r[1].get('structure') == 'COLLAPSED']
+multi = [r for r in rows if r[1].get('structure') == 'MULTICYCLE']
 l1   = sorted(fl(r[1], 'lag1') for r in rows)
 q    = lambda p: l1[min(len(l1)-1, int(p*len(l1)))]
 
@@ -34,6 +35,10 @@ print(f"  lag1   min {l1[0]:+.3f}   p10 {q(.10):+.3f}   median {q(.50):+.3f}   "
       f"p90 {q(.90):+.3f}   max {l1[-1]:+.3f}")
 print(f"  degenerate (lag1 < 0.2): {len(bad)}  ({100*len(bad)/len(rows):.1f}%)")
 print(f"  collapsed (left the cyclic branch): {len(coll)}")
+print(f"  multi-cycle (more than one cycle in the horizon): {len(multi)}")
+if multi:
+    print("    " + ", ".join(f"n{m[1].get('n')}/lam{m[1].get('lambda')}" for m in multi[:12])
+          + (" ..." if len(multi) > 12 else ""))
 
 by = collections.Counter(os.path.basename(os.path.dirname(r[0])) for r in bad)
 if by:
