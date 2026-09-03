@@ -39,7 +39,12 @@ impl Args {
         }
     }
     fn opts(&self) -> PolishOpts {
-        PolishOpts { max_passes: self.num("--passes", 200usize), ..Default::default() }
+        PolishOpts {
+            max_passes: self.num("--passes", 200usize),
+            tol: self.num("--tol", PolishOpts::default().tol),
+            block: self.num("--block", PolishOpts::default().block),
+            ..Default::default()
+        }
     }
 }
 
@@ -341,6 +346,40 @@ fn main() {
         Some("pilot") => cmd_pilot(&a),
         Some("run") => cmd_run(&a),
         Some("fingerprint") => cmd_fingerprint(),
+        Some("residuals") => {
+            let f = &a.0[2];
+            let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+            let pr = Profile::parse(&text).unwrap_or_else(|e| panic!("{f}: {e}"));
+            set_trig_mode(pr.trig);
+            let r = residuals(&pr.obj, &pr.pitches, PolishOpts::default().global_step);
+            let (pos, neg) = (r.iter().filter(|x| x.0 > 1e-9).count(),
+                              r.iter().filter(|x| x.0 < -1e-9).count());
+            let sum: f64 = r.iter().map(|x| x.0).sum();
+            let absum: f64 = r.iter().map(|x| x.0.abs()).sum();
+            let gain: f64 = r.iter().map(|x| x.1).sum();
+            eprintln!("{}: n {}, {} want more pitch, {} want less, {} still",
+                      f.rsplit('/').next().unwrap(), r.len(), pos, neg, r.len() - pos - neg);
+            eprintln!("  sum of moves {sum:+.3} deg, sum of |moves| {absum:.3} deg  ->  \
+                       coherence {:.3}", if absum > 0.0 { sum / absum } else { 0.0 });
+            eprintln!("  sum of per-tick gains {gain:.4} blocks, largest {:.2e}",
+                      r.iter().map(|x| x.1).fold(0.0, f64::max));
+            let deltas: Vec<f64> = r.iter().map(|x| x.0).collect();
+            let (lag1, run_len, ks) = delta_structure(&deltas);
+            eprintln!("  lag-1 correlation of the moves {lag1:+.3}, mean same-sign run {run_len:.1} ticks");
+            eprint!("  energy in the first k cosine modes:");
+            for (k, e) in &ks { eprint!("  k={k}: {:.0}%", 100.0 * e) }
+            eprintln!();
+            match jacobi_step(&pr.obj, &pr.pitches, PolishOpts::default().global_step) {
+                Some((_, alpha, g)) => eprintln!(
+                    "  best whole-schedule step: alpha {alpha:.3} worth {g:.4} blocks \
+                     ({:.1}% of the per-tick total)", 100.0 * g / gain.max(1e-12)),
+                None => eprintln!("  no whole-schedule step improves J"),
+            }
+            println!("tick,pitch,delta,gain");
+            for (t, (d, g)) in r.iter().enumerate() {
+                println!("{t},{:.5},{d:+.5},{g:.3e}", pr.pitches[t]);
+            }
+        }
         Some("structure") => {
             for f in a.0[2..].iter().filter(|s| !s.starts_with("--")) {
                 let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
@@ -353,7 +392,7 @@ fn main() {
                          sh.pitch_min, sh.pitch_max, sh.flat_ticks);
             }
         }
-        _ => eprintln!("{}", "usage: sweep <polish|verify|bench|pilot|run|structure|fingerprint> ...\n\
+        _ => eprintln!("{}", "usage: sweep <polish|verify|bench|pilot|run|structure|residuals|fingerprint> ...\n\
                              see the module docs at the top of src/bin/sweep.rs"),
     }
 }

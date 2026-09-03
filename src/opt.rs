@@ -286,15 +286,32 @@ pub struct PolishOpts {
     pub local_span: f64,
     pub local_step: f64,
     pub ternary_iters: usize,
-    /// Stop when a pass gains less than this in `J` (blocks).
+    /// Stop once the schedule has gained less than this many blocks of `J` over the last
+    /// `stall_window` passes. Default 0.1: past that the optimizer is tuning below the
+    /// precision anyone could fly, and the extra precision is the part most likely to be
+    /// brittle.
+    ///
+    /// Note what this is *not*. The per-tick residual that `certify` reports bounds only
+    /// single-coordinate moves, and a schedule can sit blocks below a better optimum with no
+    /// single tick improving by more than a hundredth -- because reaching it needs many ticks
+    /// to move together. Measured: a 130-tick cell stopped at residual 0.066 came out 4.7
+    /// blocks short of the same cell polished properly. So convergence is judged on progress
+    /// in `J`, and the residual is reported as a certificate rather than used as a target.
     pub tol: f64,
+    /// Block size for `block_step`, run before each global pass. 0 disables it, which is the
+    /// default: it is a wash on wall-clock. See `block_step`.
+    pub block: usize,
+    /// How many passes of near-no-progress to require before stopping. Coordinate ascent on
+    /// this problem stalls and then jumps -- a global pass finds a new basin every so often --
+    /// so a single quiet pass means nothing.
+    pub stall_window: usize,
 }
 
 impl Default for PolishOpts {
     fn default() -> Self {
         PolishOpts {
             max_passes: 200, global_every: 4, global_step: 0.25,
-            local_span: 8.0, local_step: 0.05, ternary_iters: 70, tol: 1e-9,
+            local_span: 8.0, local_step: 0.05, ternary_iters: 70, tol: 0.1, block: 0, stall_window: 12,
         }
     }
 }
@@ -316,7 +333,7 @@ pub struct Polished {
 /// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
 /// returned is the one that will actually be flown, and its score is the score of flying it.
 fn best_pitch_at(obj: &Objective, s: &State, tail: &[f64], cur: f64, lo: f64, hi: f64,
-                 step: f64, ternary_iters: usize) -> (f64, f64) {
+                 step: f64, ternary_iters: usize) -> (f64, f64, f64) {
     let score = |p: f64| -> f64 {
         let mut st = ticked(s, p);
         for &q in tail { st = ticked(&st, q) }
@@ -325,7 +342,8 @@ fn best_pitch_at(obj: &Objective, s: &State, tail: &[f64], cur: f64, lo: f64, hi
     let steps = ((hi - lo) / step).round() as i64;
     // The tail replays are independent, so the sweep is exactly parallel -- no approximation,
     // just the same evaluations on more cores.
-    let (mut bp, mut bs) = (cur, score(cur));
+    let j_cur = score(cur);
+    let (mut bp, mut bs) = (cur, j_cur);
     let (gp, gs) = (0..steps + 1)
         .into_par_iter()
         .map(|i| { let p = lo + step * i as f64; (p, score(p)) })
@@ -343,7 +361,22 @@ fn best_pitch_at(obj: &Objective, s: &State, tail: &[f64], cur: f64, lo: f64, hi
     let rs = score(refined);
     let bp32 = bp as f32 as f64;
     let bs32 = if bp32 == bp { bs } else { score(bp32) };
-    if rs > bs32 { (refined, rs) } else { (bp32, bs32) }
+    let (p, j) = if rs > bs32 { (refined, rs) } else { (bp32, bs32) };
+    (p, j, j_cur)
+}
+
+/// What a full global pass would do at every tick, without doing it: the best pitch, the move
+/// it implies, and what that move is worth. This is the raw material for both `certify` (the
+/// largest gain) and for asking whether the moves point the same way.
+pub fn residuals(obj: &Objective, pitches: &[f64], step: f64) -> Vec<(f64, f64)> {
+    let states = obj.replay(pitches);
+    (0..pitches.len())
+        .map(|t| {
+            let (p, j, j_cur) = best_pitch_at(obj, &states[t], &pitches[t + 1..], pitches[t],
+                                              -90.0, 90.0, step, 70);
+            (p - pitches[t], j - j_cur)
+        })
+        .collect()
 }
 
 /// One full global pass that changes nothing, reporting the largest gain it could have made.
@@ -357,11 +390,152 @@ pub fn certify(obj: &Objective, pitches: &[f64], step: f64) -> f64 {
     (0..pitches.len())
         .map(|t| {
             let base = obj.eval(pitches);
-            let (_, j) = best_pitch_at(obj, &states[t], &pitches[t + 1..], pitches[t],
-                                       -90.0, 90.0, step, 70);
+            let (_, j, _) = best_pitch_at(obj, &states[t], &pitches[t + 1..], pitches[t],
+                                          -90.0, 90.0, step, 70);
             j - base
         })
         .fold(0.0, f64::max)
+}
+
+/// Is the per-tick correction *smooth in t*?
+///
+/// A different question from whether the corrections share a sign overall. A delta that is
+/// smoothly positive over the first half and negative over the second sums to nothing, so it
+/// looks like balanced noise in bulk, while being highly structured and worth exploiting.
+/// What matters for a big-step method is whether neighbouring ticks want the same correction,
+/// because then the whole error lives in a handful of smooth modes.
+///
+/// Returns the lag-1 correlation of the deltas, the mean length of a same-sign run, and the
+/// fraction of the deltas' energy captured by the first `k` cosine modes for a few `k`.
+pub fn delta_structure(d: &[f64]) -> (f64, f64, Vec<(usize, f64)>) {
+    let n = d.len();
+    // Ticks whose pitch is already best are exactly 0, and a run of zeros correlates with
+    // itself perfectly -- which would report a smooth correction where there is no correction
+    // at all. Measure on the ticks that actually want to move.
+    let live: Vec<f64> = d.iter().cloned().filter(|x| x.abs() > 1e-9).collect();
+    let m = live.len();
+    let lag1 = if m > 2 {
+        let mean = live.iter().sum::<f64>() / m as f64;
+        let var: f64 = live.iter().map(|x| (x - mean).powi(2)).sum();
+        // adjacent *in the schedule*, both live
+        let pairs: Vec<(f64, f64)> = (0..n - 1)
+            .filter(|&t| d[t].abs() > 1e-9 && d[t + 1].abs() > 1e-9)
+            .map(|t| (d[t] - mean, d[t + 1] - mean)).collect();
+        if var > 0.0 && !pairs.is_empty() {
+            pairs.iter().map(|(a, b)| a * b).sum::<f64>() / var * (m as f64 / pairs.len() as f64)
+        } else { 0.0 }
+    } else { 0.0 };
+
+    let mut runs = 1usize;
+    for t in 1..m { if (live[t] >= 0.0) != (live[t - 1] >= 0.0) { runs += 1 } }
+    let run_len = m as f64 / runs as f64;
+
+    // DCT-II. O(n^2), and n is at most a few hundred.
+    let total: f64 = d.iter().map(|x| x * x).sum();
+    let coef: Vec<f64> = (0..n).map(|k| {
+        (0..n).map(|t| d[t] * (std::f64::consts::PI / n as f64
+                               * (t as f64 + 0.5) * k as f64).cos()).sum::<f64>()
+    }).collect();
+    // Parseval for DCT-II: sum_k c_k^2 * (2 - [k==0]) / (2n) = sum_t d_t^2
+    let energy = |k: usize| -> f64 {
+        let e: f64 = (0..k.min(n)).map(|j| coef[j] * coef[j] * if j == 0 { 1.0 } else { 2.0 }).sum();
+        if total > 0.0 { (e / (2.0 * n as f64) / total).min(1.0) } else { 0.0 }
+    };
+    let ks = [1, 2, 4, 8, 16, 32].iter().map(|&k| (k, energy(k))).collect();
+    (lag1, run_len, ks)
+}
+
+/// Move every tick toward its own best pitch at once, and line-search how far to go.
+///
+/// Coordinate ascent changes one tick at a time, so when many ticks want to move the same way
+/// it makes the move n times over, each one partly undone by its neighbours. Measured: a
+/// schedule 4.7 blocks short of its optimum had 0.79 coherence -- the sum of its per-tick moves
+/// was 709 degrees against 901 degrees of absolute movement, nearly all one-signed -- while a
+/// well-polished one sat at -0.09, balanced noise. So the one-sidedness is a symptom of being
+/// stuck, and this step is the cure for exactly that case and a no-op otherwise.
+///
+/// Measured, and it does not pay, which is why it is off by default. The best step is only
+/// `alpha` 0.23 to 0.43 and captures 23-43% of the summed per-tick gains: the ticks want to
+/// move together but they *interact*, so moving them all at once invalidates each one's target.
+/// Coordinate ascent already handles that by updating the state as it sweeps, and matches or
+/// beats this at every pass count. Kept because the diagnostic is the evidence.
+///
+/// Costs one global pass plus a handful of replays. Returns `None` when no step helps.
+pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64) -> Option<(Vec<f64>, f64, f64)> {
+    let d = residuals(obj, pitches, step);
+    let base = obj.eval(pitches);
+    let at = |alpha: f64| -> Vec<f64> {
+        pitches.iter().zip(&d)
+            .map(|(p, (delta, _))| (p + alpha * delta).clamp(-90.0, 90.0) as f32 as f64)
+            .collect()
+    };
+    // Coarse sweep then bisection-free refine: the gain along alpha is not unimodal either,
+    // since the schedule crosses the pitch-0 corner at different alphas for different ticks.
+    let (mut best_a, mut best_j) = (0.0, base);
+    let mut alpha = 0.02;
+    while alpha <= 1.6 {
+        let j = obj.eval(&at(alpha));
+        if j > best_j { best_j = j; best_a = alpha }
+        alpha += 0.02;
+    }
+    if best_a == 0.0 { return None }
+    // refine around the winner
+    let (lo, hi) = (best_a - 0.02, best_a + 0.02);
+    for i in 1..20 {
+        let a = lo + (hi - lo) * i as f64 / 20.0;
+        let j = obj.eval(&at(a));
+        if j > best_j { best_j = j; best_a = a }
+    }
+    Some((at(best_a), best_a, best_j - base))
+}
+
+/// Line-search a separate step size for each block of ticks.
+///
+/// The corrections are locally correlated but not globally so: lag-1 around +0.46 to +0.50 on
+/// an under-converged cell, with same-sign runs of 15 to 24 ticks, while only a quarter of
+/// their energy sits in the first 32 cosine modes. That is the shape of an error that is
+/// roughly constant over a phase and unrelated between phases -- so one step size for the
+/// whole schedule averages independent corrections against each other and finds nothing, and a
+/// low-mode projection misses them too. A step size per block matches the measured structure.
+///
+/// Blocks are taken greedily, so each one's line search already sees the blocks before it.
+///
+/// Measured, and it is a wash, which is why it is off by default. It does beat a single
+/// whole-schedule step, confirming the diagnosis -- but the block size barely matters (5
+/// through 80 all land within 0.01 blocks), so the gain is not really about matching the block
+/// structure, and on wall-clock it buys at 16 passes what plain coordinate ascent reaches at
+/// 19, while costing 22% more per pass.
+///
+/// The underlying reason no big step pays: each tick's target is computed holding the others
+/// fixed, and they interact strongly. The best step along the aggregate direction is only
+/// `alpha` 0.23 to 0.43 and captures 23-43% of the summed per-tick gains. Coordinate ascent
+/// already accounts for the interaction by updating the state as it sweeps, which is exactly
+/// what a simultaneous step throws away.
+pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize)
+    -> Option<(Vec<f64>, f64)> {
+    let d = residuals(obj, pitches, step);
+    let base = obj.eval(pitches);
+    let mut cur = pitches.to_vec();
+    let mut best_j = base;
+    for start in (0..pitches.len()).step_by(block) {
+        let end = (start + block).min(pitches.len());
+        let at = |alpha: f64| -> Vec<f64> {
+            let mut v = cur.clone();
+            for t in start..end {
+                v[t] = (cur[t] + alpha * (pitches[t] + d[t].0 - cur[t])).clamp(-90.0, 90.0) as f32 as f64;
+            }
+            v
+        };
+        let (mut ba, mut bj) = (0.0, best_j);
+        let mut alpha = 0.05;
+        while alpha <= 1.5 {
+            let j = obj.eval(&at(alpha));
+            if j > bj { bj = j; ba = alpha }
+            alpha += 0.05;
+        }
+        if ba > 0.0 { cur = at(ba); best_j = bj }
+    }
+    (best_j > base).then(|| (cur, best_j - base))
 }
 
 /// Coordinate ascent over the schedule: sweep `t = 0..n`, replacing each pitch with the best
@@ -373,19 +547,31 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     let mut pitches: Vec<f64> = init.iter().map(|&p| p as f32 as f64).collect();
     let mut states = obj.replay(&pitches);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
+    let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
 
     for pass in 0..opts.max_passes {
         let before = obj.eval(&pitches);
+        let global = pass % opts.global_every == 0;
+        // Before each global pass, try moving the whole schedule at once. When the per-tick
+        // moves point the same way this leaps; when they do not it finds no step and costs
+        // one pass.
+        if global && opts.block > 0 {
+            if let Some((next, gain)) = block_step(obj, &pitches, opts.global_step, opts.block) {
+                if gain > 0.0 { pitches = next; states = obj.replay(&pitches) }
+            }
+        }
+        let mut worst_tick = 0.0f64;
         for t in 0..obj.n {
             let cur = pitches[t];
-            let (lo, hi, step) = if pass % opts.global_every == 0 {
+            let (lo, hi, step) = if global {
                 (-90.0, 90.0, opts.global_step)
             } else {
                 ((cur - opts.local_span).max(-90.0), (cur + opts.local_span).min(90.0), opts.local_step)
             };
             let s = states[t].clone();
-            let (np, _) = best_pitch_at(obj, &s, &pitches[t + 1..], cur, lo, hi, step,
-                                        opts.ternary_iters);
+            let (np, j, j_cur) = best_pitch_at(obj, &s, &pitches[t + 1..], cur, lo, hi, step,
+                                               opts.ternary_iters);
+            if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
             // the prefix must stay consistent with the pitches just changed, or the next
             // tick's line search optimizes against a stale state and the schedule diverges
@@ -393,7 +579,12 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         }
         passes = pass + 1;
         last_gain = obj.eval(&pitches) - before;
-        if last_gain < opts.tol { break }
+        let _ = worst_tick;
+        recent.push_back(last_gain);
+        if recent.len() > opts.stall_window { recent.pop_front(); }
+        // Stop when the last `stall_window` passes together earned less than `tol`. Judging on
+        // one pass would stop in the lulls between the jumps that the global passes find.
+        if recent.len() == opts.stall_window && recent.iter().sum::<f64>() < opts.tol { break }
     }
 
     let j = obj.eval(&pitches);
