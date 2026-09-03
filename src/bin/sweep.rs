@@ -274,24 +274,18 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         // against the reference cycle's operating point, so away from it -- v0 = 0 especially --
         // an explicit anchor schedule is the difference between seeding the cyclic branch and
         // seeding a collapsed one, and the BFS propagates whichever it gets to the whole shard.
-        // Two candidate seeds, and the cell takes whichever actually scores better. They fail
-        // in opposite places, so picking per cell is worth the two replays it costs.
+        // Two candidate seeds, and the cell takes whichever actually scores better. Both stay
+        // inside the single-cycle family: the corpus sweeps one cycle across num_ticks, so a
+        // seed that tiles the cycle is not a cheaper route to the answer, it is a different
+        // and degenerate answer.
         //
-        // The BFS parent is right where the answer changes slowly -- along lambda, and along n
-        // below the anchor, where trimming holds the cyclic branch that a cold seed collapses
-        // out of. It is wrong going *up* in n by small steps: each hop tiles the parent, so a
-        // chain 300 -> 350 -> ... -> 600 never composes into the cycle flown twice, and eight
-        // passes cannot restructure the difference. Measured, that chain lands dJ -0.72 at
-        // n = 600.
-        //
-        // Tiling the anchor is right exactly there: the optimal long-horizon flight is
-        // approximately a repeated cycle, so tiling the anchor to 600 *is* two cycles, and the
-        // same cell lands dJ +41.09.
+        // The BFS parent carries the branch -- along lambda, and along n below the anchor where
+        // it holds the cyclic regime a cold seed collapses out of. The anchor rescaled to
+        // period n is the cold fallback, and wins where the chain has drifted.
         let parent = from.and_then(|(a, b)| solved[a * nl + b].clone())
             .map(|prev| stretch(&prev, obj.n));
         let mut cands: Vec<Vec<f64>> = parent.into_iter().collect();
         if let Some(a) = anchor {
-            cands.push(stretch(a, obj.n));      // the cycle repeated
             cands.push(rescale(a, obj.n));      // one cycle of period n
         }
         if cands.is_empty() { cands.push(seed_from_policy(&obj)) }

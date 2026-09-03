@@ -814,9 +814,12 @@ impl Profile {
         // Derived from the pitches, like dy and dz, and recorded for the same reason: the first
         // thing any analysis does is separate the pump cycles from the glides, and needing a
         // forward pass to do it is friction. See opt::shape.
-        w(&format!("# structure   {}", shape(&self.pitches).structure));
+        let sh = shape(&self.pitches);
+        w(&format!("# structure   {}", sh.structure));
+        w(&format!("# cycles      {}                     # dive-then-flick transitions; the \
+corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
         // How much hand movement the schedule asks for. Chatter shows up here and nowhere else
-        // in the header: the reference cycle sits near 35 degrees, a hard-polished one at 3000+.
+        // in the header: the reference cycle sits near 248 degrees, a hard-polished one at 3000+.
         w(&format!("# variation   {:.1}                 # summed |pitch change|, deg",
                    total_variation(&self.pitches)));
         w(&format!("# lag1        {:+.3}                # lag-1 correlation of the per-tick changes; below ~0.2 is chatter", lag1(&self.pitches)));
@@ -945,31 +948,23 @@ pub fn rescale(pitches: &[f64], n: usize) -> Vec<f64> {
 
 /// Adapt a solved neighbor's schedule to a different horizon, for continuation along `n`.
 ///
-/// Trimming takes the head; extending repeats *this schedule's own* pitches cyclically, so a
-/// 300-tick schedule extended to 600 is that schedule flown twice.
+/// This is `rescale`: a cycle of period `m` becomes a cycle of period `n`. The corpus sweeps
+/// **one** cycle across `num_ticks`, so a 500-tick cell must be a single cycle that takes 500
+/// ticks -- not the 300-tick cycle flown once and two-thirds, and not two 250s, which is
+/// something you can tile post hoc from two cells of this corpus if you want it.
 ///
-/// This is the whole ballgame on the `n` axis. The optimal long-horizon flight is approximately
-/// a repeated cycle, so tiling starts continuation next door to the answer; anything else
-/// starts it somewhere the optimizer cannot walk back from in a few passes.
+/// Tiling was tried and is wrong, however good it looks. Seeding n = 600 with the 300-tick
+/// cycle twice scores dJ 41.08 against 19.47 at n = 300 -- but that is a two-cycle schedule,
+/// degenerate here in the same way the constant-pitch-up glide is: a different regime that
+/// wins on J while not being the object under study. Total energy *should* fall away from
+/// n = 300, because 300 is the optimal length for a single cycle.
 ///
-/// Two worse extensions were measured at n = 600, v0 = 0, lambda 0, 8 passes:
-///
-/// | extension                      | dJ    | lag-1  | TV   |
-/// |--------------------------------|-------|--------|------|
-/// | tile this schedule             | 41.09 | +0.365 |  781 |
-/// | `REPLAY_PITCHES_300[i % 300]`  | -0.69 | -0.841 | 3828 |
-/// | hold the terminal pitch        | worse still, the held glide bleeds energy |
-///
-/// Splicing in the *reference* cycle's pitches is nonsense once the schedule has diverged from
-/// the reference, which it has by a few continuation hops. Its signature was a dJ that fell
-/// perfectly linearly with `n`, -0.706 blocks per 10 ticks: not a schedule being restructured
-/// for a longer horizon, just a losing glide being extended at a fixed rate.
+/// Phases have absolute durations, so a uniform time rescale is not physically exact for large
+/// ratios. It is a seed, and the polish moves it; what matters is that it stays in the
+/// single-cycle family.
 pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
-    if pitches.len() >= n { return pitches[..n].to_vec() }
-    if pitches.is_empty() { return vec![0.0; n] }
-    let mut out = pitches.to_vec();
-    while out.len() < n { out.push(pitches[out.len() % pitches.len()]) }
-    out
+    if pitches.len() == n { return pitches.to_vec() }
+    rescale(pitches, n)
 }
 
 // ---------------------------------------------------------------- determinism
@@ -1012,10 +1007,18 @@ pub fn physics_fingerprint() -> u64 {
 /// ones span roughly [-55, +90] degrees and the collapsed ones [-15.3, +0.10].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Structure {
-    /// Dives to build speed, snaps flat, flicks up, and eases down through the gain.
+    /// Dives to build speed, snaps flat, flicks up, and eases down through the gain. One cycle.
     Cyclic,
     /// Holds a glide. No nose-down dive and no flick.
     Collapsed,
+    /// Two or more cycles inside the horizon.
+    ///
+    /// Degenerate for this corpus in the same way the collapsed glide is: a different regime
+    /// that happens to score better, not the object being swept. 300 ticks is the optimal
+    /// length for *one* cycle, so total energy falling away from 300 is the answer, not a
+    /// defect -- and a 500-tick cell must be a single cycle that takes 500 ticks. Two 250s
+    /// tiled is something you can build post hoc from two cells of this corpus.
+    MultiCycle,
 }
 
 /// A schedule noses down past this to build speed. The collapsed glide never exceeds +0.11.
@@ -1030,6 +1033,8 @@ pub struct Shape {
     pub pitch_max: f64,
     /// Ticks spent within 1 degree of level after the dive -- the snap.
     pub flat_ticks: usize,
+    /// Dive-then-flick transitions. One is the object being swept; more is degenerate.
+    pub cycles: usize,
 }
 
 /// Total variation of the schedule: summed absolute pitch change, in degrees. How much hand
@@ -1055,20 +1060,43 @@ pub fn lag1(pitches: &[f64]) -> f64 {
     d.windows(2).map(|w| (w[0] - mean) * (w[1] - mean)).sum::<f64>() / den
 }
 
+/// How many dive-then-flick transitions the schedule makes: the number of cycles.
+///
+/// Scanned with hysteresis, so the chatter in a degenerate schedule -- which crosses both
+/// thresholds repeatedly within a few ticks -- does not read as extra cycles. A cycle is
+/// counted only when the schedule has been committed to the dive (above `DIVE_PITCH`) and then
+/// commits to the climb (below `FLICK_PITCH`); it must return to the dive side before another
+/// can be counted.
+pub fn cycles(pitches: &[f64]) -> usize {
+    let (mut n, mut armed) = (0usize, false);
+    for &p in pitches {
+        if p > DIVE_PITCH { armed = true }
+        else if armed && p < FLICK_PITCH { n += 1; armed = false }
+    }
+    n
+}
+
 pub fn shape(pitches: &[f64]) -> Shape {
     let pitch_max = pitches.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let pitch_min = pitches.iter().cloned().fold(f64::INFINITY, f64::min);
     let flat_ticks = pitches.iter().filter(|p| p.abs() <= 1.0).count();
-    let structure = if pitch_max > DIVE_PITCH && pitch_min < FLICK_PITCH {
-        Structure::Cyclic
-    } else {
+    let n_cycles = cycles(pitches);
+    let structure = if !(pitch_max > DIVE_PITCH && pitch_min < FLICK_PITCH) {
         Structure::Collapsed
+    } else if n_cycles >= 2 {
+        Structure::MultiCycle
+    } else {
+        Structure::Cyclic
     };
-    Shape { structure, pitch_min, pitch_max, flat_ticks }
+    Shape { structure, pitch_min, pitch_max, flat_ticks, cycles: n_cycles }
 }
 
 impl std::fmt::Display for Structure {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(match self { Structure::Cyclic => "cyclic", Structure::Collapsed => "COLLAPSED" })
+        f.write_str(match self {
+            Structure::Cyclic => "cyclic",
+            Structure::Collapsed => "COLLAPSED",
+            Structure::MultiCycle => "MULTICYCLE",
+        })
     }
 }
