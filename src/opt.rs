@@ -6,6 +6,7 @@
 //! with these; `sweep` solves a grid of them.
 
 use crate::sim::*;
+use rayon::prelude::*;
 
 pub const V0: Vec3 = Vec3::new(0.0, 0.167467, 0.200887);
 pub const OPTIMAL_CYCLE_RATE: f64 = 1.43335; // blocks/second, REPLAY_PITCHES_300
@@ -233,3 +234,307 @@ pub fn fly_from(v0: Vec3, par: P, ticks: usize, pre: &[f64]) -> (Vec<f64>, Vec<u
 }
 
 pub fn rate_of(par: P, t: usize) -> f64 { fly(par, t).2[t].pos.y / t as f64 * 20.0 }
+
+// ---------------------------------------------------------------- the objective
+
+/// Reference scales for the normalized weight. `REPLAY_PITCHES_300` climbs 21.5 blocks while
+/// covering 330 blocks of z, so `lambda = 1` is the weight at which a cycle's height gain and
+/// its distance are worth the same.
+pub const Y_REF: f64 = 21.5;
+pub const Z_REF: f64 = 330.0;
+
+/// `w` from the normalized weight `lambda`. `w` is a pure exchange rate in block units:
+/// blocks of height per block of distance.
+pub fn w_of_lambda(lambda: f64) -> f64 { lambda * Y_REF / Z_REF }
+
+/// What a profile is optimal *for*. This is the whole content of a profile's header: given
+/// these four numbers and the physics, the optimum is determined.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Objective {
+    pub v0: Vec3,
+    pub n: usize,
+    pub lambda: f64,
+}
+
+impl Objective {
+    pub fn w(&self) -> f64 { w_of_lambda(self.lambda) }
+
+    /// `J = TE(s) + w*z`, both terms in blocks. Terminal velocity is free.
+    pub fn j(&self, s: &State) -> f64 { s.total_energy() + self.w() * s.pos.z }
+
+    pub fn replay(&self, pitches: &[f64]) -> Vec<State> { replay_from(self.v0, pitches) }
+
+    /// `J` at the end of the schedule.
+    pub fn eval(&self, pitches: &[f64]) -> f64 {
+        let mut s = State { pos: Vec3::ZERO, vel: self.v0 };
+        for &p in pitches { s = ticked(&s, p) }
+        self.j(&s)
+    }
+}
+
+// ---------------------------------------------------------------- the optimizer
+
+/// How hard to polish. The defaults are `cmd_polish`'s, which is the schedule every number in
+/// `README-myopic.md` was produced with.
+#[derive(Clone, Copy, Debug)]
+pub struct PolishOpts {
+    pub max_passes: usize,
+    /// Sweep the whole pitch range every this many passes; otherwise search near the current
+    /// pitch. The global sweep is what handles the objective not being unimodal in pitch.
+    pub global_every: usize,
+    pub global_step: f64,
+    pub local_span: f64,
+    pub local_step: f64,
+    pub ternary_iters: usize,
+    /// Stop when a pass gains less than this in `J` (blocks).
+    pub tol: f64,
+}
+
+impl Default for PolishOpts {
+    fn default() -> Self {
+        PolishOpts {
+            max_passes: 200, global_every: 4, global_step: 0.25,
+            local_span: 8.0, local_step: 0.05, ternary_iters: 70, tol: 1e-9,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Polished {
+    pub pitches: Vec<f64>,
+    pub j: f64,
+    pub passes: usize,
+    /// What the last pass gained. Small means the schedule stopped moving under *this* search.
+    pub last_gain: f64,
+    /// What a fresh full global pass can still find, from `certify`. This is the number that
+    /// makes the file's claim checkable; it does not depend on how the schedule was reached.
+    pub residual: f64,
+}
+
+/// Best pitch for tick `t`, holding every other tick fixed: a global sweep, then a ternary
+/// refine inside the winning cell, scored on the exact tail. Returns `(pitch, J)` with the
+/// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
+/// returned is the one that will actually be flown, and its score is the score of flying it.
+fn best_pitch_at(obj: &Objective, s: &State, tail: &[f64], cur: f64, lo: f64, hi: f64,
+                 step: f64, ternary_iters: usize) -> (f64, f64) {
+    let score = |p: f64| -> f64 {
+        let mut st = ticked(s, p);
+        for &q in tail { st = ticked(&st, q) }
+        obj.j(&st)
+    };
+    let steps = ((hi - lo) / step).round() as i64;
+    // The tail replays are independent, so the sweep is exactly parallel -- no approximation,
+    // just the same evaluations on more cores.
+    let (mut bp, mut bs) = (cur, score(cur));
+    let (gp, gs) = (0..steps + 1)
+        .into_par_iter()
+        .map(|i| { let p = lo + step * i as f64; (p, score(p)) })
+        .reduce(|| (cur, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
+    if gs > bs { bp = gp; bs = gs }
+
+    let (mut a, mut b) = ((bp - step).max(-90.0), (bp + step).min(90.0));
+    for _ in 0..ternary_iters {
+        let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+        if score(m1) < score(m2) { a = m1 } else { b = m2 }
+    }
+    // Round first, then score: the schedule that gets written must be the schedule that was
+    // measured, or a cell can be certified on a pitch it does not contain.
+    let refined = (0.5 * (a + b)) as f32 as f64;
+    let rs = score(refined);
+    let bp32 = bp as f32 as f64;
+    let bs32 = if bp32 == bp { bs } else { score(bp32) };
+    if rs > bs32 { (refined, rs) } else { (bp32, bs32) }
+}
+
+/// One full global pass that changes nothing, reporting the largest gain it could have made.
+///
+/// This is the profile's certificate. It re-derives the claim from `(v0, n, lambda, pitches)`
+/// alone, so it can be run by anyone holding the file and says nothing about how the schedule
+/// was found. A residual at or below the writer's tolerance means the schedule is a coordinate
+/// optimum to that tolerance.
+pub fn certify(obj: &Objective, pitches: &[f64], step: f64) -> f64 {
+    let states = obj.replay(pitches);
+    (0..pitches.len())
+        .map(|t| {
+            let base = obj.eval(pitches);
+            let (_, j) = best_pitch_at(obj, &states[t], &pitches[t + 1..], pitches[t],
+                                       -90.0, 90.0, step, 70);
+            j - base
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Coordinate ascent over the schedule: sweep `t = 0..n`, replacing each pitch with the best
+/// one given the rest. Non-unimodality in pitch is why the sweep has to be global, and the
+/// corner at pitch 0 -- the forward-to-up conversion is gated on `lean_angle < 0` -- is why it
+/// cannot be replaced by a derivative method.
+pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
+    assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
+    let mut pitches: Vec<f64> = init.iter().map(|&p| p as f32 as f64).collect();
+    let mut states = obj.replay(&pitches);
+    let (mut passes, mut last_gain) = (0, f64::INFINITY);
+
+    for pass in 0..opts.max_passes {
+        let before = obj.eval(&pitches);
+        for t in 0..obj.n {
+            let cur = pitches[t];
+            let (lo, hi, step) = if pass % opts.global_every == 0 {
+                (-90.0, 90.0, opts.global_step)
+            } else {
+                ((cur - opts.local_span).max(-90.0), (cur + opts.local_span).min(90.0), opts.local_step)
+            };
+            let s = states[t].clone();
+            let (np, _) = best_pitch_at(obj, &s, &pitches[t + 1..], cur, lo, hi, step,
+                                        opts.ternary_iters);
+            pitches[t] = np;
+            // the prefix must stay consistent with the pitches just changed, or the next
+            // tick's line search optimizes against a stale state and the schedule diverges
+            states[t + 1] = ticked(&states[t], pitches[t]);
+        }
+        passes = pass + 1;
+        last_gain = obj.eval(&pitches) - before;
+        if last_gain < opts.tol { break }
+    }
+
+    let j = obj.eval(&pitches);
+    let residual = certify(obj, &pitches, opts.global_step);
+    Polished { pitches, j, passes, last_gain, residual }
+}
+
+// ---------------------------------------------------------------- the profile file
+
+/// A solved cell, as it lives on disk.
+///
+/// The invariant the format is built around: the header states everything that determines the
+/// optimum -- objective, initial conditions, horizon, physics -- so the claim "these pitches
+/// are optimal" is checkable by `certify` from the file alone. How the schedule was reached is
+/// deliberately absent, because with warm-start continuation the initialization is a path
+/// through the grid rather than a compact set of hyperparameters, and it does not matter.
+#[derive(Clone, Debug)]
+pub struct Profile {
+    pub obj: Objective,
+    pub trig: TrigMode,
+    pub commit: String,
+    pub pitches: Vec<f64>,
+    /// The residual a full global pass could still find, in blocks of `J`.
+    pub residual: f64,
+    pub passes: usize,
+}
+
+impl Profile {
+    pub fn to_string(&self) -> String {
+        let o = &self.obj;
+        let st = o.replay(&self.pitches);
+        let (s0, sn) = (&st[0], st.last().unwrap());
+        let mut out = String::new();
+        let mut w = |l: &str| { out.push_str(l); out.push('\n') };
+        w("# elytrasim optimal pitch schedule");
+        w("# objective   maximize J = TE(s_n) + w*z_n; TE in blocks (KE = |v|^2/(2g), PE = y); v_n free");
+        w(&format!("# lambda      {}", self.obj.lambda));
+        w(&format!("# w           {:.10}          # lambda * Y_REF/Z_REF, Y_REF = {Y_REF}, Z_REF = {Z_REF}", o.w()));
+        w(&format!("# v0          {:.9} {:.9}    # vy vz", o.v0.y, o.v0.z));
+        w(&format!("# n           {}", o.n));
+        w(&format!("# trig        {}", self.trig));
+        w(&format!("# commit      {}", self.commit));
+        w(&format!("# dJ          {:.6}              # J(s_n) - J(s_0)", o.j(sn) - o.j(s0)));
+        w(&format!("# dte         {:.6}              # TE(s_n) - TE(s_0), blocks", sn.total_energy() - s0.total_energy()));
+        w(&format!("# dy          {:.6}", sn.pos.y - s0.pos.y));
+        w(&format!("# dz          {:.6}", sn.pos.z - s0.pos.z));
+        w(&format!("# v_end       {:.9} {:.9}", sn.vel.y, sn.vel.z));
+        w(&format!("# certified   full global pass at {:.2}deg, exact tail eval, improves J by {:.2e} ({} passes)",
+                   PolishOpts::default().global_step, self.residual, self.passes));
+        for p in &self.pitches { w(&format!("{p}")) }
+        out
+    }
+
+    /// Read a profile back. The header is authoritative: a file replayed under the physics or
+    /// weight it was *not* optimized for is not the same object, so `verify` reads the mode
+    /// from the file rather than the command line.
+    pub fn parse(text: &str) -> Result<Profile, String> {
+        let field = |k: &str| -> Option<String> {
+            text.lines()
+                .find_map(|l| l.strip_prefix("# ")?.strip_prefix(k)
+                    .map(|v| v.split('#').next().unwrap_or("").trim().to_string()))
+        };
+        let need = |k: &str| field(k).ok_or_else(|| format!("missing header field '{k}'"));
+        let num = |k: &str| -> Result<f64, String> {
+            need(k)?.parse().map_err(|e| format!("bad '{k}': {e}"))
+        };
+        let v0 = need("v0")?;
+        let mut vs = v0.split_whitespace();
+        let mut nextf = |what: &str| -> Result<f64, String> {
+            vs.next().ok_or_else(|| format!("v0 needs two numbers ({what})"))?
+              .parse().map_err(|e| format!("bad v0: {e}"))
+        };
+        let (vy, vz) = (nextf("vy")?, nextf("vz")?);
+        let pitches = text.lines()
+            .flat_map(|l| l.split('#').next().unwrap_or("").split_whitespace())
+            .map(|s| s.parse::<f64>().map_err(|e| format!("bad pitch {s:?}: {e}")))
+            .collect::<Result<Vec<f64>, _>>()?;
+        let n = num("n")? as usize;
+        if pitches.len() != n {
+            return Err(format!("header says n = {n} but the file holds {} pitches", pitches.len()));
+        }
+        Ok(Profile {
+            obj: Objective { v0: Vec3::new(0.0, vy, vz), n, lambda: num("lambda")? },
+            trig: need("trig")?.parse()?,
+            commit: field("commit").unwrap_or_default(),
+            pitches,
+            residual: field("certified").and_then(|s| s.split("improves J by ").nth(1)
+                .and_then(|r| r.split_whitespace().next()?.parse().ok())).unwrap_or(f64::NAN),
+            passes: 0,
+        })
+    }
+}
+
+/// The git commit the binary was built from, for the header. Resolved at build time by
+/// build.rs; "unknown" if the build had no git.
+pub fn commit_hash() -> &'static str { env!("ELYTRASIM_COMMIT") }
+
+// ---------------------------------------------------------------- seeding a cell
+
+/// The best-scoring constants for each dive rule, as tuned by `myopic policy opt <rule>`
+/// against the 300-tick limit cycle. `Leak` is the strongest of the four (95.9% of the optimal
+/// cycle) and so is the default seed.
+///
+/// Note what these are and are not. They fly a *limit cycle*: the phase switches are on state,
+/// not on the clock, so the policy is horizon-independent -- but that is not the same as being
+/// horizon-*appropriate*. At `n = 100` the horizon is shorter than one cycle, so the optimum is
+/// not a truncated cycle at all and there is no reason these thresholds should seed it well.
+/// Continuation down the `n` axis is the answer; `sweep pilot` measures whether it is needed.
+pub fn tuned_policy(dive: Dive, n_gain: usize) -> P {
+    match dive {
+        Dive::Leak => P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
+                          s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain, dive },
+        Dive::Floor => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.177, vy_flick: -0.2685,
+                           s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain, dive },
+        Dive::Hold => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.127, vy_flick: -0.260,
+                          s_exit: 0.29, slew: 8.34, p_push: 47.0, p_flick: -41.51, n_gain, dive },
+        Dive::Target => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.177, vy_flick: -0.2685,
+                            s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain, dive },
+    }
+}
+
+/// A cold start for a cell: fly the tuned policy from this cell's `v0` for `n` ticks.
+pub fn seed_from_policy(obj: &Objective) -> Vec<f64> {
+    fly_from(obj.v0, tuned_policy(Dive::Leak, 20), obj.n, &[]).0
+}
+
+/// A cold start from the reference cycle, tiled and cut to length. The cycle is ~300 ticks, so
+/// for `n > 300` this repeats it; phases have absolute durations, not fractional ones, so the
+/// schedule is extended rather than rescaled.
+pub fn seed_from_reference(n: usize) -> Vec<f64> {
+    let r = crate::replay_pitches::REPLAY_PITCHES_300;
+    (0..n).map(|i| r[i % r.len()] as f64).collect()
+}
+
+/// Adapt a solved neighbor's schedule to a different horizon, for continuation along `n`.
+/// Trimming takes the head; extending repeats the reference cycle's tail, which is the dive
+/// the schedule would be entering anyway.
+pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
+    if pitches.len() >= n { return pitches[..n].to_vec() }
+    let mut out = pitches.to_vec();
+    let r = crate::replay_pitches::REPLAY_PITCHES_300;
+    while out.len() < n { out.push(r[out.len() % r.len()] as f64) }
+    out
+}
