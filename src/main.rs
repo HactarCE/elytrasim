@@ -74,6 +74,10 @@ fn main() -> eframe::Result {
     let mut held_optimal_pitches = Grid::<Pitch>(Box::new([]));
     let mut held_optimal_energies = Grid::<DeltaTotalEnergy>(Box::new([]));
     let mut held_computed_for: Option<(GridMeta, usize)> = None;
+    // the pitches which keep the velocity direction fixed. a few times the work
+    // of the immediate grid, so it's lazy too
+    let mut direction_preserving_pitches = Grid::<Vec<Pitch>>(Box::new([]));
+    let mut direction_preserving_computed_for: Option<GridMeta> = None;
     // let (mut deep_optimal_pitches, mut deep_optimal_energies) =
     //     energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
     // let mut deep_optim = DeepOptim::new(grid_meta.clone());
@@ -165,6 +169,9 @@ fn main() -> eframe::Result {
                                     }
                                     DrawArrowType::HeldOptimalDeltaTE => "Held Optimal Delta TE",
                                     DrawArrowType::HeldOptimalDeltaVel => "Held Optimal Delta Vel",
+                                    DrawArrowType::DirectionPreservingPitch => {
+                                        "Direction Preserving Pitch"
+                                    }
                                     DrawArrowType::DeepOptimalPitch => "Deep Optimal Pitch",
                                     DrawArrowType::DeepOptimalDeltaVel => "Deep Optimal Delta Vel",
                                 })
@@ -193,6 +200,11 @@ fn main() -> eframe::Result {
                                         &mut draw_arrow_type,
                                         DrawArrowType::HeldOptimalDeltaVel,
                                         "Held Optimal Delta Vel",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::DirectionPreservingPitch,
+                                        "Direction Preserving Pitch",
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
@@ -639,6 +651,15 @@ fn main() -> eframe::Result {
                     held_computed_for = Some((grid_meta.clone(), held_ticks));
                 }
 
+                // likewise for the direction preserving grid
+                if draw_arrow_type == DrawArrowType::DirectionPreservingPitch
+                    && direction_preserving_computed_for.as_ref() != Some(&grid_meta)
+                {
+                    direction_preserving_pitches =
+                        energy_grid::new_grid_direction_preserving_pitches(&grid_meta);
+                    direction_preserving_computed_for = Some(grid_meta.clone());
+                }
+
                 for (row, line) in grid_meta.rects(rect).enumerate() {
                     for (col, cell_rect) in line.enumerate() {
                         let init_vel = grid_meta.row_col_usize_to_vel((row, col));
@@ -773,6 +794,20 @@ fn main() -> eframe::Result {
                             //         egui::Stroke::new(0.2 * step, color),
                             //     );
                             // }
+                            DrawArrowType::DirectionPreservingPitch => {
+                                // every pitch which keeps the velocity direction fixed
+                                // (colored by delta energy, like everything else)
+                                for &pitch in &direction_preserving_pitches.0[row][col] {
+                                    let color = get_immediate_energy_color(pitch);
+                                    ui.painter().arrow(
+                                        cen,
+                                        egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
+                                            * arrow_scale
+                                            * step,
+                                        egui::Stroke::new(0.2 * step, color),
+                                    );
+                                }
+                            }
                             DrawArrowType::DeepOptimalPitch => {
                                 // optimal pitch (colored by delta energy)
 
@@ -935,6 +970,13 @@ fn main() -> eframe::Result {
                                     grid_meta.vel_to_grid_row_col_float(state.vel),
                                 )
                                 .unwrap_or(0.),
+                            // the lowest branch, arbitrarily
+                            DrawArrowType::DirectionPreservingPitch => {
+                                energy_grid::direction_preserving_pitches(state.vel)
+                                    .first()
+                                    .copied()
+                                    .unwrap_or(0.)
+                            }
                             DrawArrowType::DeepOptimalPitch
                             | DrawArrowType::DeepOptimalDeltaVel => dp
                                 // the pitch displayed on the grid (for a constant tick)
@@ -1111,6 +1153,9 @@ enum DrawArrowType {
     /// draw the net delta vel for holding the pitch which maximizes
     /// the energy gained over `held_ticks` ticks
     HeldOptimalDeltaVel,
+    /// draw the pitch(es) at which one tick leaves the velocity direction
+    /// unchanged (there's sometimes more than one branch)
+    DirectionPreservingPitch,
     /// draw the pitch for the deep optimizer
     DeepOptimalPitch,
     /// draw the delta vel for the deep optimizer

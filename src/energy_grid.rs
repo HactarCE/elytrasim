@@ -1172,3 +1172,81 @@ pub fn new_grid_held_optimal_pitch(
         Grid(energies.into_boxed_slice()),
     )
 }
+
+/// the signed sine-ish measure (the yz cross product) of the angle from the old
+/// velocity to the new velocity after one tick at `pitch`.
+/// zero exactly when the velocity direction is preserved
+fn direction_change_for_vel_at_pitch(vel: Vel3, pitch: Pitch) -> f64 {
+    let state = State {
+        pos: Vec3::ZERO,
+        vel,
+    };
+    let new_vel = state.ticked(Rot { x: pitch, y: 0. }).vel;
+    vel.z * new_vel.y - vel.y * new_vel.z
+}
+
+/// the pitches (in increasing order) at which one tick leaves the velocity
+/// *direction* unchanged, only its magnitude. there can be more than one
+pub fn direction_preserving_pitches(vel: Vel3) -> Vec<Pitch> {
+    // a still velocity has no direction to preserve
+    if vel.y == 0. && vel.z == 0. {
+        return Vec::new();
+    }
+    const LO: f64 = -90.;
+    const HI: f64 = 90.;
+    // half degree steps, fine enough to separate the branches
+    const SAMPLES: usize = 361;
+    let f = |pitch: f64| direction_change_for_vel_at_pitch(vel, pitch as Pitch);
+    let mut roots = Vec::new();
+    let mut prev_pitch = LO;
+    let mut prev = f(prev_pitch);
+    for i in 1..=SAMPLES {
+        let pitch = lerp_f64(LO, HI, i as f64 / SAMPLES as f64);
+        let cur = f(pitch);
+        if cur == 0. {
+            roots.push(pitch as Pitch);
+        } else if (prev < 0.) != (cur < 0.) && prev != 0. {
+            // bisect the bracket. pitch is an f32 in the sim, so there's no
+            // point going finer than ~1e-5 degrees
+            let (mut lo, mut hi) = (prev_pitch, pitch);
+            let mut lo_val = prev;
+            for _ in 0..32 {
+                let mid = 0.5 * (lo + hi);
+                let mid_val = f(mid);
+                if (lo_val < 0.) != (mid_val < 0.) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                    lo_val = mid_val;
+                }
+            }
+            roots.push((0.5 * (lo + hi)) as Pitch);
+        }
+        prev_pitch = pitch;
+        prev = cur;
+    }
+    // a velocity straight up (or down) has no horizontal component for any pitch
+    // to turn, so *every* pitch preserves its direction. that's not worth drawing
+    const MAX_BRANCHES: usize = 8;
+    if roots.len() > MAX_BRANCHES {
+        return Vec::new();
+    }
+    // an exact zero sample can also be found by the bracket on either side of it
+    roots.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+    roots
+}
+
+/// for each cell, the pitches which leave the velocity direction unchanged
+pub fn new_grid_direction_preserving_pitches(meta: &GridMeta) -> Grid<Vec<Pitch>> {
+    Grid(
+        (0..meta.height)
+            .map(|row| {
+                (0..meta.width)
+                    .map(|col| {
+                        direction_preserving_pitches(meta.row_col_usize_to_vel((row, col)))
+                    })
+                    .collect()
+            })
+            .collect(),
+    )
+}
