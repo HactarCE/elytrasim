@@ -1109,3 +1109,66 @@ pub fn argmax_over_pitch_of_energy(vel: Vel3) -> Pitch {
 }
 
 // fn optimal_delta_total_energy_for_vel(vel: Vel3) -> (Pitch, DeltaTotalEnergy) {}
+
+/// like [`argmax_over_pitch_of_delta_energy`], but slightly less myopic:
+/// the pitch which gains the most energy when *held* for `ticks` ticks.
+/// also returns the state we end up in, so the caller doesn't have to re-sim.
+pub fn argmax_over_held_pitch_of_delta_energy(vel: Vel3, ticks: usize) -> (Pitch, State) {
+    let init_state = State {
+        pos: Vec3::ZERO,
+        vel,
+    };
+    let mut best_pitch = 0.;
+    let mut best_state = init_state.clone();
+    let mut best_delta_energy = f64::NEG_INFINITY;
+    for pitch in -90..=90 {
+        let rot = Rot {
+            x: pitch as f32,
+            y: 0.,
+        };
+        let mut state = init_state.clone();
+        for _ in 0..ticks {
+            state = state.ticked(rot);
+        }
+        let delta_energy = state.total_energy() - init_state.total_energy();
+        if delta_energy > best_delta_energy {
+            best_delta_energy = delta_energy;
+            best_pitch = pitch as f32;
+            best_state = state;
+        }
+    }
+    (best_pitch, best_state)
+}
+
+/// for each cell, the pitch which gains the most energy when held for `ticks` ticks,
+/// and the *mean per tick* energy gained by holding it
+/// (per tick so that it shares a color scale with the immediate grids)
+pub fn new_grid_held_optimal_pitch(
+    meta: &GridMeta,
+    ticks: usize,
+) -> (Grid<Pitch>, Grid<DeltaTotalEnergy>) {
+    let mut pitches = Vec::with_capacity(meta.height);
+    let mut energies = Vec::with_capacity(meta.height);
+    for row in 0..meta.height {
+        let mut pitch_line = Vec::with_capacity(meta.width);
+        let mut energy_line = Vec::with_capacity(meta.width);
+        for col in 0..meta.width {
+            let vel = meta.row_col_usize_to_vel((row, col));
+            let (pitch, final_state) = argmax_over_held_pitch_of_delta_energy(vel, ticks);
+            let init_state = State {
+                pos: Vec3::ZERO,
+                vel,
+            };
+            pitch_line.push(pitch);
+            energy_line.push(
+                (final_state.total_energy() - init_state.total_energy()) / ticks.max(1) as f64,
+            );
+        }
+        pitches.push(pitch_line.into_boxed_slice());
+        energies.push(energy_line.into_boxed_slice());
+    }
+    (
+        Grid(pitches.into_boxed_slice()),
+        Grid(energies.into_boxed_slice()),
+    )
+}

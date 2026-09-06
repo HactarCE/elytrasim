@@ -67,6 +67,13 @@ fn main() -> eframe::Result {
         Grid::<DeltaTotalEnergy>::from_fixed_pitch(&grid_meta, fixed_rot.x);
     let (mut immediate_optimal_pitches, mut immediate_optimal_energies) =
         energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
+    // n ticks of holding one pitch, for the less myopic optimizer.
+    // it's ~n times the work of the immediate grid, so it's computed lazily,
+    // only while it's the grid being drawn
+    let mut held_ticks: usize = 20;
+    let mut held_optimal_pitches = Grid::<Pitch>(Box::new([]));
+    let mut held_optimal_energies = Grid::<DeltaTotalEnergy>(Box::new([]));
+    let mut held_computed_for: Option<(GridMeta, usize)> = None;
     // let (mut deep_optimal_pitches, mut deep_optimal_energies) =
     //     energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
     // let mut deep_optim = DeepOptim::new(grid_meta.clone());
@@ -156,6 +163,7 @@ fn main() -> eframe::Result {
                                     DrawArrowType::ImmediateOptimalDeltaVel => {
                                         "Immediate Optimal Delta Vel"
                                     }
+                                    DrawArrowType::HeldOptimalDeltaVel => "Held Optimal Delta Vel",
                                     DrawArrowType::DeepOptimalPitch => "Deep Optimal Pitch",
                                     DrawArrowType::DeepOptimalDeltaVel => "Deep Optimal Delta Vel",
                                 })
@@ -177,6 +185,11 @@ fn main() -> eframe::Result {
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
+                                        DrawArrowType::HeldOptimalDeltaVel,
+                                        "Held Optimal Delta Vel",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
                                         DrawArrowType::DeepOptimalPitch,
                                         "Deep Optimal Pitch",
                                     );
@@ -186,6 +199,13 @@ fn main() -> eframe::Result {
                                         "Deep Optimal Delta Vel",
                                     );
                                 });
+
+                            ui.label("Held Ticks");
+                            ui.add(
+                                egui::Slider::new(&mut held_ticks, 1..=60)
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                            held_ticks = held_ticks.max(1);
                         });
                         ui.group(|ui| {
                             ui.strong("Rotation");
@@ -601,6 +621,15 @@ fn main() -> eframe::Result {
                 let color_of_delta_goodness =
                     |delta_goodness: Goodness| color_of_delta_energy(delta_goodness);
 
+                // (re)compute the held optimal grid only while it's being drawn
+                if draw_arrow_type == DrawArrowType::HeldOptimalDeltaVel
+                    && held_computed_for.as_ref() != Some(&(grid_meta.clone(), held_ticks))
+                {
+                    (held_optimal_pitches, held_optimal_energies) =
+                        energy_grid::new_grid_held_optimal_pitch(&grid_meta, held_ticks);
+                    held_computed_for = Some((grid_meta.clone(), held_ticks));
+                }
+
                 for (row, line) in grid_meta.rects(rect).enumerate() {
                     for (col, cell_rect) in line.enumerate() {
                         let init_vel = grid_meta.row_col_usize_to_vel((row, col));
@@ -671,6 +700,25 @@ fn main() -> eframe::Result {
                                         .normalized()
                                         * arrow_scale
                                         * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::HeldOptimalDeltaVel => {
+                                // net delta vel over `held_ticks` ticks of holding the pitch
+                                // which gains the most energy over those ticks
+                                // (colored by the mean per tick delta energy)
+                                let pitch = held_optimal_pitches.0[row][col];
+                                let rot = Rot { x: pitch, y: 0. };
+                                let mut final_state = init_state.clone();
+                                for _ in 0..held_ticks {
+                                    final_state = final_state.ticked(rot);
+                                }
+                                let delta_vel = final_state.vel - init_state.vel;
+                                let color =
+                                    color_of_delta_energy(held_optimal_energies.0[row][col]);
+                                ui.painter().arrow(
+                                    cen,
+                                    delta_vel.yz_to_egui_vec2().normalized() * arrow_scale * step,
                                     egui::Stroke::new(0.2 * step, color),
                                 );
                             }
@@ -855,6 +903,13 @@ fn main() -> eframe::Result {
                                     grid_meta.vel_to_grid_row_col_float(state.vel),
                                 )
                                 .unwrap_or(0.),
+                            // note this re-picks the held pitch every tick,
+                            // so the path isn't the one the arrow's pitch was chosen for
+                            DrawArrowType::HeldOptimalDeltaVel => held_optimal_pitches
+                                .f32_bilinear_from_row_col_float(
+                                    grid_meta.vel_to_grid_row_col_float(state.vel),
+                                )
+                                .unwrap_or(0.),
                             DrawArrowType::DeepOptimalPitch
                             | DrawArrowType::DeepOptimalDeltaVel => dp
                                 // the pitch displayed on the grid (for a constant tick)
@@ -1025,6 +1080,9 @@ enum DrawArrowType {
     ImmediateOptimalPitch,
     /// draw the delta vel for the immediate optimizer
     ImmediateOptimalDeltaVel,
+    /// draw the net delta vel for holding the pitch which maximizes
+    /// the energy gained over `held_ticks` ticks
+    HeldOptimalDeltaVel,
     /// draw the pitch for the deep optimizer
     DeepOptimalPitch,
     /// draw the delta vel for the deep optimizer
