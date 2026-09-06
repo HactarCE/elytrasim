@@ -157,12 +157,13 @@ fn main() -> eframe::Result {
                             egui::ComboBox::from_id_salt("Draw Arrow Type")
                                 .selected_text(match draw_arrow_type {
                                     DrawArrowType::FixedDeltaVel => "Global Pitch",
-                                    DrawArrowType::ImmediateOptimalPitch => {
-                                        "Immediate Optimal Pitch"
+                                    DrawArrowType::ImmediateOptimalDeltaTE => {
+                                        "Immediate Optimal Delta TE"
                                     }
                                     DrawArrowType::ImmediateOptimalDeltaVel => {
                                         "Immediate Optimal Delta Vel"
                                     }
+                                    DrawArrowType::HeldOptimalDeltaTE => "Held Optimal Delta TE",
                                     DrawArrowType::HeldOptimalDeltaVel => "Held Optimal Delta Vel",
                                     DrawArrowType::DeepOptimalPitch => "Deep Optimal Pitch",
                                     DrawArrowType::DeepOptimalDeltaVel => "Deep Optimal Delta Vel",
@@ -175,13 +176,18 @@ fn main() -> eframe::Result {
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
-                                        DrawArrowType::ImmediateOptimalPitch,
-                                        "Immediate Optimal Pitch",
+                                        DrawArrowType::ImmediateOptimalDeltaTE,
+                                        "Immediate Optimal Delta TE",
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
                                         DrawArrowType::ImmediateOptimalDeltaVel,
                                         "Immediate Optimal Delta Vel",
+                                    );
+                                    ui.selectable_value(
+                                        &mut draw_arrow_type,
+                                        DrawArrowType::HeldOptimalDeltaTE,
+                                        "Held Optimal Delta TE",
                                     );
                                     ui.selectable_value(
                                         &mut draw_arrow_type,
@@ -622,7 +628,10 @@ fn main() -> eframe::Result {
                     |delta_goodness: Goodness| color_of_delta_energy(delta_goodness);
 
                 // (re)compute the held optimal grid only while it's being drawn
-                if draw_arrow_type == DrawArrowType::HeldOptimalDeltaVel
+                if matches!(
+                    draw_arrow_type,
+                    DrawArrowType::HeldOptimalDeltaTE | DrawArrowType::HeldOptimalDeltaVel
+                )
                     && held_computed_for.as_ref() != Some(&(grid_meta.clone(), held_ticks))
                 {
                     (held_optimal_pitches, held_optimal_energies) =
@@ -666,7 +675,7 @@ fn main() -> eframe::Result {
                                     egui::Stroke::new(0.2 * step, color),
                                 );
                             }
-                            DrawArrowType::ImmediateOptimalPitch => {
+                            DrawArrowType::ImmediateOptimalDeltaTE => {
                                 // optimal pitch (colored by delta energy)
                                 let pitch = immediate_optimal_pitches.0[row][col];
                                 // let rot = Rot { x: pitch, y: 0. };
@@ -698,6 +707,21 @@ fn main() -> eframe::Result {
                                     cen,
                                     egui::vec2(delta_vel.z as f32, -delta_vel.y as f32)
                                         .normalized()
+                                        * arrow_scale
+                                        * step,
+                                    egui::Stroke::new(0.2 * step, color),
+                                );
+                            }
+                            DrawArrowType::HeldOptimalDeltaTE => {
+                                // the pitch which gains the most energy
+                                // when held for `held_ticks` ticks
+                                // (colored by the mean per tick delta energy)
+                                let pitch = held_optimal_pitches.0[row][col];
+                                let color =
+                                    color_of_delta_energy(held_optimal_energies.0[row][col]);
+                                ui.painter().arrow(
+                                    cen,
+                                    egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
                                         * arrow_scale
                                         * step,
                                     egui::Stroke::new(0.2 * step, color),
@@ -897,7 +921,7 @@ fn main() -> eframe::Result {
                     for tick in 0..PATH_LEN {
                         let pitch = match draw_arrow_type {
                             DrawArrowType::FixedDeltaVel => fixed_rot.x,
-                            DrawArrowType::ImmediateOptimalPitch
+                            DrawArrowType::ImmediateOptimalDeltaTE
                             | DrawArrowType::ImmediateOptimalDeltaVel => immediate_optimal_pitches
                                 .f32_bilinear_from_row_col_float(
                                     grid_meta.vel_to_grid_row_col_float(state.vel),
@@ -905,7 +929,8 @@ fn main() -> eframe::Result {
                                 .unwrap_or(0.),
                             // note this re-picks the held pitch every tick,
                             // so the path isn't the one the arrow's pitch was chosen for
-                            DrawArrowType::HeldOptimalDeltaVel => held_optimal_pitches
+                            DrawArrowType::HeldOptimalDeltaTE
+                            | DrawArrowType::HeldOptimalDeltaVel => held_optimal_pitches
                                 .f32_bilinear_from_row_col_float(
                                     grid_meta.vel_to_grid_row_col_float(state.vel),
                                 )
@@ -1076,10 +1101,13 @@ enum DrawArrowType {
     // FixedPitch,
     /// draw the delta vel for the global fixed pitch
     FixedDeltaVel,
-    /// draw the pitch for the immediate optimizer
-    ImmediateOptimalPitch,
+    /// draw the pitch which maximizes the immediate delta total energy
+    ImmediateOptimalDeltaTE,
     /// draw the delta vel for the immediate optimizer
     ImmediateOptimalDeltaVel,
+    /// draw the pitch which maximizes the energy gained
+    /// over `held_ticks` ticks of holding it
+    HeldOptimalDeltaTE,
     /// draw the net delta vel for holding the pitch which maximizes
     /// the energy gained over `held_ticks` ticks
     HeldOptimalDeltaVel,
