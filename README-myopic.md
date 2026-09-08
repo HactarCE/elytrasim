@@ -62,6 +62,57 @@ A naive `argmin |γ' − γ*|` oscillates between them and never builds speed (t
 
 Literally zero, for about fourteen ticks. One-tick greedy independently says 0 here too.
 
+## The steady glide against pitch, and the corner at 0
+
+`myopic glide` sweeps the terminal velocity of the constant-pitch tick map over the whole pitch
+domain; `myopic crit` reads its three critical points from both sides;
+`tools/plot_glide.py` draws it. Horizontal velocity is `sim`'s `z` — yaw is pinned to zero — but
+is written `vx` here, which is the convention everywhere outside the sim.
+
+| critical point | pitch | `vy` | `vx` | glide ratio | γ |
+|---|---|---|---|---|---|
+| max glide ratio | **0** | −0.1494916 | 1.5101712 | **10.10205** | 5.6533° |
+| min sink | **−13.058** | **−0.0707877** | 0.4395661 | 6.20964 | 9.1484° |
+| max forward speed | **53.366** | −1.0095640 | **3.3887913** | 3.35669 | 16.5895° |
+
+Nothing is unbounded: at either pole the glide degenerates to a vertical fall at `vy = −3.920`,
+`vx = 0`. The range is merely wide — `vy` spans 55× between min sink and a vertical dive — which is
+why the plot gives `vy` both a full-range and a zoomed panel.
+
+The last entry refines the `53.35° / 3.389 / 16.58°` quoted under the dive's γ floor. That number
+came from `ceiling()`, which sweeps at 0.05° and deliberately does not refine; the top is flat to
+`1e-9`, so the two agree to well inside anything that matters.
+
+**Pitch 0 is a corner, not a jump, and it is one-sided.** For `p >= 0` the tick map depends on
+pitch *only* through `lift_force = cos^2(p)`: yaw is zero, so `look_angle.x` is zero and every use
+of `look_angle.z / look_hor_length` collapses to 1, cancelling `cos(p)` out of the direction
+terms, and the `lean_angle < 0` branch is off. `cos^2` is even, so every curve above is even and
+flat to second order on the right of 0. For `p < 0` that branch switches on with a term linear in
+`sin(p)`. So the one-sided derivatives of the glide ratio are
+
+    nose-up   0.405 per degree      nose-down   3.42e-3 per degree^2, no linear term
+
+and 0 is a genuine maximum — there is no second attractor and no discontinuity. Iterating the map
+from 96 spread initial conditions lands on the same fixed point at every pitch on a 0.25° grid
+across the domain, to `1e-6`. But the max is enormously lopsided: **1% of the glide ratio costs
+0.29° of nose-up, or 5.45° of nose-down** (measured, not extrapolated from the slopes; the nose-up
+branch curves over that distance). If the snap's pitch 0 has to be approximated, err nose-down.
+
+Minecraft's own trig sharpens this. `Mth.sin` is a 65536-entry table, so the `p < 0` branch is
+quantized into steps of `2*pi/65536 = 0.0055°`, and inside `|p| < 0.0055°` — the index
+`(int)(p * 10430.378)` truncating to 0 — it returns exactly zero and the branch is dead outright — the corner becomes a short flat shelf followed by a staircase. The
+`p >= 0` side is bit-identical between `libm` and `mth_lut`, exactly as `sim/mth.rs` predicts,
+because `cos(p)` cancels and `lift_force` is a `double` `Math.cos` in vanilla either way. The
+min-sink pitch does move, to about −13.05, and its neighbourhood is a jittery staircase rather
+than a smooth peak, so that critical point carries roughly ±0.01° of quantization noise. The max
+forward speed is unmoved.
+
+    myopic glide 0.01 > runs/glide/glide_libm.csv
+    myopic glide 0.01 --trig mth_lut > runs/glide/glide_mth.csv
+    myopic glide 0.0002 -0.06 0.06 > runs/glide/zoom_libm.csv
+    myopic glide 0.0002 -0.06 0.06 --trig mth_lut > runs/glide/zoom_mth.csv
+    tools/plot_glide.py runs/glide/glide_{libm,mth}.csv runs/glide/zoom_{libm,mth}.csv runs/glide/glide.svg
+
 ## Phase 3, flick (~6 ticks): ramp to about −88°
 
 Nothing to find. This is where two independently optimised cycles disagree most (11°), so the

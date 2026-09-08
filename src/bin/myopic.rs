@@ -24,6 +24,8 @@
 //!   profiles                             cycle closure and climb rate of the built-in profiles
 //!   eq                                   terminal-glide table, and the fastest steady glide
 //!   eqrate                               steady glide maximizing the objective rate, per w
+//!   glide    [step] [lo] [hi]             steady-glide curves vs pitch, as CSV
+//!   crit                                 the three critical points of the steady glide, both sides
 //!   polish   <file> [passes] [w]         coordinate-ascent polish of a schedule; maximizes TE + w*z
 //!   cycle    <file> <off>                per-tick dump: pitch, gamma, and each rule's answer
 //!   score    <file> <off> <lo> <hi>      RMS pitch error of a menu of rules, per phase
@@ -244,6 +246,59 @@ fn cmd_family(path: &str, tag: &str) {
 /// so if the dive were asymptoting to the best available *steady* state for the objective,
 /// the floor would track this angle. Note what it reduces to at w = 0: the minimum-sink
 /// glide, not the fastest one.
+/// Steady-glide curves against pitch, as CSV, for `tools/plot_glide.py`.
+///
+/// The horizontal axis is `sim`'s `z` (yaw is pinned to zero); it is reported as `vx` because
+/// that is the convention everywhere outside the sim.
+fn cmd_glide(step: f64, lo: f64, hi: f64) {
+    println!("# steady glide vs pitch, trig={}", trig_mode());
+    println!("pitch,vy,vx,speed,glide,gamma");
+    let n = ((hi - lo) / step).round() as i64;
+    let rows: Vec<String> = (0..=n).into_par_iter().map(|i| {
+        let p = lo + step * i as f64;
+        let e = equilibrium(p);
+        format!("{p:.6},{:.12},{:.12},{:.12},{:.9},{:.6}",
+                e.y, e.z, e.length(), e.z / -e.y, gamma(e))
+    }).collect();
+    for r in rows { println!("{r}") }
+}
+
+/// The three critical points of the steady glide, each read from both sides.
+///
+/// The interesting one is pitch 0. For `p >= 0` the tick map depends on pitch *only* through
+/// `lift_force = cos^2(p)`: yaw is zero, so `look_angle.x` is zero and every use of
+/// `look_angle.z / look_hor_length` collapses to 1, cancelling `cos(p)` out of the direction
+/// terms, and the `lean_angle < 0` branch is off. `cos^2` is even, so every curve here is
+/// even-and-flat to second order on the right of 0. For `p < 0` that branch switches on with a
+/// term linear in `sin(p)`, which is a nonzero one-sided slope. So 0 is a *corner*, not a jump.
+fn cmd_crit() {
+    let crit = |name: &str, p0: f64, key: &dyn Fn(Vec3) -> f64| {
+        // refine on a fine sweep; the tops are flat to ~1e-9, so a ternary search wanders
+        let (mut bp, mut bs) = (p0, f64::NEG_INFINITY);
+        for i in -2000..=2000 {
+            let p = p0 + 0.001 * i as f64;
+            if !(-90.0..=90.0).contains(&p) { continue }
+            let v = key(equilibrium(p));
+            if v > bs { bs = v; bp = p }
+        }
+        println!("\n{name}: argmax at pitch {bp:.4}");
+        println!("{:>12} {:>16} {:>16} {:>14} {:>12}", "pitch", "vy", "vx", "glide", "gamma");
+        let mut ps = vec![bp];
+        for e in [1e-1, 1e-2, 1e-3, 1e-5, 1e-7] { ps.push(bp - e); ps.push(bp + e) }
+        ps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for p in ps {
+            let e = equilibrium(p);
+            let mark = if p == bp { " <-" } else { "" };
+            println!("{p:>12.7} {:>16.12} {:>16.12} {:>14.9} {:>12.6}{mark}",
+                     e.y, e.z, e.z / -e.y, gamma(e));
+        }
+    };
+    println!("steady glide critical points, trig={}", trig_mode());
+    crit("max glide ratio (blocks forward per block fallen)", 0.0, &|v| v.z / -v.y);
+    crit("min sink (max vy)", -13.0, &|v| v.y);
+    crit("max forward speed (max vx)", 53.0, &|v| v.z);
+}
+
 fn cmd_eqrate() {
     // TE is in blocks, so potential energy is exactly height and v_y carries weight 1.
     const G: f64 = 1.0;
@@ -928,6 +983,10 @@ fn main() {
         Some("profiles") => cmd_profiles(),
         Some("eq") => cmd_eq(),
         Some("eqrate") => cmd_eqrate(),
+        Some("glide") => cmd_glide(a.get(2).map_or(0.05, |s| s.parse().unwrap()),
+                                   a.get(3).map_or(-90.0, |s| s.parse().unwrap()),
+                                   a.get(4).map_or(90.0, |s| s.parse().unwrap())),
+        Some("crit") => cmd_crit(),
         Some("polish") => cmd_polish(&a[2], a.get(3).map_or(40, |s| s.parse().unwrap()),
                                      a.get(4).map_or(0.0, |s| s.parse().unwrap())),
         Some("cycle") => cmd_cycle(&a[2], n(3)),
@@ -954,7 +1013,7 @@ fn main() {
                                          Some(x) if x == "target" => Dive::Target,
                                          _ => Dive::Leak,
                                      }),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }
