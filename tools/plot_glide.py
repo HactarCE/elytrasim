@@ -4,7 +4,10 @@
 Panels share the pitch axis. Horizontal velocity is `sim`'s z component -- yaw is pinned to
 zero -- but is labelled vx, which is the convention everywhere outside the sim.
 
-Nothing here is unbounded on the full [-90, 90] domain: the worst sink is 3.92 b/t at either
+Velocities are blocks/second, as the CSVs carry them. The glide ratio is a ratio of two
+velocities, so it is dimensionless and unaffected.
+
+Nothing here is unbounded on the full [-90, 90] domain: the worst sink is 78.4 b/s at either
 pole. The problem is dynamic range, not bounds. vy spans 55x between the min-sink glide and a
 vertical dive, so it gets two panels -- the full range, and a zoom on the shallow end where the
 critical points live. vx and the glide ratio are readable at full range as they are.
@@ -50,13 +53,13 @@ def esc(s):
 
 # panel: (title, subtitle, column index, ylo, yhi, yticks, xlo, xhi, series)
 P = [
-    ('vy  -- sink rate, blocks/tick', 'full range; both poles settle at -3.920',
-     1, -4.0, 0.0, [-4, -3, -2, -1, 0], -90, 90, [(L, LINE, None)]),
+    ('vy  -- sink rate, blocks/second', 'full range; both poles settle at -78.400',
+     1, -80.0, 0.0, [-80, -60, -40, -20, 0], -90, 90, [(L, LINE, None)]),
     ('vy  -- sink rate, zoomed 12x', 'the shallow end, where the critical points live; the dive tails run off-panel',
-     1, -0.35, 0.0, [-0.3, -0.2, -0.1, 0.0], -90, 90, [(L, LINE, None)]),
-    ('vx  -- forward speed, blocks/tick', 'peaks at pitch 53.366, and is 0 at both poles',
-     2, 0.0, 3.6, [0, 1, 2, 3], -90, 90, [(L, LINE, None)]),
-    ('glide ratio  -- blocks forward per block fallen', 'peaks at pitch 0, at 10.102',
+     1, -7.0, 0.0, [-6, -4, -2, 0], -90, 90, [(L, LINE, None)]),
+    ('vx  -- forward speed, blocks/second', 'peaks at pitch 53.366, and is 0 at both poles',
+     2, 0.0, 72.0, [0, 20, 40, 60], -90, 90, [(L, LINE, None)]),
+    ('glide ratio  -- blocks forward per block fallen', 'dimensionless; peaks at pitch 0, at 10.102',
      3, 0.0, 10.6, [0, 2, 4, 6, 8, 10], -90, 90, [(L, LINE, None)]),
     ('glide ratio, within 0.06 deg of pitch 0', 'the corner: flat to second order on the right, linear on the left, and no jump',
      3, 10.0775, 10.1032, [10.08, 10.09, 10.10], -0.06, 0.06,

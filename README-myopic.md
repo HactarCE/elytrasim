@@ -67,19 +67,21 @@ Literally zero, for about fourteen ticks. One-tick greedy independently says 0 h
 `myopic glide` sweeps the terminal velocity of the constant-pitch tick map over the whole pitch
 domain; `myopic crit` reads its three critical points from both sides;
 `tools/plot_glide.py` draws it. Horizontal velocity is `sim`'s `z` — yaw is pinned to zero — but
-is written `vx` here, which is the convention everywhere outside the sim.
+is written `vx` here, which is the convention everywhere outside the sim. **Velocities below are
+blocks/second**, not the `sim`'s blocks/tick; the glide ratio is a ratio of two velocities, so it
+is dimensionless and reads the same either way.
 
 | critical point | pitch | `vy` | `vx` | glide ratio | γ |
 |---|---|---|---|---|---|
-| max glide ratio | **0** | −0.1494916 | 1.5101712 | **10.10205** | 5.6533° |
-| min sink | **−13.058** | **−0.0707877** | 0.4395661 | 6.20964 | 9.1484° |
-| max forward speed | **53.366** | −1.0095640 | **3.3887913** | 3.35669 | 16.5895° |
+| max glide ratio | **0** | −2.9898310 | 30.2034233 | **10.10205** | 5.6533° |
+| min sink | **−13.058** | **−1.4157544** | 8.7913229 | 6.20964 | 9.1484° |
+| max forward speed | **53.366** | −20.1912793 | **67.7758263** | 3.35669 | 16.5895° |
 
-Nothing is unbounded: at either pole the glide degenerates to a vertical fall at `vy = −3.920`,
+Nothing is unbounded: at either pole the glide degenerates to a vertical fall at `vy = −78.400`,
 `vx = 0`. The range is merely wide — `vy` spans 55× between min sink and a vertical dive — which is
 why the plot gives `vy` both a full-range and a zoomed panel.
 
-The last entry refines the `53.35° / 3.389 / 16.58°` quoted under the dive's γ floor. That number
+The last entry refines the `53.35° / 3.389 b/t / 16.58°` quoted under the dive's γ floor. That number
 came from `ceiling()`, which sweeps at 0.05° and deliberately does not refine; the top is flat to
 `1e-9`, so the two agree to well inside anything that matters.
 

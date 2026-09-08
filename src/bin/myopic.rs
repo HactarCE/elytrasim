@@ -246,19 +246,23 @@ fn cmd_family(path: &str, tag: &str) {
 /// so if the dive were asymptoting to the best available *steady* state for the objective,
 /// the floor would track this angle. Note what it reduces to at w = 0: the minimum-sink
 /// glide, not the fastest one.
+/// Ticks per second: `sim` works in blocks/tick, but these two commands report blocks/second.
+const TPS: f64 = 20.0;
+
 /// Steady-glide curves against pitch, as CSV, for `tools/plot_glide.py`.
 ///
 /// The horizontal axis is `sim`'s `z` (yaw is pinned to zero); it is reported as `vx` because
-/// that is the convention everywhere outside the sim.
+/// that is the convention everywhere outside the sim. Velocities are blocks/second. The glide
+/// ratio is a ratio of two velocities, so it is dimensionless and the same in either unit.
 fn cmd_glide(step: f64, lo: f64, hi: f64) {
-    println!("# steady glide vs pitch, trig={}", trig_mode());
+    println!("# steady glide vs pitch, trig={}, velocities in blocks/second", trig_mode());
     println!("pitch,vy,vx,speed,glide,gamma");
     let n = ((hi - lo) / step).round() as i64;
     let rows: Vec<String> = (0..=n).into_par_iter().map(|i| {
         let p = lo + step * i as f64;
         let e = equilibrium(p);
-        format!("{p:.6},{:.12},{:.12},{:.12},{:.9},{:.6}",
-                e.y, e.z, e.length(), e.z / -e.y, gamma(e))
+        format!("{p:.6},{:.10},{:.10},{:.10},{:.9},{:.6}",
+                e.y * TPS, e.z * TPS, e.length() * TPS, e.z / -e.y, gamma(e))
     }).collect();
     for r in rows { println!("{r}") }
 }
@@ -289,11 +293,11 @@ fn cmd_crit() {
         for p in ps {
             let e = equilibrium(p);
             let mark = if p == bp { " <-" } else { "" };
-            println!("{p:>12.7} {:>16.12} {:>16.12} {:>14.9} {:>12.6}{mark}",
-                     e.y, e.z, e.z / -e.y, gamma(e));
+            println!("{p:>12.7} {:>16.10} {:>16.10} {:>14.9} {:>12.6}{mark}",
+                     e.y * TPS, e.z * TPS, e.z / -e.y, gamma(e));
         }
     };
-    println!("steady glide critical points, trig={}", trig_mode());
+    println!("steady glide critical points, trig={}, velocities in blocks/second", trig_mode());
     crit("max glide ratio (blocks forward per block fallen)", 0.0, &|v| v.z / -v.y);
     crit("min sink (max vy)", -13.0, &|v| v.y);
     crit("max forward speed (max vx)", 53.0, &|v| v.z);
