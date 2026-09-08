@@ -1,4 +1,5 @@
 mod energy_grid;
+mod pitch_profile;
 mod replay_pitches;
 mod sim;
 
@@ -46,7 +47,7 @@ fn main() -> eframe::Result {
 
     let mut fixed_rot = Rot::new(0., 0.);
 
-    let mut draw_arrow_type = DrawArrowType::DeepOptimalPitch;
+    let mut draw_arrow_type = DrawArrowType::ImmediateOptimalDeltaTE;
 
     const Y_VEL_MID: f64 = 0.;
     const Z_VEL_LO: f64 = 0.;
@@ -569,6 +570,9 @@ fn main() -> eframe::Result {
                                         .collect::<Vec<_>>()
                                 ));
                             });
+                        });
+                        ui.group(|ui| {
+                            pitch_profile::ui(ui, &hovered_state, fixed_rot.x, held_ticks);
                         });
                     })
                 });
