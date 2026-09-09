@@ -479,6 +479,34 @@ stay in the single-cycle family (`# cycles 1`) and fall away from `n = 300` the 
 document says they should. So the corpus contains, unlabelled, exactly the tiling degeneracy it
 warns about.
 
+### The other axis of the same shard, rebuilt
+
+`lambda` at `n = 300`, `v0 = 0`, continued outward from the same anchor, 21 cells, about eight
+minutes. This is the axis the corpus sweeps most finely, so it is where compounding had the most
+room to accumulate, and continuation along `lambda` under a price had not been tested at all:
+
+```
+ lambda |    old dJ  curv_l1   lag1  @90 |    new dJ  curv_l1   lag1  @90
+  -4.00 |   -50.566     3553  -0.73   13 |   -50.494      192  +0.62    0
+  -3.00 |   -36.485     3466  -0.76   11 |   -36.403      131  +0.66    0
+  -2.00 |   -20.065     2971  -0.70   12 |   -19.925      117  +0.70    0
+  -1.00 |    -1.192      817  -0.35    6 |    -1.041       98  +0.77    0
+  -0.50 |     8.934      382  +0.15    5 |     9.063       97  +0.78    0
+   0.00 |    19.474      187  +0.65    3 |    19.614      104  +0.77    0
+   0.50 |    30.713      487  +0.11    5 |    30.826      114  +0.84    0
+   1.00 |    42.617      949  -0.26    6 |    42.617      145  +0.82    0
+   2.00 |    67.601     3775  -0.72   19 |    67.448      257  +0.57    0
+   3.00 |    93.902     5373  -0.79   22 |    94.044      271  +0.60    0
+   4.00 |   121.720     6671  -0.80   29 |   122.122      290  +0.49    0
+```
+
+Twenty-one of twenty-one cells: better `dJ` at seventeen of them, within 0.2% at the other four
+(`lambda` 1.5 and 2 are 0.1 to 0.15 blocks down), an order of magnitude less curvature
+everywhere, `lag1` positive everywhere against -0.80 to +0.65, and **no cell touching the gate**
+against 3 to 29 ticks per cell. The old grid degrades symmetrically away from `lambda = 0` --
+`curv_l1` goes 187 at the anchor to 3553 and 6671 at the ends -- which is the continuation
+compounding, visible along both axes.
+
 ### Continuation holds under a price
 
 Walking the winner along `n` at 310 through 400 with a single 40-pass polish per cell
