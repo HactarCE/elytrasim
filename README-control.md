@@ -686,6 +686,9 @@ Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/l
 08_fixpoint.png    the answer: reference, today's recipe, and the fixed-point schedule. The
                    last has 3% of its per-tick delta power above 0.35 cycles/tick against the
                    reference cycle's 14%, so it is the smoothest of the three
+10_shard.png       the whole (0,0) shard, old against rebuilt, over the (n, lambda) plane.
+                   The third row is the one to look at: the rebuilt panel is empty, because
+                   no cell parks at the gate. Drawn by tools/compare.py
 09_projection.png  two relaxed optima under three box widths -- the picture behind a
                    hypothesis about why one projects and the other does not, which the
                    numbers then refuted; see "What is still open"
