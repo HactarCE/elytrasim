@@ -346,19 +346,40 @@ and the chatter beats it by 0.163, +0.76%.** That 0.76% is the same quantity the
 frontier put at 0.7%, arrived at by a completely different route, which is the best evidence
 available that both are measured right.
 
-"Found" is doing work in that sentence and should not be read past. Two chains is two samples of
-a family, not a search over it: nothing here shows 21.574 is the best flyable fixed point, only
-that two independent chains reach it and agree. The reference cycle, by contrast, has one fixed
-point because it is one schedule, so that side of the comparison is not a sample. Settling it
-needs a sweep over the `v0` axis with the fixed-point condition imposed, which is the open
-question below.
+"Found" is doing work in that sentence. Seven chains now agree, from starting velocities spread
+across the plane (next section), which says the iteration is stable -- but they were all seeded
+from the same family of schedules, so this bounds the *basin*, not the problem. The reference
+cycle, by contrast, has one fixed point because it is one schedule, so that side of the
+comparison is not a sample.
 
-Two things fall out of that table. The fixed point is **not unique** -- two chains landed on
-`v0` = (0.100, 0.189) and (0.150, 0.198), a long way apart, and agree on `dy` to 0.001 blocks, so
-there is a family of self-consistent cycles rather than a point. And read against the stopping
-rule, the honest summary is that on *rate* the two are a tie (1.43827 blocks/s against 1.43767),
-and the whole case for the price and the margin is robustness -- 0.0145 blocks lost from a 0.05
-degree nudge against 5.369.
+### The fixed point is set by the basin, not by where you start
+
+Two chains suggested the fixed point was not unique -- they landed on `v0` = (0.100, 0.189) and
+(0.150, 0.198), a long way apart, agreeing on `dy` to 0.001. Five more chains say that reading was
+wrong. Seeded from the *same* schedule but started from deliberately scattered velocities:
+
+```
+start v0            settles at v0            dy      curv_l1  lag1
+(0.050, 0.150)   -> (0.100101, 0.188794)   21.581      164   +0.66
+(0.250, 0.250)   -> (0.100234, 0.188788)   21.580      164   +0.66
+(0.000, 0.000)   -> (0.099965, 0.188912)   21.584      175   +0.62
+(0.150, 0.300)   -> (0.099757, 0.188652)   21.573      149   +0.69
+(-0.050, 0.190)  -> (0.099803, 0.188661)   21.581      173   +0.62
+```
+
+Every one lands on (0.1000, 0.1888) to within 5e-4, from starting velocities spread over
+`vy` -0.05 to 0.25 and `vz` 0.15 to 0.30, and each is an exact limit cycle. So the iteration is
+**not** sensitive to where it starts -- what selects the fixed point is the seed *schedule*, the
+same basin dependence as everywhere else in this document. The (0.150, 0.198) outlier was seeded
+from a different relaxed optimum, which is why it is somewhere else while scoring the same.
+
+The best flyable fixed point found is 21.584, at `curv_l1` 175. At the reference cycle's own
+curvature budget it is 21.573 at `curv_l1` 149, which is the number to quote against 21.494:
+**+0.080 blocks, +0.37%.** Buying the extra 0.010 costs 26 more of `curv_l1`.
+
+Read against the stopping rule, the honest summary is that on *rate* the two are a tie (1.43827
+blocks/s against 1.43767), and the whole case for the price and the margin is robustness --
+0.0145 blocks lost from a 0.05 degree nudge against 5.369.
 
 ## Is the answer actually robust, or only smooth?
 
