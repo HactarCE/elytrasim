@@ -732,7 +732,37 @@ Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/l
 09_projection.png  two relaxed optima under three box widths -- the picture behind a
                    hypothesis about why one projects and the other does not, which the
                    numbers then refuted; see "What is still open"
+11_profiles.png    twelve representative cells of the (0,0) shard, old schedule under new,
+                   spanning n 150/300/450 and lambda -2/0/+1/+3. Drawn by
+                   tools/plot_pitch_grid.py
+12_zoom.png        one cell (n 450, lambda 0) up close: the whole schedule, then the chatter
+                   window, then the same window differenced. Drawn by tools/plot_pitch_zoom.py
+13_family.png      the rebuilt schedules alone, as families along lambda and along n, with the
+                   reference cycle over the top. Drawn by tools/plot_pitch_family.py
 ```
+
+### What the profiles look like
+
+`11_profiles.png` is the visual form of the shard table. The rebuilt schedule tracks the old one
+almost everywhere -- the two lines are indistinguishable over most of every panel -- and departs
+in exactly two places: a burst of tick-rate alternation the old cell spends somewhere in the
+glide, and the timing of the flick. Nothing else moved. That is the argument that the price is
+removing a pathology rather than reshaping the answer.
+
+`12_zoom.png` is the same thing at one cell. From tick 195 to 236 the old `n 450, lambda 0` cell
+slams between exactly 0 and exactly +90 degrees *every tick*, and the differenced panel shows
+the change reversing sign on 34 of the 40 steps: a hand cannot do this and a wrist would not survive trying.
+The rebuilt cell crosses the same window as a straight ramp from +35.5 to +42.2 degrees, and scores
+**a block higher** (13.904 against 12.922) while doing it. This cell is the clearest case in the
+shard where the degenerate answer was also the worse answer.
+
+`13_family.png` is the check the grid cannot make. Along lambda the schedules share one
+structure -- an early phase that varies with the price on distance, then a common glide, then a
+flick to the same peak -- and along n they are the same schedule with the flick slid later, all
+five landing on the reference cycle's own flick-and-glide shape (black dashed). Neighbouring
+cells lie on top of each other; the family does not fray from one cell to the next. **That is
+what "the continuation does not drift" looks like**, and it is the property the old pass budget
+was standing in for.
 
 `07_best.png` is worth a specific look. Today's recipe (row 2) is visually clean -- it has no
 chatter, and nothing in a pitch plot tells you it holds three ticks a hundredth of a degree from
