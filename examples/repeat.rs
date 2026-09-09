@@ -26,7 +26,9 @@ fn main() {
 
     print!("{:<24}", "file");
     for k in 1..=reps { print!("  {:>7}", format!("dy#{k}")) }
-    println!("   {:>8} {:>8}", "|dv| 1st", "|dv| last");
+    // The sum of the two components' absolute changes, not a Euclidean norm -- it is a closure
+    // *test* (zero or not), and calling it |dv| invited reading it as a speed difference.
+    println!("   {:>9} {:>9}", "sum|dv|1", "sum|dv|N");
     for f in &files {
         let text = std::fs::read_to_string(f.as_str()).unwrap();
         let (obj, ps) = match Profile::parse(&text) {
@@ -42,10 +44,10 @@ fn main() {
             let (y0, vin) = (s.pos.y, s.vel);
             for &p in &ps { s = ticked(&s, p) }
             print!("  {:>7.3}", s.pos.y - y0);
-            let d = (s.vel.y - vin.y).abs() + (s.vel.z - vin.z).abs();
+            let d = (s.vel.y - vin.y).abs() + (s.vel.z - vin.z).abs();  // L1, a closure test
             if k == 0 { d1 = d }
             dl = d;
         }
-        println!("   {d1:>8.4} {dl:>8.4}");
+        println!("   {d1:>9.4} {dl:>9.4}");
     }
 }

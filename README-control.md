@@ -279,14 +279,14 @@ already knows how to name.
 
 The objective optimizes one cycle with the terminal velocity free. Nothing in it asks the
 schedule to be *repeatable*, and the answers are not: the reference cycle returns to within 0.024
-of its own starting velocity, the priced optima to 0.060-0.082. So they end slower than they
-started and book the difference as height.
+of its own starting velocity (summed over the two components), the priced optima to 0.060-0.082. So they end slower than they started -- `mu = 1e-4` hands on a velocity 0.070 blocks/tick down
+on the one it was given -- and book the difference as height.
 
 `examples/repeat.rs` flies a schedule several times in a row, each cycle starting where the last
 one ended. `dy` per repetition, vanilla trig:
 
 ```
-                        #1      #2      #3      #4      #5   |dv| after #1
+                        #1      #2      #3      #4      #5   sum|dv| after #1
 reference cycle     21.494  21.494  21.494  21.494  21.494        0.0001
 jitter + lag1-floor 21.562  21.566  21.565  21.565  21.565        0.0017
 mu = 1e-4           21.975  21.513  21.526  21.525  21.525        0.0821
@@ -327,14 +327,14 @@ iter  v0                        -> v_end                    |dv|      dy
 
 `runs/antichatter/fix/i8.pitches`: `curv_l1` 149 against the reference's 147, `curv_max` 26.5
 against 38, `lag1` +0.696, residual **6.1e-9**, worst single-tick nudge 0.0145 blocks, and it
-repeats at 21.574 forever with `|dv|` 0.0000.
+repeats at 21.574 forever, handing on exactly the velocity it was given.
 
 The chatter has to be measured the same way or the comparison flatters somebody. Running the
 identical iteration with `--mu 0` and no margin, from the same starting schedule, converges to its
 own fixed point in three steps. All four of these are exact limit cycles:
 
 ```
-                                       v0 it settles on        dy every cycle   |dv|
+                                       v0 it settles on        dy every cycle  sum|dv|
 reference cycle (a person)      (0.167467, 0.200887)                   21.494  0.0001
 priced, chain from the priced        (0.100033, 0.188800)              21.574  0.0000
 priced, chain from the relaxed       (0.150303, 0.198255)              21.573  0.0000
