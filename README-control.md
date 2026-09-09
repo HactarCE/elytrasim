@@ -341,10 +341,17 @@ priced, chain from the relaxed       (0.150303, 0.198255)              21.573  0
 relaxed, chattering                  (0.120937, 0.192570)              21.737  0.0000
 ```
 
-So, sustained: **the flyable schedule beats a person by 0.080 blocks a cycle, +0.37%, and the
-chatter beats the flyable schedule by 0.163, +0.76%.** That 0.76% is the same quantity the
-single-cycle frontier put at 0.7%, arrived at by a completely different route, which is the best
-evidence available that both are measured right.
+So, sustained: **the best flyable schedule found beats a person by 0.080 blocks a cycle, +0.37%,
+and the chatter beats it by 0.163, +0.76%.** That 0.76% is the same quantity the single-cycle
+frontier put at 0.7%, arrived at by a completely different route, which is the best evidence
+available that both are measured right.
+
+"Found" is doing work in that sentence and should not be read past. Two chains is two samples of
+a family, not a search over it: nothing here shows 21.574 is the best flyable fixed point, only
+that two independent chains reach it and agree. The reference cycle, by contrast, has one fixed
+point because it is one schedule, so that side of the comparison is not a sample. Settling it
+needs a sweep over the `v0` axis with the fixed-point condition imposed, which is the open
+question below.
 
 Two things fall out of that table. The fixed point is **not unique** -- two chains landed on
 `v0` = (0.100, 0.189) and (0.150, 0.198), a long way apart, and agree on `dy` to 0.001 blocks, so
