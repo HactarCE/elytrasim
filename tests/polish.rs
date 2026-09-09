@@ -254,3 +254,23 @@ fn a_curvature_cap_is_respected_from_a_seed_that_breaks_it() {
     assert!(worst(&r.pitches) <= 25.0 + 1e-3,
             "cap 25 not enforced: seed {} -> {}", worst(&seed), worst(&r.pitches));
 }
+
+/// The coordinate search must never score, or return, a pitch outside the interval it was given.
+/// `steps` is a rounded count, so `lo + step*steps` overshoots `hi` for about half of all
+/// intervals -- by up to half a step, which is 0.125 degrees at the global step. It never bit any
+/// published number, because `--limit L` alone gives `[-L, L]` and an exact multiple of the step;
+/// it needs `--cap` or a local pass to produce a ragged interval.
+#[test]
+fn the_search_never_leaves_the_interval_it_was_given() {
+    let o = Objective { v0: V0, n: 30, lambda: 0.0 };
+    // a cap makes `feasible` hand out intervals that are not multiples of the step
+    let rough = Rough { cap: 7.0, limit: 43.7, ..Rough::default() };
+    let seed: Vec<f64> = (0..o.n).map(|i| 20.0 * ((i as f64) * 0.7).sin()).collect();
+    let r = polish(&o, &seed, PolishOpts { max_passes: 4, tol: 0.0, rough, ..Default::default() });
+    let worst_p = r.pitches.iter().fold(0.0f64, |a, &p| a.max(p.abs()));
+    assert!(worst_p <= 43.7 + 1e-6, "left the limit: {worst_p}");
+    let worst_c = (0..r.pitches.len() - 2)
+        .map(|j| (r.pitches[j] - 2.0 * r.pitches[j + 1] + r.pitches[j + 2]).abs())
+        .fold(0.0f64, f64::max);
+    assert!(worst_c <= 7.0 + 1e-3, "left the cap: {worst_c}");
+}

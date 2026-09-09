@@ -651,6 +651,11 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
         }).sum::<f64>() / s.len() as f64 - pen(p)
     };
     let steps = ((hi - lo) / step).round() as i64;
+    // `steps` is a rounded count, so `lo + step*steps` overshoots `hi` whenever the interval is
+    // not an exact multiple of the step -- about half of them, by up to half a step. That is
+    // 0.125 degrees at the global step, and it would let the search return a pitch outside the
+    // admissible set the caller just computed. Clamp the sample, not just the ternary bracket.
+    let at = |i: i64| (lo + step * i as f64).min(hi);
     // The tail replays are independent, so the sweep is exactly parallel -- no approximation,
     // just the same evaluations on more cores.
     let j_cur = score(cur);
@@ -662,8 +667,8 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
     let (mut bp, mut bs) = (start, if start == cur { j_cur } else { score(start) });
     let (gp, gs) = (0..steps + 1)
         .into_par_iter()
-        .map(|i| { let p = lo + step * i as f64; (p, score(p)) })
-        .reduce(|| (cur, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
+        .map(|i| { let p = at(i); (p, score(p)) })
+        .reduce(|| (start, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
     if gs > bs { bp = gp; bs = gs }
 
     // Bracket inside [lo, hi]: the refine must not walk back out of the admissible set.
