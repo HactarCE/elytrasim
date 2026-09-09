@@ -298,3 +298,24 @@ fn an_infeasible_schedule_cannot_certify() {
     assert!((tight.violation(&bad) - 15.0).abs() < 1e-9);
     assert!(certify_reg(&o, &bad, 0.25, Jitter::default(), tight).is_infinite());
 }
+
+/// The seed projection has to cover every constraint, not the one it was written for. It first
+/// enforced only `cap` and `limit`, so a seed that broke `slew_cap` was never brought in --
+/// `feasible` then had nothing to offer at any tick and the polish was a silent no-op.
+#[test]
+fn the_seed_projection_covers_every_constraint() {
+    let saw: Vec<f64> = (0..40).map(|i| if i % 2 == 0 { -70.0 } else { 70.0 }).collect();
+    for rough in [Rough { slew_cap: 9.0, ..Rough::default() },
+                  Rough { cap: 6.0, ..Rough::default() },
+                  Rough { cap: 12.0, slew_cap: 9.0, limit: 40.0, ..Rough::default() },
+                  Rough { slew_cap: 3.0, limit: 25.0, ..Rough::default() }] {
+        let q = project_cap(&saw, rough);
+        assert_eq!(rough.violation(&q), 0.0, "projection left a violation for {rough:?}");
+    }
+    // and polish keeps it there
+    let o = Objective { v0: V0, n: 40, lambda: 0.0 };
+    let rough = Rough { cap: 12.0, slew_cap: 9.0, limit: 40.0, ..Rough::default() };
+    let r = polish(&o, &saw, PolishOpts { max_passes: 4, tol: 0.0, rough, ..Default::default() });
+    assert!(rough.violation(&r.pitches) <= 1e-3,
+            "polish left a violation of {}", rough.violation(&r.pitches));
+}

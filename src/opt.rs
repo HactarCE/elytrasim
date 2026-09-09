@@ -928,7 +928,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair:
     // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
     // tick is skipped.
-    let mut pitches: Vec<f64> = project_cap(init, opts.rough.cap, opts.rough.limit)
+    let mut pitches: Vec<f64> = project_cap(init, opts.rough)
         .into_iter().map(|p| p as f32 as f64).collect();
     let mut dv = opts.jitter.draws_at(0);
     let mut states = jittered_replays(obj, &pitches, &dv);
@@ -1304,8 +1304,8 @@ pub fn smooth_median(p: &[f64], k: usize) -> Vec<f64> {
     }).collect()
 }
 
-/// Bring a schedule inside a second-difference cap, by integrating a rate-limited tracker
-/// through it from the left.
+/// Bring a schedule inside the admissible set -- `limit`, `slew_cap` and `cap` -- by integrating
+/// a rate-limited tracker through it from the left.
 ///
 /// A coordinate sweep cannot do this on its own. `Rough::feasible` asks what one pitch may be
 /// given its neighbors, and when the neighbors are themselves out of bounds the answer is
@@ -1326,25 +1326,38 @@ pub fn smooth_median(p: &[f64], k: usize) -> Vec<f64> {
 /// terminates, because at a window as wide as the schedule the mean is a constant and every
 /// second difference is zero. The width it settles on is a fair measure of how far outside the
 /// admissible set the seed was.
-pub fn project_cap(p: &[f64], cap: f64, limit: f64) -> Vec<f64> {
-    let clamp = |q: &[f64]| -> Vec<f64> { q.iter().map(|x| x.clamp(-limit, limit)).collect() };
-    if !cap.is_finite() { return clamp(p) }
+pub fn project_cap(p: &[f64], rough: Rough) -> Vec<f64> {
     let causal = |src: &[f64]| -> Vec<f64> {
-        let mut q = clamp(src);
-        for j in 0..q.len().saturating_sub(2) {
-            let d = q[j + 2] - 2.0 * q[j + 1] + q[j];
-            if d.abs() > cap {
-                q[j + 2] = (2.0 * q[j + 1] - q[j] + d.clamp(-cap, cap)).clamp(-limit, limit);
+        let mut q: Vec<f64> = src.iter().map(|x| x.clamp(-rough.limit, rough.limit)).collect();
+        // Rate first, then acceleration: a schedule inside the slew limit is a milder input to
+        // the curvature pass, and the curvature pass cannot make the rate worse than 2*cap.
+        if rough.slew_cap.is_finite() {
+            for j in 0..q.len().saturating_sub(1) {
+                let d = q[j + 1] - q[j];
+                if d.abs() > rough.slew_cap {
+                    q[j + 1] = (q[j] + d.clamp(-rough.slew_cap, rough.slew_cap))
+                        .clamp(-rough.limit, rough.limit);
+                }
+            }
+        }
+        if rough.cap.is_finite() {
+            for j in 0..q.len().saturating_sub(2) {
+                let d = q[j + 2] - 2.0 * q[j + 1] + q[j];
+                if d.abs() > rough.cap {
+                    q[j + 2] = (2.0 * q[j + 1] - q[j] + d.clamp(-rough.cap, rough.cap))
+                        .clamp(-rough.limit, rough.limit);
+                }
             }
         }
         q
     };
-    let worst = |q: &[f64]| (0..q.len().saturating_sub(2))
-        .map(|j| (q[j] - 2.0 * q[j + 1] + q[j + 2]).abs()).fold(0.0, f64::max);
+    if !rough.cap.is_finite() && !rough.slew_cap.is_finite() { return causal(p) }
+    // `violation` is the termination test, so this cannot claim success on a constraint it
+    // forgot to enforce -- which is exactly how the first version of this function was wrong.
     let mut k = 1;
     loop {
         let q = causal(&smooth_box(p, k));
-        if worst(&q) <= cap * (1.0 + 1e-9) + 1e-9 || k > p.len() { return q }
+        if rough.violation(&q) <= 1e-9 || k > p.len() { return q }
         k += 2;
     }
 }
