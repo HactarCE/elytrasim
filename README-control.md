@@ -14,7 +14,8 @@ much the schedule asks of a wrist, and a *margin* between the pitch and the ends
 
 The short version:
 
-* Adam at 20000 passes chatters harder than coordinate ascent does and scores higher. The
+* Adam at 20000 passes -- a hundred times more passes than coordinate ascent gets, for less wall
+  clock -- chatters harder than coordinate ascent does and scores higher from the same seed. The
   degeneracy is not something a better optimizer avoids.
 * There are **two** degeneracies. The chatter is worth 0.7%. The other one -- parking a pitch a
   hundredth of a degree from +-90, where `look_hor_length` underflows and the aerodynamics
@@ -32,8 +33,10 @@ Everything below is at the cell every chatter number in `README-sweep.md` was me
 ## The optimizer is not too weak
 
 `examples/gd.rs` is finite-difference gradient ascent with Adam, sharing the objective and the
-jitter with `polish`. Its passes are about a thousand times cheaper than a coordinate-ascent
-global pass -- two tail replays per tick against 720 -- so 20000 of them cost 36 seconds.
+jitter with `polish`. A gradient pass costs two tail replays per tick; a coordinate-ascent pass
+costs a few hundred (721 sweep points plus 70 ternary steps on a global pass, 321 plus 70 on a
+local one). Measured on this cell: 1.8 ms against 192 ms per pass, a factor of 108, so 20000
+gradient passes cost 36 seconds against 20 seconds for 104 coordinate-ascent passes.
 
 | | J | TV | lag1 | max abs d2p | residual |
 |---|---|---|---|---|---|
