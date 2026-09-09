@@ -239,6 +239,31 @@ At a tenth of a degree of pitch noise -- far past any real input precision -- th
 is still 0.3 blocks ahead of the reference cycle. At half a degree they meet. That is the honest
 statement of how much of the +1.6% is real: all of it, until your hand is worse than half a degree.
 
+## Head to head against the stopping rule
+
+The same cell, under vanilla trig, comparing what `README-sweep.md` recommends today against
+this. The old recipe is `--jitter 0.10 --draws 8 --lag1-floor 0.2` seeded from the reference
+cycle; it stops itself at 12 passes and the pass budget above that changes nothing (8, 16 and 60
+give bit-identical output).
+
+| | dJ | curv_l1 | max abs d2p | lag1 | residual | worst 1-tick nudge | dJ at +-0.01 deg noise |
+|---|---|---|---|---|---|---|---|
+| reference cycle (a person) | 21.494 | 147 | 38 | +0.48 | - | 0.0002 | 21.495 (21.494) |
+| jitter + `--lag1-floor 0.2` | 21.564 | 308 | 73 | +0.26 | 3.4e-4 | **5.369** | **18.464 (10.961)** |
+| `--mu 1e-4 --limit 85` | **21.829** | **147** | **27** | +0.71 | **2.5e-6** | **0.015** | **21.820 (21.817)** |
+
+Better on every axis at once: 0.265 blocks more `J`, half the summed curvature, a third of the
+peak angular acceleration, and a residual 140 times smaller -- meaning it is actually converged
+rather than interrupted.
+
+The interesting column is the last two. **The stopping rule catches the chatter and does nothing
+at all about the boundary parking**, which is the larger fragility: its answer holds three
+consecutive ticks at pitch -89.98902, one table cell from the gate, and each of them costs more
+than five blocks if the hand is 0.05 degrees out. Under a hundredth of a degree of pitch noise it
+loses 3.1 blocks on average and 10.6 at the fifth percentile. That is what "weird and overfit"
+actually looks like once the chatter has been suppressed, and `lag1` cannot see it -- it reads a
+perfectly respectable +0.26.
+
 ## What is still open
 
 * **The corpus is written under `trig = libm`.** Any cell leaning on pitch +90 is leaning on the
