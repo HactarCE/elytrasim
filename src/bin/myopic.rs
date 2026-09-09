@@ -896,7 +896,7 @@ fn cmd_ksweep() {
         // Let the two constants that could stand in for the leak try to absorb the change.
         // Coordinate descent from a single seed is not enough: from the k = 0.055 constants it
         // gets stuck against the s_switch clamp for k = 0.15 and 0.25 while k = 0.5 finds 1.28,
-        // which is an optimiser artefact and not the leak rate failing. Seed on a grid instead.
+        // which is an optimizer artifact and not the leak rate failing. Seed on a grid instead.
         let mut q = p;
         let mut best = f64::NEG_INFINITY;
         for si in 0..=32 {

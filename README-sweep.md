@@ -39,7 +39,7 @@ failure: 200 passes reaches residual 9.4e-6, a real coordinate optimum.
 
 **Total variation cannot detect it**, because a real flick is also a large move -- the cycle
 drops to 0 and covers ~88 degrees in about six ticks. What separates them is whether
-neighbouring ticks move *together*. `lag1`, the lag-1 correlation of the per-tick changes, is
+neighboring ticks move *together*. `lag1`, the lag-1 correlation of the per-tick changes, is
 the statistic that does: the reference cycle reads +0.48, the same schedule polished 200 passes
 reads -0.74, and the sign flip is the diagnosis. It is in every header.
 
@@ -70,7 +70,7 @@ passes. The last 0.2 blocks is bought entirely with chatter.
 
 ### Continuation compounds
 
-A warm-started cell inherits its neighbour's polish, so a per-cell pass budget accumulates along
+A warm-started cell inherits its neighbor's polish, so a per-cell pass budget accumulates along
 the continuation path. Measured on `n = 300 -> 310 -> 320` at 8 passes each:
 
 ```
@@ -114,7 +114,7 @@ policy seed lands degenerate (lag-1 -0.19 at 8 passes) where the reference cycle
 and the anchor propagates to the whole shard.
 
 Resume is by file existence -- a cell whose file matches `(n, lambda, v0, trig)` is not redone
-but still seeds its neighbours, so a killed job costs at most one cell.
+but still seeds its neighbors, so a killed job costs at most one cell.
 
 Check a corpus with `python3 runs/check.py <dir>`; read profiles from Python with
 `tools/load.py`.

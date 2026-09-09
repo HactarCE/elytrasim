@@ -28,7 +28,7 @@ fixed horizon is suspect. The **horizon-free** check is: tile the cycle three ti
     myopic polish tiled900.txt 30 > polished900.txt
     myopic score polished900.txt 300 214 300
 
-That re-optimisation moves the cycle by 2.0° mean pitch and improves it 0.6% — the error bar on
+That re-optimization moves the cycle by 2.0° mean pitch and improves it 0.6% — the error bar on
 everything below.
 
 ## Phase 1, dive (~190 ticks): hold the flight-path angle
@@ -105,7 +105,7 @@ quantized into steps of `2*pi/65536 = 0.0055°`, and inside `|p| < 0.0055°` —
 `(int)(p * 10430.378)` truncating to 0 — it returns exactly zero and the branch is dead outright — the corner becomes a short flat shelf followed by a staircase. The
 `p >= 0` side is bit-identical between `libm` and `mth_lut`, exactly as `sim/mth.rs` predicts,
 because `cos(p)` cancels and `lift_force` is a `double` `Math.cos` in vanilla either way. The
-min-sink pitch does move, to about −13.05, and its neighbourhood is a jittery staircase rather
+min-sink pitch does move, to about −13.05, and its neighborhood is a jittery staircase rather
 than a smooth peak, so that critical point carries roughly ±0.01° of quantization noise. The max
 forward speed is unmoved.
 
@@ -117,9 +117,9 @@ forward speed is unmoved.
 
 ## Phase 3, flick (~6 ticks): ramp to about −88°
 
-Nothing to find. This is where two independently optimised cycles disagree most (11°), so the
+Nothing to find. This is where two independently optimized cycles disagree most (11°), so the
 values genuinely do not matter. It does need to be a ramp rather than a step, though a chunk of
-the measured cost of stepping is probably the optimiser over-fitting the tick grid.
+the measured cost of stepping is probably the optimizer over-fitting the tick grid.
 
 ## Phase 4, gain (~86 ticks): argmax ΔTE over ~20 ticks, not 1
 
@@ -133,7 +133,7 @@ Holding pitch constant for `n` ticks and taking the argmax of the total-energy c
 One tick is not merely imprecise: it pins to the −90° bound for ticks 214–230 while the optimum
 recovers through −79° to −45°, and is still 40° off at tick 228.
 
-**Is n = 20 overfit?** No. Re-optimising the cycle against `TE + w·z` gives a family of optimal
+**Is n = 20 overfit?** No. Re-optimizing the cycle against `TE + w·z` gives a family of optimal
 cycles trading climb against ground covered (`myopic polish <file> <passes> <w>`, then
 `myopic family`). Negative w is the operationally interesting half — climbing in as little space as
 possible — since extra distance can always be bought by flying more cycles.
@@ -376,7 +376,7 @@ still the right description of what the optimum *does*; just do not read the div
 evidence that the dive is where the cycle is won.
 
 **What the flatness does not explain.** It says the *linear* score `mu . f` is flat. The ΔTE rules
-optimise a different, non-linear objective, and nothing here explains why the ΔTE family is
+optimize a different, non-linear objective, and nothing here explains why the ΔTE family is
 bimodal in the dive — that was an overclaim in an earlier version of this file and it is
 withdrawn. Likewise "the gain is a regular arc, so the pitch is an argmax" was circular phrasing:
 "arc" is only a label for a stretch of trajectory and implies nothing. The defensible claim is

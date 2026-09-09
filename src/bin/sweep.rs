@@ -187,7 +187,7 @@ fn cmd_pilot(a: &Args) {
     let lams: Vec<f64> = a.get("--lams").map_or(vec![-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0],
         |s| s.split(',').map(|x| x.parse().unwrap()).collect());
     // --vels gives explicit (vy:vz) points; --vys/--vzs give their outer product. The critical
-    // points of the velocity box are its four corners, its centre, and the reference operating
+    // points of the velocity box are its four corners, its center, and the reference operating
     // point, which is not a corner and is the only one with a known answer.
     let vels: Vec<(f64, f64)> = match a.get("--vels") {
         Some(s) => s.split(',').map(|p| {
@@ -283,7 +283,7 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         let obj = cell(i, j);
         let path = cell_path(dir, &obj);
         // Warm start from whichever solved neighbor got here first; the anchor has none.
-        // The anchor is the one cell with no solved neighbour. `seed_from_policy` was tuned
+        // The anchor is the one cell with no solved neighbor. `seed_from_policy` was tuned
         // against the reference cycle's operating point, so away from it -- v0 = 0 especially --
         // an explicit anchor schedule is the difference between seeding the cyclic branch and
         // seeding a collapsed one, and the BFS propagates whichever it gets to the whole shard.
@@ -318,7 +318,7 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
                 .unwrap().1
         };
         // Resume: a cell whose file already matches this objective and physics is not redone,
-        // but its pitches still seed the neighbours, so a killed job costs one cell.
+        // but its pitches still seed the neighbors, so a killed job costs one cell.
         let existing = (!force).then(|| std::fs::read_to_string(&path).ok()).flatten()
             .and_then(|t| Profile::parse(&t).ok())
             .filter(|p| p.obj == obj && p.trig == trig_mode() && p.pitches.len() == obj.n);

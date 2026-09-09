@@ -141,7 +141,7 @@ admissible set. Neither is a stopping rule, and with either of them on, `--lag1-
 the discrete stand-in for a *relaxed* control: at each tick the optimizer is really choosing a
 distribution over pitches and realizing the mixture by alternating. The ordinary control that
 means the same thing is the local mean. Skip it and coordinate ascent can stall, because an l1
-penalty on second differences couples three neighbouring coordinates -- it is a fused-l1 term,
+penalty on second differences couples three neighboring coordinates -- it is a fused-l1 term,
 and coordinate descent has no guarantee on a nonsmooth objective that couples coordinates.
 Measured: seeded from a schedule alternating -90/+90, the same price converged (residual 2.2e-7)
 to `curv_l1` 1295, against 79 from the same price seeded from the local mean.

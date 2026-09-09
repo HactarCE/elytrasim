@@ -575,7 +575,7 @@ pub struct PolishOpts {
     /// over 60 passes) while costing up to 8 blocks of distance. Stopping time is what works.
     ///
     /// It matters more under continuation than it looks: a warm-started cell inherits its
-    /// neighbour's polish, so a per-cell pass budget accumulates along the path and a cell far
+    /// neighbor's polish, so a per-cell pass budget accumulates along the path and a cell far
     /// from the anchor has been polished many times over. A budget cannot bound that; a
     /// property of the schedule can.
     ///
@@ -742,7 +742,7 @@ pub fn certify_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rou
 /// A different question from whether the corrections share a sign overall. A delta that is
 /// smoothly positive over the first half and negative over the second sums to nothing, so it
 /// looks like balanced noise in bulk, while being highly structured and worth exploiting.
-/// What matters for a big-step method is whether neighbouring ticks want the same correction,
+/// What matters for a big-step method is whether neighboring ticks want the same correction,
 /// because then the whole error lives in a handful of smooth modes.
 ///
 /// Returns the lag-1 correlation of the deltas, the mean length of a same-sign run, and the
@@ -788,7 +788,7 @@ pub fn delta_structure(d: &[f64]) -> (f64, f64, Vec<(usize, f64)>) {
 /// Move every tick toward its own best pitch at once, and line-search how far to go.
 ///
 /// Coordinate ascent changes one tick at a time, so when many ticks want to move the same way
-/// it makes the move n times over, each one partly undone by its neighbours. Measured: a
+/// it makes the move n times over, each one partly undone by its neighbors. Measured: a
 /// schedule 4.7 blocks short of its optimum had 0.79 coherence -- the sum of its per-tick moves
 /// was 709 degrees against 901 degrees of absolute movement, nearly all one-signed -- while a
 /// well-polished one sat at -0.09, balanced noise. So the one-sidedness is a symptom of being
@@ -1216,7 +1216,7 @@ pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
 /// optimizer is really choosing a distribution over pitches, and it realizes the mixture by
 /// alternating. The ordinary control that means the same thing is the local mean, which is what
 /// this computes. Without it, coordinate ascent under an l1 curvature price can stall: the price
-/// couples three neighbouring coordinates, so it is a fused-l1 term, and coordinate descent is
+/// couples three neighboring coordinates, so it is a fused-l1 term, and coordinate descent is
 /// not guaranteed to reach a stationary point of a nonsmooth objective that couples coordinates.
 /// Measured: seeded from a schedule alternating -90/+90 it converged (residual 2.2e-7) to
 /// `curv_l1` 1295, against 162 from the same price seeded from the local mean.
@@ -1390,7 +1390,7 @@ pub fn total_variation(pitches: &[f64]) -> f64 {
 /// Lag-1 correlation of the per-tick pitch changes: the degeneracy statistic.
 ///
 /// Total variation cannot tell a flick from chatter -- both are large moves. What separates
-/// them is whether neighbouring ticks move *together*. A real manoeuvre is a run of same-signed
+/// them is whether neighboring ticks move *together*. A real manoeuvre is a run of same-signed
 /// steps, so the deltas correlate positively; chatter alternates, so they correlate negatively.
 /// Measured on the reference cycle this reads +0.48, on the same schedule polished 200 passes
 /// -0.74, and the sign flip is the whole diagnosis.
