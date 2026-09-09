@@ -134,11 +134,14 @@ fn cmd_verify(files: &[String]) {
         let p = match Profile::parse(&text) { Ok(p) => p, Err(e) => { println!("{f}: BAD HEADER: {e}"); bad += 1; continue } };
         // the header is authoritative: replay under the physics it claims, not the shell's
         set_trig_mode(p.trig);
+        let viol = p.rough.violation(&p.pitches);
         let res = certify_reg(&p.obj, &p.pitches, PolishOpts::default().global_step, p.jitter, p.rough);
         let claimed = p.residual;
-        let ok = res <= claimed.max(1e-6) * 1.5 + 1e-9;
-        println!("{f}: n {:>4} lambda {:+.4} trig {} | claimed {:.2e}, found {:.2e}  {}",
-                 p.obj.n, p.obj.lambda, p.trig, claimed, res, if ok { "ok" } else { "MISMATCH" });
+        let ok = viol == 0.0 && res <= claimed.max(1e-6) * 1.5 + 1e-9;
+        println!("{f}: n {:>4} lambda {:+.4} trig {} | claimed {:.2e}, found {:.2e}  {}{}",
+                 p.obj.n, p.obj.lambda, p.trig, claimed, res, if ok { "ok" } else { "MISMATCH" },
+                 if viol > 0.0 { format!("  (outside its own control limits by {viol:.3} deg)") }
+                 else { String::new() });
         if !ok { bad += 1 }
     }
     if bad > 0 { eprintln!("{bad} of {} profiles failed", files.len()); std::process::exit(1) }

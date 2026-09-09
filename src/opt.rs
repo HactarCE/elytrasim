@@ -493,6 +493,32 @@ impl Rough {
         c
     }
 
+/// How far outside the admissible set a schedule is, in degrees; 0 when it is inside.
+    ///
+    /// This exists because `certify` was quietly lying without it. `residuals_reg` asks
+    /// `feasible` what each pitch may be, and when the *neighbors* already break a cap the
+    /// answer is empty, so the search collapses to the single point it started from and reports
+    /// a gain of zero. A schedule with 240 deg/tick^2 of curvature under a cap of 0 certified at
+    /// residual 0.0 -- a perfect score for a profile that does not satisfy its own header.
+    ///
+    /// A residual only means anything for a schedule that is *in* the set it claims to be in, so
+    /// `certify_reg` checks this first and returns infinity when it is not.
+    pub fn violation(&self, p: &[f64]) -> f64 {
+        let mut v: f64 = 0.0;
+        for &x in p { v = v.max(x.abs() - self.limit) }
+        if self.cap.is_finite() {
+            for j in 0..p.len().saturating_sub(2) {
+                v = v.max((p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() - self.cap)
+            }
+        }
+        if self.slew_cap.is_finite() {
+            for j in 0..p.len().saturating_sub(1) {
+                v = v.max((p[j + 1] - p[j]).abs() - self.slew_cap)
+            }
+        }
+        v.max(0.0)
+    }
+
     /// The interval the center pitch may take without breaking a cap, intersected with
     /// `[lo, hi]`. Returns `None` when the caps and the neighbors are already inconsistent,
     /// which a warm start can arrive in; the caller then leaves the tick alone.
@@ -738,7 +764,13 @@ pub fn certify(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> f64 
 }
 
 /// `certify` under a roughness price. See `residuals_reg`.
+///
+/// Infinite for a schedule that is outside the admissible set its own header names. A residual
+/// is "how much could one coordinate move gain", and the coordinate search cannot move at all
+/// when the neighbors are already illegal -- so without this check an infeasible profile scores
+/// a perfect 0.0. See `Rough::violation`.
 pub fn certify_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough) -> f64 {
+    if rough.violation(pitches) > 0.0 { return f64::INFINITY }
     residuals_reg(obj, pitches, step, jit, rough).iter().map(|x| x.1).fold(0.0, f64::max)
 }
 

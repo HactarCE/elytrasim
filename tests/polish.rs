@@ -274,3 +274,27 @@ fn the_search_never_leaves_the_interval_it_was_given() {
         .fold(0.0f64, f64::max);
     assert!(worst_c <= 7.0 + 1e-3, "left the cap: {worst_c}");
 }
+
+/// A certificate has to be worthless for a schedule that is not in the set it claims to be in.
+/// Without a feasibility check it was the opposite of worthless: `residuals_reg` asks `feasible`
+/// what each pitch may be, gets nothing back when the *neighbors* already break a cap, collapses
+/// the search to the point it started from, and reports a gain of zero -- a perfect score.
+#[test]
+fn an_infeasible_schedule_cannot_certify() {
+    let o = Objective { v0: V0, n: 30, lambda: 0.0 };
+    let bad: Vec<f64> = (0..o.n).map(|i| if i % 2 == 0 { -60.0 } else { 60.0 }).collect();
+    let rough = Rough { cap: 0.0, ..Rough::default() };
+    assert!((rough.violation(&bad) - 240.0).abs() < 1e-9, "violation should be 240 deg/tick^2");
+    let res = certify_reg(&o, &bad, 0.25, Jitter::default(), rough);
+    assert!(res.is_infinite(), "an infeasible schedule certified at {res}");
+
+    // and the same schedule under no constraint at all is feasible, so it certifies normally
+    let free = Rough::default();
+    assert_eq!(free.violation(&bad), 0.0);
+    assert!(certify_reg(&o, &bad, 0.25, Jitter::default(), free).is_finite());
+
+    // the limit is checked too, not only the caps
+    let tight = Rough { limit: 45.0, ..Rough::default() };
+    assert!((tight.violation(&bad) - 15.0).abs() < 1e-9);
+    assert!(certify_reg(&o, &bad, 0.25, Jitter::default(), tight).is_infinite());
+}
