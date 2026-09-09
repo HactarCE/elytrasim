@@ -476,6 +476,45 @@ cell. That has not been done.
 
 ## Does it hold up away from one cell?
 
+### The whole (0,0) shard, rebuilt
+
+363 cells, through `sweep run` itself rather than a hand-rolled loop, so this is the production
+path: breadth-first continuation over the *two-dimensional* `(n, lambda)` plane from one solved
+anchor. That is where the old corpus's compounding actually happened, and the 1D lines below
+cannot show whether a long path through the plane drifts. 66 minutes.
+
+```
+sweep run --trig mth_lut --out runs/antichatter/shard0 --vys 0 --vzs 0 \
+          --ns <the corpus's 11> --lams <the corpus's 33> \
+          --mu 0.0001 --limit 85 --passes 60 --tol 0.002 --anchor <the solved n=300 cell>
+```
+
+The same 363 cells, before and after:
+
+```
+                     curv_l1   curv_max    lag1   cells parked past |pitch| 89.9
+the corpus we have      4457        180   -0.78                              91%
+rebuilt                  197         39   +0.64                               0%
+reference cycle          147         38   +0.48                               0%
+```
+
+Medians. The **worst** rebuilt cell in the grid is `curv_l1` 579, `curv_max` 109, `lag1` +0.25 --
+better than the old *median* on every one of them -- and no cell anywhere touches the gate.
+
+What it cost, split by regime:
+
+```
+  n <= 500, the single cycle the corpus claims to sweep   297 cells   median dJ  +0.014
+  n >= 550, where the old cells fly the cycle twice        66 cells   median dJ -27.561
+```
+
+So inside the regime the corpus is *about*, the rebuild is **free** -- very slightly positive on
+the median, better in 168 cells and worse in 121 -- while cutting hand movement twenty-fold and
+eliminating gate parking entirely. The `n >= 550` band is the tiling degeneracy `README-sweep.md`
+already names: those old cells climb twice as far because they fly the cycle twice, and the
+rebuilt ones stay in the single-cycle family. `fig/10_shard.png` draws all of it; the third row is
+the one to look at, because the rebuilt panel is empty.
+
 ### One axis of the corpus, rebuilt
 
 `n` at `lambda = 0`, `v0 = 0` -- the spine of the `(0,0)` shard -- solved by `tools/flyable.sh`
@@ -575,8 +614,8 @@ worse basin -- so the chatter is not reliably worth even the 0.7% it buys on the
 
 ## What is still open
 
-* **The corpus has not been rebuilt.** One axis of it has, above, and both prerequisites check
-  out, but the other 498 cells are as they were.
+* **Eight of the ten shards have not been rebuilt.** The `(0,0)` shard has been, in full (below);
+  the nine `v0 != 0` shards, 137 cells between them, are as they were.
 * **The corpus is written under `trig = libm`.** Any cell leaning on pitch +90 is leaning on the
   sign of an f32 rounding error that vanilla does not have. The whole grid should be rebuilt
   under `--trig mth_lut`, or at minimum `--limit` should be on so it cannot matter. This is the
