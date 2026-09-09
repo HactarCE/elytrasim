@@ -20,13 +20,17 @@ def stats(path):
                 at90=int((np.abs(p) > 89.9).sum()))
 
 root = sys.argv[1] if len(sys.argv) > 1 else 'runs/corpus'
-files = sorted(glob.glob(os.path.join(root, '*', '*.pitches'))) or \
-        sorted(glob.glob(os.path.join(root, '*.pitches')))
+# Both layouts at once: a sweep writes one directory per shard, but a hand-built axis is
+# usually flat, and taking only the first non-empty glob silently hid the flat half.
+files = sorted(set(glob.glob(os.path.join(root, '*', '*.pitches'))) |
+               set(glob.glob(os.path.join(root, '*.pitches'))))
 if not files: sys.exit(f'no .pitches under {root}')
 
 rows = {}
 for f in files:
-    rows.setdefault(os.path.basename(os.path.dirname(f)), []).append(stats(f))
+    d = os.path.dirname(f)
+    rows.setdefault('.' if os.path.abspath(d) == os.path.abspath(root)
+                    else os.path.basename(d), []).append(stats(f))
 
 hdr = f"{'shard':<24} {'cells':>5} {'curv_l1':>9} {'curv_max':>9} {'lag1':>7} {'at +-90':>8}"
 print(hdr); print('-' * len(hdr))
