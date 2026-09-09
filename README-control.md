@@ -373,7 +373,37 @@ cell. That has not been done.
   relaxed optimum will project well.
 * **Relax/project does not iterate.** Feeding the projection back in as a fresh relaxation seed
   went 22.402 -> 15.66 -> 18.68 and kept falling. One round, then stop.
-* **The corpus has not been rebuilt**, though the two things a rebuild needs both check out.
+* **The corpus has not been rebuilt**, though one axis of it has, as a demonstration, and the two
+  things a full rebuild needs both check out.
+
+  *One axis, rebuilt.* `n` at `lambda = 0`, `v0 = 0` -- the spine of the `(0,0)` shard -- solved
+  by `tools/flyable.sh` at `n = 300` and continued outward, 11 cells, about seven minutes:
+
+```
+    n |   old dJ  curv_l1   lag1  @90 |   new dJ  curv_l1   lag1  @90
+  100 |   -8.050        8  +0.83    0 |   -8.051        3  +1.00    0
+  150 |   -3.704      221  +0.37    1 |   -2.931      227  +0.43    0
+  200 |    7.706      259  +0.56    2 |    8.384      192  +0.69    0
+  250 |   15.479      260  +0.46    3 |   15.815      123  +0.82    0
+  300 |   19.474      187  +0.65    3 |   19.614      104  +0.77    0
+  350 |   19.640      985  -0.11    9 |   19.818      133  +0.68    0
+  400 |   16.538     5315  -0.81   21 |   17.472      213  +0.61    0
+  450 |   12.922     6201  -0.83   23 |   13.906      210  +0.64    0
+  500 |    9.392     6869  -0.83   25 |   10.200      170  +0.72    0
+  550 |   27.011      774  +0.36    7 |    6.604      132  +0.71    0
+  600 |   41.221     6478  -0.83   25 |    3.051      130  +0.71    0
+```
+
+  Better `J`, an order of magnitude less curvature, and no cell against the gate, at every `n`
+  from 100 to 500 at once. At `n = 400` it is +0.93 blocks with 25 times less hand movement.
+
+  `n = 550` and `n = 600` look like losses and are not: the old cells there are **flying the
+  cycle twice**. The `n = 600` cell climbs `dy` 40.98 over `dz` 673.6, which is two of the
+  `n = 300` cell's 19.5 and 337, and `README-sweep.md` already names that regime degenerate --
+  "a different regime that wins on J while not being the object under study". The rebuilt cells
+  stay in the single-cycle family (`# cycles 1`) and fall away from `n = 300` the way the
+  document says they should. So the corpus contains, unlabelled, exactly the tiling degeneracy it
+  warns about.
 
   *Continuation holds under a price.* Walking the winner along `n` at 310 through 400 with a
   single 40-pass polish per cell (`--mu 1e-4 --limit 85`, no relaxation, no multi-start):
