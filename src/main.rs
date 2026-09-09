@@ -647,8 +647,7 @@ fn main() -> eframe::Result {
                 if matches!(
                     draw_arrow_type,
                     DrawArrowType::HeldOptimalDeltaTE | DrawArrowType::HeldOptimalDeltaVel
-                )
-                    && held_computed_for.as_ref() != Some(&(grid_meta.clone(), held_ticks))
+                ) && held_computed_for.as_ref() != Some(&(grid_meta.clone(), held_ticks))
                 {
                     (held_optimal_pitches, held_optimal_energies) =
                         energy_grid::new_grid_held_optimal_pitch(&grid_meta, held_ticks);

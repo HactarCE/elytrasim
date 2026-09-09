@@ -1242,9 +1242,7 @@ pub fn new_grid_direction_preserving_pitches(meta: &GridMeta) -> Grid<Vec<Pitch>
         (0..meta.height)
             .map(|row| {
                 (0..meta.width)
-                    .map(|col| {
-                        direction_preserving_pitches(meta.row_col_usize_to_vel((row, col)))
-                    })
+                    .map(|col| direction_preserving_pitches(meta.row_col_usize_to_vel((row, col))))
                     .collect()
             })
             .collect(),

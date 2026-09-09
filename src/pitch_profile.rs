@@ -17,9 +17,10 @@ const MAX_SAMPLES: usize = 2048;
 
 /// the curve: how much the pitch moves the quantity.
 const CURVE_COLOR: egui::Color32 = egui::Color32::from_rgb(100, 238, 100);
-/// the horizontal line at zero, which the deltas are measured against.
-/// gold, as the current state is drawn gold on the grid.
-const ZERO_COLOR: egui::Color32 = egui::Color32::GOLD;
+/// the horizontal line at zero
+/// and the vertical line at the pitch the rest of the panel reports on,
+const REPLAY_COLOR: egui::Color32 = egui::Color32::GOLD;
+const ARGMAX_COLOR: egui::Color32 = crate::PINK;
 
 /// a quantity whose change over the flight is plotted.
 #[derive(Copy, Clone)]
@@ -152,19 +153,49 @@ fn plot(
         egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
     let font = egui::FontId::monospace(9.0);
 
+    // sample the sweep once: it gives both the curve and the pitch that peaks it.
+    let samples = (plot_rect.width().round() as usize).clamp(MIN_SAMPLES, MAX_SAMPLES);
+    let sweep = (0..=samples)
+        .map(|i| {
+            let pitch = lerp_f32(PITCH_LO, PITCH_HI, i as f32 / samples as f32);
+            (
+                pitch,
+                quantity.delta_per_tick(hovered_state, pitch, held_ticks),
+            )
+        })
+        .collect::<Vec<_>>();
+    let argmax_pitch = sweep
+        .iter()
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|&(pitch, _)| pitch);
+    let points = sweep
+        .iter()
+        .map(|&(pitch, delta)| {
+            egui::pos2(
+                x_of_pitch(pitch),
+                y_of_value(delta.clamp(range_lo, range_hi)),
+            )
+        })
+        .collect::<Vec<_>>();
+
     painter.rect_filled(plot_rect, 2.0, ui.visuals().extreme_bg_color);
     for pitch in PITCH_GRID {
         painter.vline(x_of_pitch(pitch), plot_rect.y_range(), grid_stroke);
     }
 
-    // the pitch the rest of the panel is reporting on, in the pitch color.
+    // the pitch the rest of the panel is reporting on.
     // the slider it comes from is unclamped, so it can sit off the sweep.
     if (PITCH_LO..=PITCH_HI).contains(&fixed_pitch) {
         painter.vline(
             x_of_pitch(fixed_pitch),
             plot_rect.y_range(),
-            (1., crate::PINK),
+            (1., REPLAY_COLOR),
         );
+    }
+
+    // the pitch that maximizes the quantity, in the pitch color.
+    if let Some(pitch) = argmax_pitch {
+        painter.vline(x_of_pitch(pitch), plot_rect.y_range(), (1., ARGMAX_COLOR));
     }
 
     // no change: above it the pitch gains, below it the pitch loses.
@@ -174,23 +205,11 @@ fn plot(
             egui::pos2(plot_rect.left(), zero_y),
             egui::pos2(plot_rect.right(), zero_y),
         ],
-        egui::Stroke::new(1.0_f32, ZERO_COLOR),
+        egui::Stroke::new(1.0_f32, REPLAY_COLOR),
         4.0,
         4.0,
     ));
 
-    let samples = (plot_rect.width().round() as usize).clamp(MIN_SAMPLES, MAX_SAMPLES);
-    let points = (0..=samples)
-        .map(|i| {
-            let fraction = i as f32 / samples as f32;
-            let pitch = lerp_f32(PITCH_LO, PITCH_HI, fraction);
-            let delta = quantity.delta_per_tick(hovered_state, pitch, held_ticks);
-            egui::pos2(
-                lerp_f32(plot_rect.left(), plot_rect.right(), fraction),
-                y_of_value(delta.clamp(range_lo, range_hi)),
-            )
-        })
-        .collect::<Vec<_>>();
     painter.add(egui::Shape::line(
         points,
         egui::Stroke::new(1.5_f32, CURVE_COLOR),
@@ -223,7 +242,7 @@ fn plot(
         },
         "0",
         font.clone(),
-        ZERO_COLOR,
+        REPLAY_COLOR,
     );
 
     // the pitch axis
