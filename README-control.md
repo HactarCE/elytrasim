@@ -291,9 +291,11 @@ The remaining 0.0145 is the *other* corner in the physics -- the forward-to-up c
 gated on `lean_angle < 0`, so pitch 0 is a kink and the snap sits on it at 1e-4 of a degree. It
 costs a hundredth of a block, which is the right size for something to be left alone.
 
-At a tenth of a degree of pitch noise -- far past any real input precision -- the priced schedule
-is still 0.3 blocks ahead of the reference cycle. At half a degree they meet. That is the honest
-statement of how much of the +1.6% is real: all of it, until your hand is worse than half a degree.
+At a seventh of a degree of pitch noise -- past any real input precision -- the priced schedule is
+still 0.24 blocks ahead of the reference cycle on the mean. At half a degree they meet: 21.521
+against 21.426 on the mean, and 21.317 against 21.343 at the fifth percentile, which is a tie.
+That is the honest statement of how much of the +1.6% survives: all of it, until the hand is
+worse than about half a degree, and none of it after.
 
 ## Head to head against the stopping rule
 
@@ -312,7 +314,7 @@ Better on every axis at once: 0.265 blocks more `J`, half the summed curvature, 
 peak angular acceleration, and a residual 140 times smaller -- meaning it is actually converged
 rather than interrupted.
 
-The interesting column is the last two. **The stopping rule catches the chatter and does nothing
+The interesting columns are the last two. **The stopping rule catches the chatter and does nothing
 at all about the boundary parking**, which is the larger fragility: its answer holds three
 consecutive ticks at pitch -89.98902, one table cell from the gate, and each of them costs more
 than five blocks if the hand is 0.05 degrees out. Under a hundredth of a degree of pitch noise it
