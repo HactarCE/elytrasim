@@ -145,8 +145,8 @@ sweep polish --trig mth_lut --n 300 --vy 0.167467 --vz 0.200887 --lambda 0 \
              --presmooth 9 --mu 0.001 --limit 85 --out flyable.pitches
 ```
 
-Step 1 is not optional and not a mistake to be avoided. The chattering optimum is what locates
-the basin; the smooth answer inherits its quality, monotonically:
+Step 1 is not optional and not a mistake to be avoided: without a relaxation step the price
+lands 0.29 blocks lower, and graduated smoothing does not substitute for it.
 
 | what was projected at `mu = 1e-3` | its own J | J after projection |
 |---|---|---|
@@ -156,6 +156,105 @@ the basin; the smooth answer inherits its quality, monotonically:
 | nothing -- `mu` annealed 0.3 -> 0.001 from the reference, never chattering | - | 21.924 |
 | nothing -- `mu = 1e-3` straight from the reference | - | 21.923 |
 
-Graduated smoothing does not bridge the gap: annealing `mu` down from 0.3 lands within 0.001
-blocks of where the direct run lands, 0.29 blocks below the projected answer. The chatter is
-worth something as *search* even though it is worthless as an *answer*.
+Annealing `mu` down from 0.3 lands within 0.001 blocks of where the direct run lands. The chatter
+is worth something as *search* even though it is worthless as an *answer*.
+
+**But the projection is not monotone in the relaxed J, and that is the sharp edge in this
+recipe.** A second relaxed optimum, `B`, scores 22.402 -- the highest raw J anything found -- and
+projects *worse* than the 22.346 one under every filter but one:
+
+| projection of relaxed B (J 22.402) | J after | | projection of relaxed A (J 22.346) | J after |
+|---|---|---|---|---|
+| none | 14.23 | | median 5 | 22.179 |
+| box 3 / 5 / 9 | 15.49 / 15.73 / 15.67 | | median 7 | 22.167 |
+| median 3 / 5 / 7 / 9 | 15.32 / 15.69 / 15.92 / 16.01 | | box 3 / 5 / 9 | 22.165 / 22.161 / 22.156 |
+| median 13 | **22.136** | | box 15 / 25 | 22.130 / 22.047 |
+
+Every one of those is converged -- residuals 1e-5 or better, several at the 200-pass ceiling. So
+`B` is simply a worse *basin* for a flyable schedule despite being a better relaxed point, and a
+projection width that is fine for one relaxed optimum is catastrophic for another. There is no
+way to tell from the relaxed schedule which you have.
+
+The recipe therefore has to be multi-start, which is cheap: relax from two or three seeds,
+project each at `k` in {3, 5, 9, 15} with both filters, polish all of them, and keep the best on
+`J - mu * sum|d2p|`. Twenty runs of half a minute. What is *not* legitimate is picking one
+projection, getting 15.66, and reporting it as the answer.
+
+## What it costs: J against hand movement
+
+Every point below is a converged coordinate optimum (`--tol 0.002`, residuals 1e-5 or better) of
+`J - mu * sum|d2p|` at `--limit 85`, projected from the same relaxed solution with
+`--presmooth 9`. `curv_l1` is `sum |d2p|` in deg/tick^2 -- what the wrist actually does.
+
+| mu | curv_l1 | max abs d2p | TV | lag1 | dJ |
+|---|---|---|---|---|---|
+| none (relaxed) | 6819 | 281 | 4169 | -0.66 | **21.975** |
+| 3e-5 | 424 | 81 | 462 | +0.18 | 21.859 |
+| **1e-4** | **147** | **27** | **336** | **+0.71** | **21.829** |
+| 2e-4 | 131 | 28 | 328 | +0.75 | 21.817 |
+| 5e-4 | 82 | 24 | 300 | +0.81 | 21.745 |
+| 1e-3 | 79 | 16 | 291 | +0.84 | 21.728 |
+| 2e-3 | 68 | 16 | 292 | +0.84 | 21.630 |
+| 5e-3 | 65 | 10 | 294 | +0.88 | 21.494 |
+| 1e-2 | 50 | 9 | 272 | +0.90 | 20.707 |
+| 2e-2 and up | 34 | 8 | 246 | +0.90 | 13.23 (collapsed to a glide) |
+| *reference cycle, flown by a person* | *147* | *38* | *248* | *+0.48* | *21.494* |
+
+Read the bolded row against the italic one: **at the reference cycle's own curvature budget the
+optimizer finds `dJ` 21.829 against a person's 21.494 -- 0.335 blocks, +1.6% -- while asking for
+a lower peak angular acceleration, 27 deg/tick^2 against 38.** All the chatter above that is
+worth 0.146 blocks, **0.7%**.
+
+The frontier is very flat over the range anyone cares about. Dropping `curv_l1` from 424 to 79, a
+factor of five less hand movement, costs 0.13 blocks. It only turns down below about 65, and by
+`mu = 2e-2` the schedule has stopped pumping and is holding a glide -- the collapse `opt::shape`
+already knows how to name.
+
+## Is the answer actually robust, or only smooth?
+
+Smooth is not the same as not-overfit, so the schedules were re-scored under noise they will
+actually see. `dJ` under uniform pitch noise of amplitude `a` on *every* tick, 200 draws, vanilla
+trig, 5th percentile in brackets (`examples/sens.rs`):
+
+| | a = 0.001 | a = 0.01 | a = 0.05 | a = 0.5 |
+|---|---|---|---|---|
+| reference cycle | 21.494 (21.494) | 21.495 (21.494) | 21.495 (21.494) | 21.426 (21.343) |
+| **mu = 1e-4, limit 85** | 21.823 (21.822) | 21.820 (21.817) | 21.796 (21.777) | 21.521 (21.317) |
+| mu = 1e-3, limit 85 | 21.723 (21.722) | 21.720 (21.717) | 21.704 (21.686) | 21.519 (21.338) |
+| relaxed, no price or limit | 21.969 (21.968) | **-19.98 (-44.43)** | -45.88 (-58.36) | -49.86 (-60.20) |
+
+Worst loss from nudging one single tick by 0.05 degrees (`examples/whichtick.rs`):
+
+```
+reference cycle         0.0002 blocks   (0.002 summed over all 300 ticks)
+mu = 1e-4, limit 85     0.0145 blocks   (0.126 summed)   at tick 192, pitch 0.00013
+relaxed, no limit       5.2 to 16.9     (102 summed)     at pitch -90.00000
+```
+
+The remaining 0.0145 is the *other* corner in the physics -- the forward-to-up conversion is
+gated on `lean_angle < 0`, so pitch 0 is a kink and the snap sits on it at 1e-4 of a degree. It
+costs a hundredth of a block, which is the right size for something to be left alone.
+
+At a tenth of a degree of pitch noise -- far past any real input precision -- the priced schedule
+is still 0.3 blocks ahead of the reference cycle. At half a degree they meet. That is the honest
+statement of how much of the +1.6% is real: all of it, until your hand is worse than half a degree.
+
+## What is still open
+
+* **The corpus is written under `trig = libm`.** Any cell leaning on pitch +90 is leaning on the
+  sign of an f32 rounding error that vanilla does not have. The whole grid should be rebuilt
+  under `--trig mth_lut`, or at minimum `--limit` should be on so it cannot matter. This is the
+  same class of problem `sweep fingerprint` exists for, one level down.
+* **The projection width is a hyperparameter.** `--presmooth 9` works from one relaxed optimum
+  and destroys another (J 22.402 projects to 15.66 at k = 9). Sweeping k over {3, 5, 9, 15} and
+  scoring on the regularized objective is cheap -- five runs of thirty seconds -- and is what the
+  recipe should do rather than fixing k. See `smooth_box`.
+* **Relax/project does not iterate.** Feeding the projection back in as a fresh relaxation seed
+  went 22.402 -> 15.66 -> 18.68 and kept falling. One round, then stop.
+* **Nothing here is cross-validated across the grid.** Every number is the one cell
+  `n = 300, lambda = 0, v0 = (0.167467, 0.200887)`. Whether `mu = 1e-4` is the right price at
+  `n = 120`, or under continuation along `lambda`, is not measured.
+* `--cap` and `--slew-cap`, the hard-constraint versions of the same idea, are implemented and
+  were not swept. A cap is arguably the more honest instrument than a price -- it says a
+  pitch profile is unavailable rather than expensive -- and `cap = 45` would admit every move
+  the reference cycle makes with 20% to spare.

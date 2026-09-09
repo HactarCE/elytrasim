@@ -19,7 +19,8 @@ def stats(path):
 pts = []
 for f in sorted(glob.glob('runs/antichatter/front/mu*.pitches')):
     mu = float(re.search(r'mu([\d.]+)\.pitches', f).group(1))
-    dj, c1, cm, _ = stats(f); pts.append((mu, c1, dj, cm))
+    dj, c1, cm, _ = stats(f)
+    if mu <= 0.01: pts.append((mu, c1, dj, cm))   # above this the schedule has collapsed to a glide
 pts.sort(key=lambda x: x[1])
 
 fig, ax = plt.subplots(figsize=(8.2, 5.2))
