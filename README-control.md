@@ -593,6 +593,36 @@ worse basin -- so the chatter is not reliably worth even the 0.7% it buys on the
   pitch profile is unavailable rather than expensive -- and `cap = 45` would admit every move
   the reference cycle makes with 20% to spare.
 
+## The code has been adversarially reviewed
+
+Nine correctness bugs, found by handing the diff to a second model with the instruction "assume
+there is a fourth" (I had already found three myself). None of them changed a published number --
+every certificate re-verifies at its claimed residual, and the fixed-point chain moves by at most
+8e-6 blocks. They are listed here because the *class* is worth knowing:
+
+| | |
+|---|---|
+| the coordinate search kept an out-of-range incumbent | a warm start outside `limit` was never brought in |
+| the ternary refine re-expanded its bracket to +-90 | |
+| the coarse sweep stepped past `hi` | `round((hi-lo)/step)` overshoots for half of all intervals |
+| f32 rounding crossed an exact constraint | limit 0.1 wrote 0.10000000149011612 |
+| `feasible` returning nothing made the polish a no-op | infeasible seed, zero passes, no error |
+| **an infeasible schedule certified at residual 0.0** | the check passed hardest where it should have failed |
+| a skipped tick left its prefix stale | the sweep then optimized a trajectory nobody was flying |
+| `project_cap` could exit still infeasible | "wide enough is constant" is false for a clamped box filter |
+| `project_cap` ignored `slew_cap` entirely | |
+| `--block` with `--mu` accepted a loss as a gain | 0.188 -> -4.168 reported as +0.19 |
+| `jacobi_step` compared jittered against unjittered | pre-existing |
+| resume matched the objective but not the price | |
+| `--trig` leaked between files in the examples | a headerless file inherited the last profile's physics |
+| a malformed `# rough` header parsed as a default | `typo` read as "no cap" |
+
+Eight of those are the same shape: **an emptiness that reads as success.** An interval with
+nothing in it, a filter with nothing left to smooth, a constraint nobody checked -- each returns
+the value that means "converged, nothing to do here." That is the failure mode to design against
+in this codebase, and `Rough::violation` exists so that the certificate can no longer be one of
+them.
+
 ## Figures
 
 Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/look.py` scripts;
