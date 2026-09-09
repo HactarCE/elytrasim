@@ -156,8 +156,11 @@ sweep polish --trig mth_lut --n 300 --vy 0.167467 --vz 0.200887 --lambda 0 \
 # 2. project and polish: local mean, then converge under a price and a margin
 sweep polish --trig mth_lut --n 300 --vy 0.167467 --vz 0.200887 --lambda 0 \
              --passes 200 --tol 0.002 --init relaxed.pitches \
-             --presmooth 9 --mu 0.001 --limit 85 --out flyable.pitches
+             --presmooth 9 --mu 0.0001 --limit 85 --out flyable.pitches
 ```
+
+`mu = 1e-4` is the point on the frontier below that sits at the reference cycle's own curvature;
+pick a different one by reading the table, not by tuning.
 
 Step 1 is not optional and not a mistake to be avoided: without a relaxation step the price
 lands 0.29 blocks lower, and graduated smoothing does not substitute for it.
@@ -365,20 +368,39 @@ cell. That has not been done.
   went 22.402 -> 15.66 -> 18.68 and kept falling. One round, then stop.
 * **The corpus has not been rebuilt**, though the two things a rebuild needs both check out.
 
-  *Continuation holds under a price.* Walking the winner along `n` at 310, 320, 330, 340 with a
-  single 40-pass polish per cell (`--mu 1e-4 --limit 85`, no relaxation, no multi-start) keeps
-  `curv_l1` between 162 and 183 and `lag1` between +0.65 and +0.69 the whole way, with residuals
-  at 1e-5. No creep. Without a price the same chain is degenerate by the second hop
-  (`README-sweep.md`). That matters for cost: relax + multi-start is minutes per cell and would
-  be 30 hours for the grid, while continuation is 15 to 20 seconds per cell, so a rebuild solves
-  one anchor properly and continues from it.
+  *Continuation holds under a price.* Walking the winner along `n` at 310 through 400 with a
+  single 40-pass polish per cell (`--mu 1e-4 --limit 85`, no relaxation, no multi-start):
 
-  *The recipe is not specific to one cell.* Run at `n = 150`, `n = 450` and `lambda = -1`, the
-  relaxed optimum chatters every time (`curv_l1` 458 to 7394, `curv_max` up to 360) and the
-  recipe returns something flyable every time (`curv_l1` 95 to 202, `lag1` +0.60 to +0.81).
-  Twice -- at `n = 150` and `lambda = -1` -- the *priced* answer beat the relaxed one outright
-  (0.760 against 0.725, 0.799 against 0.787), because the unpriced relaxation converged into a
-  worse basin. Chatter is not reliably worth even the 0.7% it buys here.
+```
+  n        310   320   330   340   350   360   380   400
+  curv_l1  162   183   169   165   192   226   242   257
+  curv_max  26    30    32    35    37    38    42    39
+  lag1    +.69  +.67  +.69  +.65  +.61  +.62  +.62  +.61
+```
+
+  `curv_l1` drifts up by 1.6x over nine hops and `lag1` sags from +0.69 to +0.61, so it is not
+  free -- but nothing collapses, `curv_max` stays under the reference cycle's 38 until `n = 380`,
+  and every residual is 1e-5. The unpriced control chain, the same hops seeded from the
+  chattering optimum, does not survive at all: it *collapses*, `J` going -20.7, -21.4, -22.1 with
+  total variation 32 -- the schedule stops pumping and holds a glide, which `opt::shape` names.
+
+  That matters for cost. Relax plus multi-start is minutes per cell, 30 hours for the grid;
+  continuation is 15 to 30 seconds, about three hours. A rebuild solves one anchor properly and
+  continues from it, re-anchoring when `lag1` sags.
+
+  *The recipe is not specific to one cell.* Four more cells, `mu = 1e-4`, `--limit 85`:
+
+```
+  cell        relaxed dJ  its curv_l1  best flyable dJ  its curv_l1  chatter worth
+  n = 150          0.725     458-1150            0.760           95   nothing (-0.035)
+  n = 450         15.878    7108-7394           15.697          202   0.181  (1.1%)
+  lambda = -1      0.787     584-4197            0.799          103   nothing (-0.012)
+  lambda = +1     45.606    4361-5053           45.460          184   0.146  (0.3%)
+```
+
+  The relaxation chatters every time and the recipe returns something flyable every time. Twice
+  the *priced* answer beat the relaxed one outright, because the unpriced run converged into a
+  worse basin -- so the chatter is not reliably worth even the 0.7% it buys on the standard cell.
 
 * **The schedules do not close.** The reference cycle nearly returns to its own starting velocity
   (|dv| 0.024); the priced optima drift further (0.060 to 0.081). `J` counts terminal kinetic
