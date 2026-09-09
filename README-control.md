@@ -24,8 +24,14 @@ The short version:
 * Total variation cannot separate a flick from chatter (a factor of 2.3). The *second* difference
   can (380 at the 95th percentile), in an l1 norm, because a real schedule's curvature is sparse.
 * Priced and margined, polished to convergence with no stopping rule at all: at the reference
-  cycle's own curvature budget, `dJ` **21.83 against a person's 21.49**, +1.6%, with a *lower*
-  peak angular acceleration and no fragility left.
+  cycle's own curvature budget, `dJ` **21.83 against a person's 21.49** for a single cycle from
+  the reference's own starting velocity, with a *lower* peak angular acceleration and no
+  fragility left.
+* **Most of that is a first-cycle transient, and saying so is the point.** Fly the same schedule
+  again from where it ended and it settles at 21.53, because it ends 0.08 blocks/tick slower than
+  it started and books the difference as climb. Iterating `v0 := v_end` -- which needs no change
+  to the objective, since `v0` is already a swept axis -- gives a schedule that closes exactly
+  and sustains **21.574 against a person's 21.494, +0.37%**. That is the honest number.
 
 Everything below is at the cell every chatter number in `README-sweep.md` was measured on:
 `n = 300`, `lambda = 0`, `v0 = (0.167467, 0.200887)`. `J` is `J(s_n)`; `dJ = J - 0.4275`.
@@ -256,18 +262,75 @@ In blocks on the ground rather than in `J`, over the same 300 ticks:
 ```
                      dy       dz     curv_l1
 reference cycle   21.333  342.243       147
-mu = 1e-4         21.876  342.768       147     +0.543 blocks of climb, +0.5 of distance
+mu = 1e-4         21.876  342.768       147
 jitter+lag1floor  21.393  344.827       308
 best of 24        21.958  342.647       169
 ```
 
-So it climbs half a block more per cycle and goes very slightly further, for the same amount of
-hand movement.
+Half a block more climb for the same hand movement -- **once**. The next section is why that
+sentence needs the "once", and it is the most important correction in this document.
 
 The frontier is very flat over the range anyone cares about. Dropping `curv_l1` from 424 to 79, a
 factor of five less hand movement, costs 0.13 blocks. It only turns down below about 65, and by
 `mu = 2e-2` the schedule has stopped pumping and is holding a glide -- the collapse `opt::shape`
 already knows how to name.
+
+## Most of the gain is a first-cycle transient
+
+The objective optimizes one cycle with the terminal velocity free. Nothing in it asks the
+schedule to be *repeatable*, and the answers are not: the reference cycle returns to within 0.024
+of its own starting velocity, the priced optima to 0.060-0.082. So they end slower than they
+started and book the difference as height.
+
+`examples/repeat.rs` flies a schedule several times in a row, each cycle starting where the last
+one ended. `dy` per repetition, vanilla trig:
+
+```
+                        #1      #2      #3      #4      #5   |dv| after #1
+reference cycle     21.494  21.494  21.494  21.494  21.494        0.0001
+jitter + lag1-floor 21.562  21.566  21.565  21.565  21.565        0.0017
+mu = 1e-4           21.975  21.513  21.526  21.525  21.525        0.0821
+best of 24          22.039  21.506  21.522  21.521  21.521        0.1029
+relaxed (chatters)  22.114  21.661  21.677  21.676  21.676        0.0782
+```
+
+Everything settles into a limit cycle within three repetitions, and every optimized schedule
+loses about 0.45 blocks doing it. The reference cycle loses nothing, because it already *is* its
+own limit cycle -- that is what makes it a cycle a person flies rather than an opening move.
+
+So the single-cycle numbers above are correct for the objective as stated and **wrong as a
+statement about how fast you climb**. In sustained blocks per second, which is what
+`OPTIMAL_CYCLE_RATE` in `opt.rs` already tracks:
+
+```
+reference cycle (a person)   21.494 blocks/cycle   1.43293 blocks/s    +0.00%
+jitter + --lag1-floor 0.2    21.565                1.43767             +0.33%
+mu = 1e-4 at the same v0     21.525                1.43500             +0.14%
+relaxed, chattering          21.677                1.44513             +0.85%
+```
+
+### The fix needs no change to the objective
+
+`v0` is already a swept axis, so the self-consistent cell is just a fixed point of `v0 := v_end`.
+Starting from the reference's velocity it converges in three iterations:
+
+```
+iter  v0                        -> v_end                    |dv|      dy
+1     (0.167467, 0.200887)      -> (0.097730, 0.188597)   0.08203  21.975
+2     (0.097730, 0.188597)      -> (0.100099, 0.188802)   0.00257  21.565
+3     (0.100099, 0.188802)      -> (0.100012, 0.188797)   0.00009  21.574
+8     (0.100033, 0.188800)      -> (0.100033, 0.188800)   0.00000  21.574
+```
+
+`runs/antichatter/fix/i8.pitches`: `curv_l1` 149 against the reference's 147, `curv_max` 26.5
+against 38, `lag1` +0.696, residual **6.1e-9**, worst single-tick nudge 0.0145 blocks, and it
+repeats at 21.574 forever with `|dv|` 0.0000. **21.574 against a person's 21.494 is +0.37%
+sustained**, and the chatter is worth a further 0.48% on top of that -- consistent with the 0.7%
+it buys on a single cycle.
+
+Read against the stopping rule, the honest summary is: on *rate* the two are a tie (1.43827
+against 1.43767, a tenth of a percent), and the whole case for the price and the margin is
+robustness -- 0.0145 blocks from a 0.05 degree nudge against 5.369.
 
 ## Is the answer actually robust, or only smooth?
 
@@ -439,12 +502,10 @@ cell. That has not been done.
   the *priced* answer beat the relaxed one outright, because the unpriced run converged into a
   worse basin -- so the chatter is not reliably worth even the 0.7% it buys on the standard cell.
 
-* **The schedules do not close.** The reference cycle nearly returns to its own starting velocity
-  (|dv| 0.024); the priced optima drift further (0.060 to 0.081). `J` counts terminal kinetic
-  energy so the comparison is fair as energy, but a schedule that ends 0.07 blocks/tick off its
-  start is not straightforwardly repeatable, and "one cycle" is what the corpus claims to sweep.
-  Terminal velocity being free is the stated objective, so this is a question about the
-  objective rather than about the optimizer -- but it is now the largest one left.
+* **Every cell of the corpus is a first cycle.** The fixed-point iteration above fixes one cell;
+  the grid has 509 of them, each with its own self-consistent `v0` that is not the `v0` it is
+  filed under. What a rebuild should probably sweep is the *fixed points*, with the current `v0`
+  axis kept for the transient case, and nothing here says how those two grids should relate.
 * `--cap` and `--slew-cap`, the hard-constraint versions of the same idea, are implemented and
   were not swept. A cap is arguably the more honest instrument than a price -- it says a
   pitch profile is unavailable rather than expensive -- and `cap = 45` would admit every move
