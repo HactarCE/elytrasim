@@ -429,7 +429,9 @@ Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/l
 ```
 00_baseline.png    the schedules as they were: reference, hard-polished, jittered
 01_hamiltonian.png the per-tick objective curve J(p) -- one peak, not two, so not a singular arc
-03_razor.png       one tick scanned across the top of the pitch range, in both trig modes
+03_razor.png       one tick scanned across the gate it parks against: libm at +90 (a
+                   25-block cliff across 7.6e-6 of a degree), mth_lut at +90 (no cliff),
+                   mth_lut at -90 (a 5-block step one table cell wide)
 04_frontier.png    J against summed |second difference|, every point converged
 05_final.png       the priced schedules at mu = 1e-4, 1e-3, 5e-3
 06_robust.png      dJ against pitch noise: the picture of what overfitting costs
