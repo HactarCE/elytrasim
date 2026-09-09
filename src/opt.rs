@@ -369,6 +369,166 @@ impl Jitter {
     }
 }
 
+// ---------------------------------------------------------------- what a hand can do
+
+/// A cost on how much *hand movement* a schedule asks for, and optional hard caps on it.
+///
+/// Why the second difference and not the first. Total variation cannot separate a flick from
+/// chatter, and the numbers say why: the reference cycle's sharpest move is 38.3 deg/tick while
+/// chatter runs at 90, a factor of 2.3, so any slew budget wide enough for the snap is wide
+/// enough for the alternation. The *rate of change* of pitch separates them cleanly. Measured
+/// over the whole 300-tick schedule:
+///
+/// ```text
+///                       max|dp|  max|d2p|  p95|d2p|  sum|d2p|
+/// reference cycle          38.3      37.9       0.4     147.1
+/// hard-polished (chatter)  90.0     180.0     153.2    4211.1
+/// ```
+///
+/// A factor of 4.7 at the max and 380 at the 95th percentile. The reference is a straight line
+/// almost everywhere with a handful of corners -- its curvature is *sparse* -- which is why the
+/// norm here is l1 and not l2. `sum |d2p|` with an l1 penalty is l1 trend filtering, whose
+/// solutions are piecewise linear with adaptively placed breakpoints: it buys a corner wherever
+/// one earns its keep and charges nothing for the straight runs between them. That is the shape
+/// a hand produces, and it is the shape the reference cycle already has.
+///
+/// This is a *stated* term in the utility function, not a stopping rule. The point is that the
+/// polish can then run to convergence: `mu` names the exchange rate between blocks of `J` and
+/// degrees per tick squared of wrist, and the answer at that rate is a real optimum rather than
+/// wherever the optimizer happened to be when it was interrupted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rough {
+    /// Blocks of `J` charged per degree/tick^2 of summed |second difference|.
+    pub mu: f64,
+    /// Blocks of `J` charged per degree/tick of summed |first difference| -- plain total
+    /// variation. Off by default; kept so the two norms can be compared on one footing.
+    pub mu_tv: f64,
+    /// Hard cap on |p[t+1] - 2p[t] + p[t-1]|, deg/tick^2. A constraint rather than a price, so
+    /// inside the feasible set it does not distort `J` at all. `INFINITY` disables it.
+    pub cap: f64,
+    /// Hard cap on |p[t+1] - p[t]|, deg/tick. `INFINITY` disables it.
+    pub slew_cap: f64,
+    /// Largest |pitch| the schedule may use, in degrees. 90 -- the game's own clamp -- allows
+    /// the optimizer right up to a discontinuity, and it goes there.
+    ///
+    /// Both ends of the range are gates, not limits. `look_hor_length` is |cos(pitch)| and every
+    /// conversion term is guarded by `look_hor_length > 0`, so where cos underflows to zero the
+    /// aerodynamics switch off entirely, and where it changes sign "forward" reverses. Which of
+    /// those you hit depends on the trig:
+    ///
+    /// * `mth_lut` (vanilla). `Mth::cos(-90 deg)` indexes `SIN[0]`, which is exactly 0.0, so the
+    ///   gate fails and pitch -90 is a dead tick -- no lift, no conversion, no turning, just
+    ///   gravity. At +90 the same table gives +9.6e-5 and the gate passes. The flick wants the
+    ///   conversion at its maximum, which is at -90, so the optimizer parks at -89.989: one
+    ///   table cell short of the cliff. Overshoot by 0.05 degrees and the schedule loses 5.2
+    ///   blocks.
+    /// * `libm`. `cos(90 deg)` in f32 is -4.4e-8, *negative*, so `look_angle.z/look_hor_length`
+    ///   flips to -1 and the turning term becomes `-0.2 * v_z` -- twenty percent of your forward
+    ///   speed per tick. The optimizer parks where cos is +2e-7, within 1e-5 degrees of that.
+    ///
+    /// Neither is a knob anyone can hold. Minecraft delivers rotation in steps of about
+    /// 0.15 * sensitivity degrees, so a margin of a degree or so costs the schedule almost
+    /// nothing and removes both cliffs. This is a *control-space* statement, like `cap`: the
+    /// pitches outside it are not worse, they are unavailable.
+    pub limit: f64,
+}
+
+impl Default for Rough {
+    fn default() -> Self {
+        Rough { mu: 0.0, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0 }
+    }
+}
+
+/// The five pitches `Rough` needs around tick `t`, lifted out of the schedule so a coordinate
+/// search can hold them while the schedule itself is mid-sweep. `None` off the ends.
+pub type Win5 = [Option<f64>; 5];
+
+/// The window at `t`: indices `t-2 ..= t+2`, `None` where that runs off the schedule.
+pub fn win5(p: &[f64], t: usize) -> Win5 {
+    let n = p.len() as isize;
+    let t = t as isize;
+    std::array::from_fn(|k| {
+        let i = t + k as isize - 2;
+        if i >= 0 && i < n { Some(p[i as usize]) } else { None }
+    })
+}
+
+impl Rough {
+    pub fn is_on(&self) -> bool {
+        self.mu != 0.0 || self.mu_tv != 0.0 || self.cap.is_finite() || self.slew_cap.is_finite()
+            || self.limit < 90.0
+    }
+    pub fn prices(&self) -> bool { self.mu != 0.0 || self.mu_tv != 0.0 }
+
+    /// The whole schedule's roughness cost, in blocks of `J`.
+    pub fn cost(&self, p: &[f64]) -> f64 {
+        let mut c = 0.0;
+        if self.mu != 0.0 {
+            for j in 0..p.len().saturating_sub(2) { c += self.mu * (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() }
+        }
+        if self.mu_tv != 0.0 {
+            for j in 0..p.len().saturating_sub(1) { c += self.mu_tv * (p[j + 1] - p[j]).abs() }
+        }
+        c
+    }
+
+    /// Just the terms the pitch at the window's center takes part in, evaluated at `x`. This is
+    /// what a coordinate search has to add to its score: everything else is a constant.
+    pub fn local(&self, w: &Win5, x: f64) -> f64 {
+        if !self.prices() { return 0.0 }
+        let g = |i: usize| if i == 2 { Some(x) } else { w[i] };
+        let mut c = 0.0;
+        if self.mu != 0.0 {
+            for j in 0..3 {
+                if let (Some(a), Some(b), Some(d)) = (g(j), g(j + 1), g(j + 2)) {
+                    c += self.mu * (a - 2.0 * b + d).abs()
+                }
+            }
+        }
+        if self.mu_tv != 0.0 {
+            for j in 1..3 {
+                if let (Some(a), Some(b)) = (g(j), g(j + 1)) { c += self.mu_tv * (b - a).abs() }
+            }
+        }
+        c
+    }
+
+    /// The interval the center pitch may take without breaking a cap, intersected with
+    /// `[lo, hi]`. Returns `None` when the caps and the neighbors are already inconsistent,
+    /// which a warm start can arrive in; the caller then leaves the tick alone.
+    pub fn feasible(&self, w: &Win5, lo: f64, hi: f64) -> Option<(f64, f64)> {
+        let (mut a, mut b) = (lo.max(-self.limit), hi.min(self.limit));
+        let mut clip = |l: f64, h: f64| { a = a.max(l); b = b.min(h) };
+        if self.cap.is_finite() {
+            let c = self.cap;
+            // |p[t-2] - 2p[t-1] + x| <= c
+            if let (Some(p0), Some(p1)) = (w[0], w[1]) { let m = 2.0 * p1 - p0; clip(m - c, m + c) }
+            // |p[t-1] - 2x + p[t+1]| <= c
+            if let (Some(p1), Some(p3)) = (w[1], w[3]) { let s = p1 + p3; clip(0.5 * (s - c), 0.5 * (s + c)) }
+            // |x - 2p[t+1] + p[t+2]| <= c
+            if let (Some(p3), Some(p4)) = (w[3], w[4]) { let m = 2.0 * p3 - p4; clip(m - c, m + c) }
+        }
+        if self.slew_cap.is_finite() {
+            let c = self.slew_cap;
+            if let Some(p1) = w[1] { clip(p1 - c, p1 + c) }
+            if let Some(p3) = w[3] { clip(p3 - c, p3 + c) }
+        }
+        if a <= b { Some((a, b)) } else { None }
+    }
+}
+
+/// Summed |second difference| of the schedule, deg/tick^2. The statistic `Rough::mu` prices,
+/// and the one that separates a flick from chatter -- see `Rough`.
+pub fn curvature_l1(p: &[f64]) -> f64 {
+    (0..p.len().saturating_sub(2)).map(|j| (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs()).sum()
+}
+
+/// The largest |second difference|, deg/tick^2: the peak angular acceleration the schedule asks
+/// the hand for. 37.9 on the reference cycle, 180 -- the geometric maximum -- on a chattering one.
+pub fn curvature_max(p: &[f64]) -> f64 {
+    (0..p.len().saturating_sub(2)).map(|j| (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs()).fold(0.0, f64::max)
+}
+
 // ---------------------------------------------------------------- the optimizer
 
 /// How hard to polish. The defaults are `cmd_polish`'s, which is the schedule every number in
@@ -421,6 +581,13 @@ pub struct PolishOpts {
     ///
     /// `f64::NEG_INFINITY` disables the guard.
     pub lag1_floor: f64,
+    /// What the schedule is charged for hand movement, and any hard caps on it. See `Rough`.
+    ///
+    /// This is the alternative to a stopping rule. `lag1_floor` bounds chatter by ending the
+    /// polish before it appears, which leaves the answer depending on when the optimizer was
+    /// interrupted; a price on curvature bounds it by making it cost something, which leaves an
+    /// answer that can be polished to convergence and certified.
+    pub rough: Rough,
 }
 
 impl Default for PolishOpts {
@@ -435,6 +602,7 @@ impl Default for PolishOpts {
             // budget instead. Set it explicitly for a single cold polish, where it works.
             lag1_floor: f64::NEG_INFINITY,
             jitter: Jitter::default(),
+            rough: Rough::default(),
         }
     }
 }
@@ -455,14 +623,23 @@ pub struct Polished {
     /// because it stopped gaining. Recorded because it changes what the residual means: the
     /// profile is deliberately short of the coordinate optimum, not converged to it.
     pub stopped_degenerate: bool,
+    /// What the roughness price took off `j`. Reported separately so the raw `J` of a
+    /// regularized answer is still readable: the schedule is worth `j` blocks and cost
+    /// `rough_cost` blocks of wrist to fly.
+    pub rough_cost: f64,
 }
 
 /// Best pitch for tick `t`, holding every other tick fixed: a global sweep, then a ternary
 /// refine inside the winning cell, scored on the exact tail. Returns `(pitch, J)` with the
 /// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
 /// returned is the one that will actually be flown, and its score is the score of flying it.
+///
+/// `pen` is the roughness price of putting a given pitch here -- the terms of `Rough::cost`
+/// that this tick takes part in. It is subtracted from the score, so the coordinate search
+/// optimizes the same regularized objective the polish reports, not `J` alone.
 fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
-                 cur: f64, lo: f64, hi: f64, step: f64, ternary_iters: usize) -> (f64, f64, f64) {
+                 cur: f64, lo: f64, hi: f64, step: f64, ternary_iters: usize,
+                 pen: &(dyn Fn(f64) -> f64 + Sync)) -> (f64, f64, f64) {
     // One prefix state per jitter draw. The draws differ only in where they started, so the
     // tail is the exact schedule flown from each of them -- this is E[J | v0 + dv] under common
     // random numbers, with no per-tick noise to average away.
@@ -471,20 +648,26 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
             let mut st = ticked(s0, p);
             for &q in tail { st = ticked(&st, q) }
             obj.j(&st)
-        }).sum::<f64>() / s.len() as f64
+        }).sum::<f64>() / s.len() as f64 - pen(p)
     };
     let steps = ((hi - lo) / step).round() as i64;
     // The tail replays are independent, so the sweep is exactly parallel -- no approximation,
     // just the same evaluations on more cores.
     let j_cur = score(cur);
-    let (mut bp, mut bs) = (cur, j_cur);
+    // The incumbent has to be *inside* the interval, or a warm start that arrives out of bounds
+    // is never brought in: it would simply out-score every candidate and be kept. `j_cur` still
+    // reports the score of where we actually are, because that is what a residual is measured
+    // against.
+    let start = cur.clamp(lo, hi);
+    let (mut bp, mut bs) = (start, if start == cur { j_cur } else { score(start) });
     let (gp, gs) = (0..steps + 1)
         .into_par_iter()
         .map(|i| { let p = lo + step * i as f64; (p, score(p)) })
         .reduce(|| (cur, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
     if gs > bs { bp = gp; bs = gs }
 
-    let (mut a, mut b) = ((bp - step).max(-90.0), (bp + step).min(90.0));
+    // Bracket inside [lo, hi]: the refine must not walk back out of the admissible set.
+    let (mut a, mut b) = ((bp - step).max(lo), (bp + step).min(hi));
     for _ in 0..ternary_iters {
         let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
         if score(m1) < score(m2) { a = m1 } else { b = m2 }
@@ -503,13 +686,24 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
 /// it implies, and what that move is worth. This is the raw material for both `certify` (the
 /// largest gain) and for asking whether the moves point the same way.
 pub fn residuals(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> Vec<(f64, f64)> {
+    residuals_reg(obj, pitches, step, jit, Rough::default())
+}
+
+/// `residuals` against the regularized objective. A profile written under a roughness price is
+/// a coordinate optimum of *that* objective, so its certificate has to be re-derived under the
+/// same price or it will report a gain the writer deliberately did not take.
+pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough)
+    -> Vec<(f64, f64)> {
     let dv = jit.draws_at_0();
     let states = jittered_replays(obj, pitches, &dv);
     (0..pitches.len())
         .map(|t| {
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
+            let w = win5(pitches, t);
+            let pen = |x: f64| rough.local(&w, x);
+            let (lo, hi) = rough.feasible(&w, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
             let (p, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], pitches[t],
-                                              -90.0, 90.0, step, 70);
+                                              lo, hi, step, 70, &pen);
             (p - pitches[t], j - j_cur)
         })
         .collect()
@@ -535,7 +729,12 @@ fn jittered_replays(obj: &Objective, pitches: &[f64], dv: &[Vec3]) -> Vec<Vec<St
 /// was found. A residual at or below the writer's tolerance means the schedule is a coordinate
 /// optimum to that tolerance.
 pub fn certify(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> f64 {
-    residuals(obj, pitches, step, jit).iter().map(|x| x.1).fold(0.0, f64::max)
+    certify_reg(obj, pitches, step, jit, Rough::default())
+}
+
+/// `certify` under a roughness price. See `residuals_reg`.
+pub fn certify_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough) -> f64 {
+    residuals_reg(obj, pitches, step, jit, rough).iter().map(|x| x.1).fold(0.0, f64::max)
 }
 
 /// Is the per-tick correction *smooth in t*?
@@ -688,7 +887,10 @@ pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit
 /// cannot be replaced by a derivative method.
 pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
-    let mut pitches: Vec<f64> = init.iter().map(|&p| p as f32 as f64).collect();
+    // Project the seed into the admissible set first. A warm start routinely arrives outside it
+    // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair.
+    let mut pitches: Vec<f64> = init.iter()
+        .map(|&p| p.clamp(-opts.rough.limit, opts.rough.limit) as f32 as f64).collect();
     let mut dv = opts.jitter.draws_at(0);
     let mut states = jittered_replays(obj, &pitches, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
@@ -700,7 +902,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             dv = opts.jitter.draws_at(pass as u64);
             states = jittered_replays(obj, &pitches, &dv);
         }
-        let before = obj.eval_jittered(&pitches, &dv);
+        let before = obj.eval_jittered(&pitches, &dv) - opts.rough.cost(&pitches);
         let prev = pitches.clone();
         let global = pass % opts.global_every == 0;
         // Before each global pass, try moving the whole schedule at once. When the per-tick
@@ -721,8 +923,14 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
                 ((cur - opts.local_span).max(-90.0), (cur + opts.local_span).min(90.0), opts.local_step)
             };
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
+            // The neighbors as they stand right now, so the price this tick pays reflects the
+            // ticks already moved in this sweep -- Gauss-Seidel on the regularized objective,
+            // not on `J` with a correction bolted on afterwards.
+            let w = win5(&pitches, t);
+            let pen = |x: f64| opts.rough.local(&w, x);
+            let Some((lo, hi)) = opts.rough.feasible(&w, lo, hi) else { continue };
             let (np, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], cur,
-                                               lo, hi, step, opts.ternary_iters);
+                                               lo, hi, step, opts.ternary_iters, &pen);
             if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
             // every draw's prefix must stay consistent with the pitch just changed, or the
@@ -746,7 +954,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             break;
         }
         passes = pass + 1;
-        last_gain = obj.eval_jittered(&pitches, &dv) - before;
+        last_gain = obj.eval_jittered(&pitches, &dv) - opts.rough.cost(&pitches) - before;
         let _ = worst_tick;
         recent.push_back(last_gain);
         if recent.len() > opts.stall_window { recent.pop_front(); }
@@ -756,9 +964,10 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     }
 
     let j = obj.eval(&pitches);
-    let residual = certify(obj, &pitches, opts.global_step, opts.jitter);
+    let residual = certify_reg(obj, &pitches, opts.global_step, opts.jitter, opts.rough);
     let l1 = lag1(&pitches);
-    Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate }
+    let rough_cost = opts.rough.cost(&pitches);
+    Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate, rough_cost }
 }
 
 // ---------------------------------------------------------------- the profile file
@@ -778,6 +987,10 @@ pub struct Profile {
     /// profile optimized at sigma = 1 is a different object from one optimized at sigma = 0,
     /// and `verify` re-certifies against whatever the header says.
     pub jitter: Jitter,
+    /// The roughness price the schedule was optimized under. Part of the utility function in
+    /// exactly the way `jitter` is: a profile written at `mu = 0.002` is a coordinate optimum
+    /// of a different objective than one written at `mu = 0`, and `verify` has to know which.
+    pub rough: Rough,
     pub commit: String,
     pub pitches: Vec<f64>,
     /// The residual a full global pass could still find, in blocks of `J`.
@@ -805,6 +1018,14 @@ impl Profile {
         } else {
             w("# jitter      0                     # optimized from the exact starting velocity");
         }
+        if self.rough.is_on() {
+            w(&format!("# rough       {} {} {} {} {}    # mu (per deg/tick^2), mu_tv (per deg/tick), \
+cap, slew_cap, |pitch| limit",
+                       self.rough.mu, self.rough.mu_tv, self.rough.cap, self.rough.slew_cap,
+                       self.rough.limit));
+        } else {
+            w("# rough       0 0 inf inf 90         # no price on hand movement, no pitch margin");
+        }
         w(&format!("# commit      {}", self.commit));
         w(&format!("# dJ          {:.6}              # J(s_n) - J(s_0)", o.j(sn) - o.j(s0)));
         w(&format!("# dte         {:.6}              # TE(s_n) - TE(s_0), blocks", sn.total_energy() - s0.total_energy()));
@@ -823,6 +1044,13 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
         w(&format!("# variation   {:.1}                 # summed |pitch change|, deg",
                    total_variation(&self.pitches)));
         w(&format!("# lag1        {:+.3}                # lag-1 correlation of the per-tick changes; below ~0.2 is chatter", lag1(&self.pitches)));
+        // The curvature statistics: what the schedule asks of the wrist. `curv_l1` is what a
+        // roughness price is levied on, `curv_max` is the peak angular acceleration -- 37.9 on
+        // the reference cycle and 180, the geometric maximum, on a chattering one.
+        w(&format!("# curv_l1     {:.1}                 # summed |second difference|, deg/tick^2",
+                   curvature_l1(&self.pitches)));
+        w(&format!("# curv_max    {:.1}                 # peak |second difference|, deg/tick^2",
+                   curvature_max(&self.pitches)));
         w(&format!("# certified   full global pass at {:.2}deg, exact tail eval, improves J by {:.2e} ({} passes)",
                    PolishOpts::default().global_step, self.residual, self.passes));
         for p in &self.pitches { w(&format!("{p}")) }
@@ -872,6 +1100,16 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                         seed: f.get(2).and_then(|x| x.parse().ok())
                                 .unwrap_or(Jitter::default().seed),
                     }
+                }
+            },
+            rough: match field("rough") {
+                None => Rough::default(),
+                Some(v) => {
+                    let f: Vec<&str> = v.split_whitespace().collect();
+                    let g = |i: usize, d: f64| f.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
+                    Rough { mu: g(0, 0.0), mu_tv: g(1, 0.0),
+                            cap: g(2, f64::INFINITY), slew_cap: g(3, f64::INFINITY),
+                            limit: g(4, 90.0) }
                 }
             },
             commit: field("commit").unwrap_or_default(),
@@ -968,6 +1206,64 @@ pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
 }
 
 // ---------------------------------------------------------------- determinism
+
+/// Local averaging over `k` ticks: the projection a chattering schedule needs before it can be
+/// polished under a roughness price.
+///
+/// A chattering control is the discrete stand-in for a *relaxed* control -- at each tick the
+/// optimizer is really choosing a distribution over pitches, and it realizes the mixture by
+/// alternating. The ordinary control that means the same thing is the local mean, which is what
+/// this computes. Without it, coordinate ascent under an l1 curvature price can stall: the price
+/// couples three neighbouring coordinates, so it is a fused-l1 term, and coordinate descent is
+/// not guaranteed to reach a stationary point of a nonsmooth objective that couples coordinates.
+/// Measured: seeded from a schedule alternating -90/+90 it converged (residual 2.2e-7) to
+/// `curv_l1` 1295, against 162 from the same price seeded from the local mean.
+///
+/// `k <= 1` is the identity. Ends are handled by clamping the window, so a ramp stays a ramp.
+///
+/// The width matters and is not free: a box filter smears the snap and the flick along with the
+/// chatter, and from a destroyed cycle the price-constrained polish cannot rebuild one. Sweep it.
+/// Projecting one relaxed optimum (J 22.346) at k = 3, 5, 9, 15, 25 gives 22.165, 22.161, 22.156,
+/// 22.130, 22.047 -- all fine; projecting a *more violently* chattering one (J 22.402) at k = 9
+/// lands at 15.66, converged (residual 8.9e-6) and 6.5 blocks worse. So the projection width is a
+/// hyperparameter to sweep and score on the regularized objective, not a constant to pick once.
+pub fn smooth_box(p: &[f64], k: usize) -> Vec<f64> {
+    if k <= 1 { return p.to_vec() }
+    let n = p.len() as isize;
+    let h = (k / 2) as isize;
+    (0..n).map(|i| {
+        let (mut s, mut c) = (0.0, 0.0);
+        for d in -h..=h { s += p[(i + d).clamp(0, n - 1) as usize]; c += 1.0 }
+        (s / c) as f32 as f64
+    }).collect()
+}
+
+/// Median over a window of `k` ticks. Available, and **not** the right projection here -- kept
+/// because the reason is worth writing down.
+///
+/// A median filter looks like the obvious choice: it passes a step through untouched while
+/// removing short runs, which is exactly the shape of "a piecewise-smooth control with a few
+/// genuine corners plus noise on top". But it removes runs shorter than *half the window*, and a
+/// tick-rate alternation has runs of length one with fifty percent duty -- so every window holds
+/// a majority of whichever value sits at its center, and the median reproduces the alternation
+/// instead of removing it. Chatter is not impulsive noise; it is a square wave at Nyquist.
+///
+/// Measured, projecting the same relaxed optimum and then polishing at `mu = 1e-3`: median 3, 5,
+/// 7, 9 give J 15.32, 15.69, 15.92, 16.01, against 22.16 for the local mean. Only at width 13,
+/// where the chatter is irregular enough for the majority to break, does it recover (22.14).
+///
+/// `k` is forced odd and `k <= 1` is the identity.
+pub fn smooth_median(p: &[f64], k: usize) -> Vec<f64> {
+    if k <= 1 { return p.to_vec() }
+    let k = k | 1;
+    let n = p.len() as isize;
+    let h = (k / 2) as isize;
+    (0..n).map(|i| {
+        let mut w: Vec<f64> = (-h..=h).map(|d| p[(i + d).clamp(0, n - 1) as usize]).collect();
+        w.sort_by(f64::total_cmp);
+        w[w.len() / 2]
+    }).collect()
+}
 
 /// FNV-1a over the raw bits of a canonical replay, for checking that two machines agree.
 ///

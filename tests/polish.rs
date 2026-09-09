@@ -55,7 +55,7 @@ fn a_converged_certificate_does_not_mean_a_good_profile() {
 fn profiles_round_trip_through_the_file_format() {
     let o = obj(50, -1.25);
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 3, ..Default::default() });
-    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(),
+    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough: Rough::default(),
                       commit: commit_hash().into(),
                       pitches: r.pitches.clone(), residual: r.residual, passes: r.passes };
     let back = Profile::parse(&p.to_string()).expect("must parse");
@@ -95,7 +95,7 @@ fn jitter_is_reproducible_and_round_trips() {
 
     let o = obj(40, 0.0);
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 2, jitter: j, ..Default::default() });
-    let p = Profile { obj: o, trig: trig_mode(), jitter: j, commit: commit_hash().into(),
+    let p = Profile { obj: o, trig: trig_mode(), jitter: j, rough: Rough::default(), commit: commit_hash().into(),
                       pitches: r.pitches, residual: r.residual, passes: r.passes };
     assert_eq!(Profile::parse(&p.to_string()).unwrap().jitter, j);
 }
@@ -123,4 +123,57 @@ fn polishing_under_jitter_improves_the_smoothed_objective() {
         assert_eq!(p, p as f32 as f64, "pitch {t} is not an f32");
         assert!((-90.0..=90.0).contains(&p), "pitch {t} = {p} out of range");
     }
+}
+
+/// The projection step, and the trap in it. A median filter looks like the obvious way to strip
+/// chatter while keeping the snap, and it is not: an alternation has runs of length one at fifty
+/// percent duty, so every window holds a majority of its own center value and the median
+/// reproduces the alternation. The local mean removes it. This pins both halves, because the
+/// wrong one costs six blocks in practice.
+#[test]
+fn the_median_reproduces_chatter_and_the_mean_removes_it() {
+    let alt: Vec<f64> = (0..40).map(|i| if i % 2 == 0 { 0.0 } else { 90.0 }).collect();
+    let m = smooth_median(&alt, 5);
+    assert!((m[10] - m[11]).abs() > 80.0, "the median should *keep* a 50% duty alternation");
+    let b = smooth_box(&alt, 5);
+    assert!((b[10] - b[11]).abs() < 25.0, "the mean should flatten it, got {} {}", b[10], b[11]);
+
+    // and the thing the median is actually good at: a step survives it, but not the mean
+    let step: Vec<f64> = (0..40).map(|i| if i < 20 { 10.0 } else { -80.0 }).collect();
+    let ms = smooth_median(&step, 5);
+    assert_eq!((1..40).filter(|&i| (ms[i] - ms[i - 1]).abs() > 1.0).count(), 1);
+    assert!((1..40).filter(|&i| (smooth_box(&step, 5)[i] - smooth_box(&step, 5)[i - 1]).abs() > 1.0)
+            .count() > 1);
+}
+
+/// `--limit` is a restriction of the admissible set, not a preference, so a seed that arrives
+/// outside it must be brought in and must stay in. Both halves of that failed at first: the
+/// coordinate search kept an out-of-range incumbent because it out-scored every candidate, and
+/// the ternary refine re-expanded its bracket to +-90.
+#[test]
+fn a_pitch_limit_is_respected_from_a_seed_that_breaks_it() {
+    let o = Objective { v0: V0, n: 60, lambda: 0.0 };
+    let seed: Vec<f64> = (0..o.n).map(|i| if i % 2 == 0 { -90.0 } else { 90.0 }).collect();
+    let rough = Rough { limit: 60.0, ..Rough::default() };
+    let r = polish(&o, &seed, PolishOpts { max_passes: 3, tol: 0.0, rough, ..Default::default() });
+    let worst = r.pitches.iter().fold(0.0f64, |a, &p| a.max(p.abs()));
+    assert!(worst <= 60.0 + 1e-9, "polish left a pitch at {worst}, outside the limit");
+}
+
+/// A roughness price is part of the utility function, so a profile has to carry it or the
+/// certificate in its header is a claim about a different objective than the one it was
+/// written under.
+#[test]
+fn the_roughness_price_round_trips_through_the_header() {
+    let o = Objective { v0: V0, n: 12, lambda: 0.25 };
+    let rough = Rough { mu: 1e-3, mu_tv: 0.0, cap: 45.0, slew_cap: f64::INFINITY, limit: 85.0 };
+    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough,
+                      commit: commit_hash().into(), pitches: vec![1.0; 12],
+                      residual: 1e-7, passes: 3 };
+    let back = Profile::parse(&p.to_string()).expect("header should parse");
+    assert_eq!(back.rough, rough);
+    // and a file written before the field existed still reads, as an unpriced profile
+    let older: String = p.to_string().lines().filter(|l| !l.starts_with("# rough"))
+        .map(|l| format!("{l}\n")).collect();
+    assert_eq!(Profile::parse(&older).expect("old header").rough, Rough::default());
 }

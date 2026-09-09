@@ -55,6 +55,13 @@ impl Args {
             tol: self.num("--tol", PolishOpts::default().tol),
             block: self.num("--block", PolishOpts::default().block),
             lag1_floor: self.num("--lag1-floor", PolishOpts::default().lag1_floor),
+            rough: Rough {
+                mu: self.num("--mu", 0.0),
+                mu_tv: self.num("--mu-tv", 0.0),
+                cap: self.num("--cap", f64::INFINITY),
+                slew_cap: self.num("--slew-cap", f64::INFINITY),
+                limit: self.num("--limit", 90.0),
+            },
             jitter: Jitter {
                 sigma: self.num("--jitter", 0.0),
                 draws: self.num("--draws", 8usize),
@@ -82,7 +89,7 @@ fn write_profile(path: &str, p: &Profile) {
 fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> (Profile, Polished) {
     let r = polish(obj, init, opts);
     let profile = Profile {
-        obj: *obj, trig: trig_mode(), jitter: opts.jitter,
+        obj: *obj, trig: trig_mode(), jitter: opts.jitter, rough: opts.rough,
         commit: commit_hash().to_string(),
         pitches: r.pitches.clone(), residual: r.residual, passes: r.passes,
     };
@@ -101,12 +108,18 @@ fn cmd_polish_cell(a: &Args) {
         }
         None => seed_from_policy(&obj),
     };
+    // Project before polishing. A relaxed (chattering) solution has to be locally averaged
+    // before a roughness price can improve it -- see `smooth_box`.
+    let init = smooth_median(&init, a.num("--premedian", 1usize));
+    let init = smooth_box(&init, a.num("--presmooth", 1usize));
     let t = Instant::now();
     let (p, r) = solve(&obj, &init, a.opts());
     eprintln!("n {:>4}  lambda {:+.4}  v0 ({:.6}, {:.6})  J {:.6}  residual {:.2e}  \
-lag1 {:+.3}  {} passes{}  {:.1}s",
+lag1 {:+.3}  TV {:.0}  curv_l1 {:.0}  curv_max {:.0}  {} passes{}  {:.1}s",
               obj.n, obj.lambda, obj.v0.y, obj.v0.z, obj.eval(&p.pitches), p.residual,
-              lag1(&p.pitches), p.passes, if r.stopped_degenerate { " (stopped: degenerate)" } else { "" },
+              lag1(&p.pitches), total_variation(&p.pitches), curvature_l1(&p.pitches),
+              curvature_max(&p.pitches),
+              p.passes, if r.stopped_degenerate { " (stopped: degenerate)" } else { "" },
               t.elapsed().as_secs_f64());
     match a.get("--out") {
         Some(f) => write_profile(f, &p),
@@ -121,7 +134,7 @@ fn cmd_verify(files: &[String]) {
         let p = match Profile::parse(&text) { Ok(p) => p, Err(e) => { println!("{f}: BAD HEADER: {e}"); bad += 1; continue } };
         // the header is authoritative: replay under the physics it claims, not the shell's
         set_trig_mode(p.trig);
-        let res = certify(&p.obj, &p.pitches, PolishOpts::default().global_step, p.jitter);
+        let res = certify_reg(&p.obj, &p.pitches, PolishOpts::default().global_step, p.jitter, p.rough);
         let claimed = p.residual;
         let ok = res <= claimed.max(1e-6) * 1.5 + 1e-9;
         println!("{f}: n {:>4} lambda {:+.4} trig {} | claimed {:.2e}, found {:.2e}  {}",
