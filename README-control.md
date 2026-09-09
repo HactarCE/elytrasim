@@ -177,8 +177,32 @@ way to tell from the relaxed schedule which you have.
 
 The recipe therefore has to be multi-start, which is cheap: relax from two or three seeds,
 project each at `k` in {3, 5, 9, 15} with both filters, polish all of them, and keep the best on
-`J - mu * sum|d2p|`. Twenty runs of half a minute. What is *not* legitimate is picking one
+`J - mu * sum|d2p|`. Twenty-four runs of half a minute. What is *not* legitimate is picking one
 projection, getting 15.66, and reporting it as the answer.
+
+`tools/flyable.sh <outdir> <mu>` is that, end to end:
+
+```
+N=300 tools/flyable.sh runs/flyable 1e-4         # cell from N / LAM / VY / VZ, defaults as above
+```
+
+and the spread across its 24 candidates on the standard cell is the argument for doing it:
+
+```
+score      dJ    curv_l1  curv_max  lag1   candidate
+21.851  21.868     169.3      34.3  +0.65  r2_box15      <- best
+21.771  21.792     209.5      47.1  +0.56  r3_med9
+21.767  21.782     150.5      25.7  +0.70  r3_med5
+21.629  21.643     147.1      25.0  +0.71  r1_box9
+20.516  20.547     305.1      47.7  +0.52  r2_box9
+19.799  19.838     383.6      49.4  +0.51  r1_box5
+17.499  17.519     204.1      42.5  +0.63  r1_box3
+15.064  15.084     199.3      39.6  +0.66  r3_box3       <- worst
+```
+
+Every one of those is converged. Six and three quarters blocks separate the best from the worst,
+and nothing about the schedule -- not `lag1`, not `curv_l1`, not looking at it -- distinguishes
+them. Only `J` does.
 
 ## What it costs: J against hand movement
 
@@ -270,16 +294,37 @@ perfectly respectable +0.26.
   sign of an f32 rounding error that vanilla does not have. The whole grid should be rebuilt
   under `--trig mth_lut`, or at minimum `--limit` should be on so it cannot matter. This is the
   same class of problem `sweep fingerprint` exists for, one level down.
-* **The projection width is a hyperparameter.** `--presmooth 9` works from one relaxed optimum
-  and destroys another (J 22.402 projects to 15.66 at k = 9). Sweeping k over {3, 5, 9, 15} and
-  scoring on the regularized objective is cheap -- five runs of thirty seconds -- and is what the
-  recipe should do rather than fixing k. See `smooth_box`.
+* **The projection width is not predictable, only searchable.** `tools/flyable.sh` handles it by
+  brute force, and that is honest but it is not understanding. Nothing seen so far says which
+  relaxed optimum will project well.
 * **Relax/project does not iterate.** Feeding the projection back in as a fresh relaxation seed
   went 22.402 -> 15.66 -> 18.68 and kept falling. One round, then stop.
-* **Nothing here is cross-validated across the grid.** Every number is the one cell
-  `n = 300, lambda = 0, v0 = (0.167467, 0.200887)`. Whether `mu = 1e-4` is the right price at
-  `n = 120`, or under continuation along `lambda`, is not measured.
+* **The corpus has not been rebuilt.** `--mu` and `--limit` exist and are certified, but every
+  cell in `runs/corpus` still predates them, and continuation along `n` and `lambda` under a
+  price is untested -- a warm start now arrives with a *feasible* neighbour's schedule, which
+  ought to help, but that is a guess.
 * `--cap` and `--slew-cap`, the hard-constraint versions of the same idea, are implemented and
   were not swept. A cap is arguably the more honest instrument than a price -- it says a
   pitch profile is unavailable rather than expensive -- and `cap = 45` would admit every move
   the reference cycle makes with 20% to spare.
+
+
+## Figures
+
+Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/look.py` scripts;
+`runs/` is gitignored, so they are not in the tree):
+
+```
+00_baseline.png    the schedules as they were: reference, hard-polished, jittered
+01_hamiltonian.png the per-tick objective curve J(p) -- one peak, not two, so not a singular arc
+03_razor.png       one tick scanned across the top of the pitch range, in both trig modes
+04_frontier.png    J against summed |second difference|, every point converged
+05_final.png       the priced schedules at mu = 1e-4, 1e-3, 5e-3
+06_robust.png      dJ against pitch noise: the picture of what overfitting costs
+07_best.png        reference / today's recipe / this recipe / the relaxed optimum
+```
+
+`07_best.png` is worth a specific look. Today's recipe (row 2) is visually clean -- it has no
+chatter, and nothing in a pitch plot tells you it holds three ticks a hundredth of a degree from
+a cliff. **Boundary parking is invisible to the eye and to `lag1`.** It shows up only in
+`examples/whichtick.rs`, which is why that exists.
