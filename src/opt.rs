@@ -1338,7 +1338,12 @@ pub fn stretch(pitches: &[f64], n: usize) -> Vec<f64> {
 /// Measured: seeded from a schedule alternating -90/+90 it converged (residual 2.2e-7) to
 /// `curv_l1` 1295, against 162 from the same price seeded from the local mean.
 ///
-/// `k <= 1` is the identity. Ends are handled by clamping the window, so a ramp stays a ramp.
+/// `k <= 1` is the identity. The window is clamped at the ends rather than wrapped, which means
+/// the ends are *not* faithful: a ramp comes out flattened there (0,1,2,3,... at width 5 becomes
+/// 0.4, 0.8, 2, 3, ...). That matters twice -- it is why the entry and the tail of a projected
+/// schedule need the polish to repair them, and it is why widening this filter does not converge
+/// to a constant, so `project_cap` cannot use "wide enough is constant" as a termination
+/// argument.
 ///
 /// The width matters and is not free: a box filter smears the snap and the flick along with the
 /// chatter, and from a destroyed cycle the price-constrained polish cannot rebuild one. Sweep it.
