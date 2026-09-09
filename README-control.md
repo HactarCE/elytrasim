@@ -9,8 +9,22 @@ mean the corpus is a record of an optimizer's stamina.
 
 This document is the follow-up. It says what the degenerate answers actually are, shows that a
 stronger optimizer finds them faster rather than avoiding them, and replaces the stopping rule
-with two statements about the admissible control -- both of them stated in the profile header,
-both of them leaving the polish free to run to convergence.
+with two things that go in the header and leave the polish free to converge: a *price* on how
+much the schedule asks of a wrist, and a *margin* between the pitch and the ends of its range.
+
+The short version:
+
+* Adam at 20000 passes chatters harder than coordinate ascent does and scores higher. The
+  degeneracy is not something a better optimizer avoids.
+* There are **two** degeneracies. The chatter is worth 0.7%. The other one -- parking a pitch a
+  hundredth of a degree from +-90, where `look_hor_length` underflows and the aerodynamics
+  switch off -- is worth five to seventeen blocks of fragility, is invisible to `lag1`, and is in
+  91% of the cells of the corpus we have.
+* Total variation cannot separate a flick from chatter (a factor of 2.3). The *second* difference
+  can (380 at the 95th percentile), in an l1 norm, because a real schedule's curvature is sparse.
+* Priced and margined, polished to convergence with no stopping rule at all: at the reference
+  cycle's own curvature budget, `dJ` **21.83 against a person's 21.49**, +1.6%, with a *lower*
+  peak angular acceleration and no fragility left.
 
 Everything below is at the cell every chatter number in `README-sweep.md` was measured on:
 `n = 300`, `lambda = 0`, `v0 = (0.167467, 0.200887)`. `J` is `J(s_n)`; `dJ = J - 0.4275`.
