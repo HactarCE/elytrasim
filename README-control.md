@@ -243,6 +243,19 @@ optimizer finds `dJ` 21.829 against a person's 21.494 -- 0.335 blocks, +1.6% -- 
 a lower peak angular acceleration, 27 deg/tick^2 against 38.** All the chatter above that is
 worth 0.146 blocks, **0.7%**.
 
+In blocks on the ground rather than in `J`, over the same 300 ticks:
+
+```
+                     dy       dz     curv_l1
+reference cycle   21.333  342.243       147
+mu = 1e-4         21.876  342.768       147     +0.543 blocks of climb, +0.5 of distance
+jitter+lag1floor  21.393  344.827       308
+best of 24        21.958  342.647       169
+```
+
+So it climbs half a block more per cycle and goes very slightly further, for the same amount of
+hand movement.
+
 The frontier is very flat over the range anyone cares about. Dropping `curv_l1` from 424 to 79, a
 factor of five less hand movement, costs 0.13 blocks. It only turns down below about 65, and by
 `mu = 2e-2` the schedule has stopped pumping and is holding a glide -- the collapse `opt::shape`
@@ -350,10 +363,29 @@ cell. That has not been done.
   relaxed optimum will project well.
 * **Relax/project does not iterate.** Feeding the projection back in as a fresh relaxation seed
   went 22.402 -> 15.66 -> 18.68 and kept falling. One round, then stop.
-* **The corpus has not been rebuilt.** `--mu` and `--limit` exist and are certified, but every
-  cell in `runs/corpus` still predates them, and continuation along `n` and `lambda` under a
-  price is untested -- a warm start now arrives with a *feasible* neighbour's schedule, which
-  ought to help, but that is a guess.
+* **The corpus has not been rebuilt**, though the two things a rebuild needs both check out.
+
+  *Continuation holds under a price.* Walking the winner along `n` at 310, 320, 330, 340 with a
+  single 40-pass polish per cell (`--mu 1e-4 --limit 85`, no relaxation, no multi-start) keeps
+  `curv_l1` between 162 and 183 and `lag1` between +0.65 and +0.69 the whole way, with residuals
+  at 1e-5. No creep. Without a price the same chain is degenerate by the second hop
+  (`README-sweep.md`). That matters for cost: relax + multi-start is minutes per cell and would
+  be 30 hours for the grid, while continuation is 15 to 20 seconds per cell, so a rebuild solves
+  one anchor properly and continues from it.
+
+  *The recipe is not specific to one cell.* Run at `n = 150`, `n = 450` and `lambda = -1`, the
+  relaxed optimum chatters every time (`curv_l1` 458 to 7394, `curv_max` up to 360) and the
+  recipe returns something flyable every time (`curv_l1` 95 to 202, `lag1` +0.60 to +0.81).
+  Twice -- at `n = 150` and `lambda = -1` -- the *priced* answer beat the relaxed one outright
+  (0.760 against 0.725, 0.799 against 0.787), because the unpriced relaxation converged into a
+  worse basin. Chatter is not reliably worth even the 0.7% it buys here.
+
+* **The schedules do not close.** The reference cycle nearly returns to its own starting velocity
+  (|dv| 0.024); the priced optima drift further (0.060 to 0.081). `J` counts terminal kinetic
+  energy so the comparison is fair as energy, but a schedule that ends 0.07 blocks/tick off its
+  start is not straightforwardly repeatable, and "one cycle" is what the corpus claims to sweep.
+  Terminal velocity being free is the stated objective, so this is a question about the
+  objective rather than about the optimizer -- but it is now the largest one left.
 * `--cap` and `--slew-cap`, the hard-constraint versions of the same idea, are implemented and
   were not swept. A cap is arguably the more honest instrument than a price -- it says a
   pitch profile is unavailable rather than expensive -- and `cap = 45` would admit every move
