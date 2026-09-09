@@ -554,8 +554,23 @@ worse basin -- so the chatter is not reliably worth even the 0.7% it buys on the
   under `--trig mth_lut`, or at minimum `--limit` should be on so it cannot matter. This is the
   same class of problem `sweep fingerprint` exists for, one level down.
 * **The projection width is not predictable, only searchable.** `tools/flyable.sh` handles it by
-  brute force, and that is honest but it is not understanding. Nothing seen so far says which
-  relaxed optimum will project well.
+  brute force, and that is honest but it is not understanding.
+
+  One hypothesis was tested and **refuted**, which is worth recording so it is not retried. Looking
+  at the two relaxed optima side by side (`runs/antichatter/fig/09_projection.png`) suggests a
+  clean mechanism: `A`'s chatter swings between 0 and +90, so its local mean is still nose-down
+  and continues the dive, while `B`'s swings between -90 and +90, so its local mean noses *up* for
+  forty ticks in the middle of a dive. Both endpoints of `B`'s bang-bang straddle the
+  `lean_angle < 0` corner, where the physics is discontinuous, so the mean is not a control that
+  does anything like either. That predicts: the further nose-up the projection's mean goes, the
+  worse it does.
+
+  It does not hold. Across the fifteen projections already measured, the most nose-up degree the
+  projection reaches does not separate the ones that worked from the ones that collapsed --
+  `A` box-3 reaches -60 and lands at 22.165, `B` median-13 reaches -90 and lands at 22.136, while
+  `B` box-9 reaches only -47 and lands at 15.667. It is the *seed* that decides, almost entirely,
+  and `B` median-13 is the one exception any theory has to explain. "B is a worse basin" remains
+  the only description that fits.
 * **Relax/project does not iterate.** Feeding the projection back in as a fresh relaxation seed
   went 22.402 -> 15.66 -> 18.68 and kept falling. One round, then stop.
 * **Every cell of the corpus is a first cycle, and it moves by a median of 2.2 blocks when you
@@ -638,6 +653,9 @@ Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/l
 05_final.png       the priced schedules at mu = 1e-4, 1e-3, 5e-3
 06_robust.png      dJ against pitch noise: the picture of what overfitting costs
 07_best.png        reference / today's recipe / this recipe / the relaxed optimum
+09_projection.png  two relaxed optima under three box widths -- the picture behind a
+                   hypothesis about why one projects and the other does not, which the
+                   numbers then refuted; see "What is still open"
 ```
 
 `07_best.png` is worth a specific look. Today's recipe (row 2) is visually clean -- it has no
