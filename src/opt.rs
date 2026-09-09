@@ -892,9 +892,22 @@ pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter)
 /// what a simultaneous step throws away.
 pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit: Jitter)
     -> Option<(Vec<f64>, f64)> {
-    let d = residuals(obj, pitches, step, jit);
+    block_step_reg(obj, pitches, step, block, jit, Rough::default())
+}
+
+/// `block_step` against the regularized objective.
+///
+/// The unregularized one is *wrong* to use under a price and not subtly: it line-searches on
+/// `J` alone, so it accepts a step that raises `J` while raising the curvature far more, and
+/// reports the size of the `J` gain as though that were the improvement. Measured at `mu = 0.1`
+/// it took a schedule from 0.188 to -4.168 on the regularized objective and called it a gain of
+/// 0.19; at `mu = 1`, from 0.188 to -48.2. `polish` calls this one.
+pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit: Jitter,
+                      rough: Rough) -> Option<(Vec<f64>, f64)> {
+    let d = residuals_reg(obj, pitches, step, jit, rough);
     let dv = jit.draws_at_0();
-    let base = obj.eval_jittered(pitches, &dv);
+    let score = |p: &[f64]| obj.eval_jittered(p, &dv) - rough.cost(p);
+    let base = score(pitches);
     let mut cur = pitches.to_vec();
     let mut best_j = base;
     for start in (0..pitches.len()).step_by(block) {
@@ -902,19 +915,24 @@ pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit
         let at = |alpha: f64| -> Vec<f64> {
             let mut v = cur.clone();
             for t in start..end {
-                v[t] = (cur[t] + alpha * (pitches[t] + d[t].0 - cur[t])).clamp(-90.0, 90.0) as f32 as f64;
+                v[t] = (cur[t] + alpha * (pitches[t] + d[t].0 - cur[t]))
+                    .clamp(-rough.limit, rough.limit) as f32 as f64;
             }
             v
         };
         let (mut ba, mut bj) = (0.0, best_j);
         let mut alpha = 0.05;
         while alpha <= 1.5 {
-            let j = obj.eval(&at(alpha));
+            let j = score(&at(alpha));
             if j > bj { bj = j; ba = alpha }
             alpha += 0.05;
         }
         if ba > 0.0 { cur = at(ba); best_j = bj }
     }
+    // A block step moves whole spans at once, so it can leave the admissible set even though
+    // every endpoint is clamped -- reject rather than repair, since the caller has a perfectly
+    // good schedule already.
+    if rough.violation(&cur) > 0.0 { return None }
     (best_j > base).then(|| (cur, best_j - base))
 }
 
@@ -948,8 +966,8 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         // moves point the same way this leaps; when they do not it finds no step and costs
         // one pass.
         if global && opts.block > 0 {
-            if let Some((next, gain)) = block_step(obj, &pitches, opts.global_step, opts.block,
-                                                   opts.jitter) {
+            if let Some((next, gain)) = block_step_reg(obj, &pitches, opts.global_step, opts.block,
+                                                       opts.jitter, opts.rough) {
                 if gain > 0.0 { pitches = next; states = jittered_replays(obj, &pitches, &dv) }
             }
         }

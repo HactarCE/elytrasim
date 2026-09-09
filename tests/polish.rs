@@ -319,3 +319,24 @@ fn the_seed_projection_covers_every_constraint() {
     assert!(rough.violation(&r.pitches) <= 1e-3,
             "polish left a violation of {}", rough.violation(&r.pitches));
 }
+
+/// `block_step` line-searched on `J` alone, so under a price it accepted a step that raised `J`
+/// while raising the curvature far more, and reported the `J` gain as the improvement. It is off
+/// by default (`block = 0`), which is the only reason this never reached a profile.
+#[test]
+fn a_block_step_cannot_report_a_loss_as_a_gain() {
+    let o = Objective { v0: V0, n: 120, lambda: 0.0 };
+    let seed = seed_from_policy(&o);
+    for mu in [0.0, 0.01, 0.1, 1.0] {
+        let rough = Rough { mu, limit: 85.0, ..Rough::default() };
+        let before = o.eval(&seed) - rough.cost(&seed);
+        if let Some((next, gain)) = block_step_reg(&o, &seed, 0.25, 20, Jitter::default(), rough) {
+            let after = o.eval(&next) - rough.cost(&next);
+            assert!(after > before - 1e-9,
+                    "mu {mu}: took the regularized objective from {before} to {after}");
+            assert!((after - before - gain).abs() < 1e-6,
+                    "mu {mu}: reported gain {gain}, actual {}", after - before);
+            assert_eq!(rough.violation(&next), 0.0, "mu {mu}: block step left the admissible set");
+        }
+    }
+}
