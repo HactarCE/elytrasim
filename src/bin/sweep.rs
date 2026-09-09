@@ -316,7 +316,10 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         } else {
             let probe = PolishOpts { max_passes: 2, tol: 0.0, ..opts };
             cands.into_iter()
-                .map(|c| { let r = polish(&obj, &c, probe); (r.j, r.pitches) })
+                // Rank on the objective actually being optimized. Ranking on `r.j` alone
+                // picks the roughest candidate whenever a price is on, which is the seed most
+                // likely to hand the whole continuation chain a schedule it will be charged for.
+                .map(|c| { let r = polish(&obj, &c, probe); (r.j - r.rough_cost, r.pitches) })
                 .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
                 .unwrap().1
         };
@@ -324,7 +327,11 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
         // but its pitches still seed the neighbors, so a killed job costs one cell.
         let existing = (!force).then(|| std::fs::read_to_string(&path).ok()).flatten()
             .and_then(|t| Profile::parse(&t).ok())
-            .filter(|p| p.obj == obj && p.trig == trig_mode() && p.pitches.len() == obj.n);
+            // The roughness price and the pitch margin are part of the utility function, so a
+            // file written under a different one answers a different question and must be
+            // resolved, not resumed.
+            .filter(|p| p.obj == obj && p.trig == trig_mode() && p.pitches.len() == obj.n
+                        && p.rough == opts.rough);
         let pitches = match existing {
             Some(p) => { skipped += 1; p.pitches }
             None => {
@@ -429,7 +436,8 @@ fn main() {
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
             let pr = Profile::parse(&text).unwrap_or_else(|e| panic!("{f}: {e}"));
             set_trig_mode(pr.trig);
-            let r = residuals(&pr.obj, &pr.pitches, PolishOpts::default().global_step, pr.jitter);
+            let r = residuals_reg(&pr.obj, &pr.pitches, PolishOpts::default().global_step,
+                                  pr.jitter, pr.rough);
             let (pos, neg) = (r.iter().filter(|x| x.0 > 1e-9).count(),
                               r.iter().filter(|x| x.0 < -1e-9).count());
             let sum: f64 = r.iter().map(|x| x.0).sum();
@@ -447,7 +455,8 @@ fn main() {
             eprint!("  energy in the first k cosine modes:");
             for (k, e) in &ks { eprint!("  k={k}: {:.0}%", 100.0 * e) }
             eprintln!();
-            match jacobi_step(&pr.obj, &pr.pitches, PolishOpts::default().global_step, pr.jitter) {
+            match jacobi_step_reg(&pr.obj, &pr.pitches, PolishOpts::default().global_step,
+                                  pr.jitter, pr.rough) {
                 Some((_, alpha, g)) => eprintln!(
                     "  best whole-schedule step: alpha {alpha:.3} worth {g:.4} blocks \
                      ({:.1}% of the per-tick total)", 100.0 * g / gain.max(1e-12)),

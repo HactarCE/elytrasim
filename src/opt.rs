@@ -779,6 +779,16 @@ fn jittered_replays(obj: &Objective, pitches: &[f64], dv: &[Vec3]) -> Vec<Vec<St
 /// alone, so it can be run by anyone holding the file and says nothing about how the schedule
 /// was found. A residual at or below the writer's tolerance means the schedule is a coordinate
 /// optimum to that tolerance.
+///
+/// **Under resampled jitter this is a pass-zero audit, not the objective the last pass saw.**
+/// It always draws `jit.draws_at_0()`, while `polish` with `resample` set redraws every pass, so
+/// the two are different samples of the same smoothed objective. Measured on a small fixture
+/// (n = 5, sigma = 0.3, three draws): the returned schedule scores 3.668 under the pass-zero
+/// draws and 3.005 under the final pass's, a difference of 0.66 blocks. It is reproducible from
+/// the header, which is what a certificate needs to be, but it is neither a statement about the
+/// population nor an independent holdout -- the first pass optimized on exactly those draws.
+/// With jitter off or `--fixed-draws` the distinction disappears, and every profile in
+/// `README-control.md` has jitter off.
 pub fn certify(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> f64 {
     certify_reg(obj, pitches, step, jit, Rough::default())
 }
