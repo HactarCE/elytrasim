@@ -12,19 +12,27 @@
 # The multi-start is not belt and braces: a projection width that is right for one relaxed
 # optimum lands 6.5 blocks low on another, and the relaxed schedule does not tell you which.
 set -u
-cd "$(dirname "$0")/.." || exit 1
-OUT=${1:?usage: flyable.sh <outdir> <mu> [sweep cell args...]}; MU=${2:?}; shift 2
-# Everything after <mu> is passed through, so the cell is the caller's: pass --n/--lambda/--vy/
-# --vz to move it. The defaults here are the cell every number in README-control.md was measured
-# on, and they lose to anything the caller repeats later on the command line.
-CELL="--trig mth_lut --n 300 --vy 0.167467 --vz 0.200887 --lambda 0 $*"
+# Resolve the repo from this file's location, following a symlink, and refuse to run from a
+# copy that has been moved elsewhere -- a copy in a scratch directory silently cd's to the wrong
+# tree and every seed then fails its existence check, leaving an empty run and no error.
+SELF=$(cd "$(dirname "$0")" && pwd)
+cd "$SELF/.." || exit 1
+[ -x ./target/release/sweep ] || { echo "no ./target/release/sweep under $PWD" >&2; exit 1; }
+OUT=${1:?usage: flyable.sh <outdir> <mu> [extra sweep args...]}; MU=${2:?}; shift 2
+# The cell comes from the environment, not from repeated flags: `sweep` resolves an option to its
+# *first* occurrence, so appending `--lambda -1` after a default `--lambda 0` silently keeps the
+# 0. Defaults are the cell every number in README-control.md was measured on.
+#
+#   N=150 LAM=-1 VY=0 VZ=0 tools/flyable.sh out 1e-4
+CELL="--trig ${TRIG:-mth_lut} --n ${N:-300} --lambda ${LAM:-0}"
+CELL="$CELL --vy ${VY:-0.167467} --vz ${VZ:-0.200887} $*"
 S=./target/release/sweep
 mkdir -p "$OUT/relax" "$OUT/cand"
 
 echo "== stage 1: relax (no price) =="
 i=0
 for seed in ${SEEDS:-runs/veljit/ref300.pitches runs/jitter/sigma0.pitches runs/antichatter/mth/raw_chat.pitches}; do
-  [ -f "$seed" ] || continue
+  [ -f "$seed" ] || { echo "  missing seed $seed" >&2; continue; }
   i=$((i+1))
   $S polish $CELL --passes 200 --tol 0.005 --init "$seed" --out "$OUT/relax/r$i.pitches" \
      2>&1 | sed "s/^/  r$i /"
