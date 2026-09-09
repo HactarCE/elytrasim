@@ -371,6 +371,8 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
   }},
   \"cells\": {},
   \"polish\": {{ \"max_passes\": {}, \"global_every\": {}, \"global_step\": {}, \"local_span\": {}, \"local_step\": {}, \"tol\": {} }},
+  \"control\": {{ \"mu\": {}, \"mu_tv\": {}, \"cap\": \"{}\", \"slew_cap\": \"{}\", \"limit\": {} }},
+  \"jitter\": {{ \"sigma\": {}, \"draws\": {}, \"resample\": {}, \"seed\": {} }},
   \"fingerprint\": \"{:016x}\"
 }}
 ", commit_hash(), trig_mode(),
@@ -378,6 +380,11 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
    list(&g.lams), list(&g.vys), list(&g.vzs),
    g.ns.len() * g.lams.len() * g.vys.len() * g.vzs.len(),
    opts.max_passes, opts.global_every, opts.global_step, opts.local_span, opts.local_step, opts.tol,
+        // The price and the margin are part of the utility function; a manifest that omits them
+        // describes a different sweep than the one that ran. Each profile carries them too, so
+        // nothing was unverifiable -- but the index has to agree with the files.
+        opts.rough.mu, opts.rough.mu_tv, opts.rough.cap, opts.rough.slew_cap, opts.rough.limit,
+        opts.jitter.sigma, opts.jitter.draws, opts.jitter.resample, opts.jitter.seed,
    physics_fingerprint());
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(format!("{dir}/manifest.json"), text).unwrap();
