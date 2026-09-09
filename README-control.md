@@ -502,10 +502,36 @@ cell. That has not been done.
   the *priced* answer beat the relaxed one outright, because the unpriced run converged into a
   worse basin -- so the chatter is not reliably worth even the 0.7% it buys on the standard cell.
 
-* **Every cell of the corpus is a first cycle.** The fixed-point iteration above fixes one cell;
-  the grid has 509 of them, each with its own self-consistent `v0` that is not the `v0` it is
-  filed under. What a rebuild should probably sweep is the *fixed points*, with the current `v0`
-  axis kept for the transient case, and nothing here says how those two grids should relate.
+* **Every cell of the corpus is a first cycle, and it moves by a median of 2.2 blocks when you
+  fly it twice.** `examples/repeat.rs` over all 509 cells, `dy` on the first cycle against `dy`
+  at the limit cycle:
+
+```
+  shard                    cells  median d1-dss  |d1-dss| med  moves >1 block
+  vy+0.0000_vz+0.0000        403         -2.149         2.204            84%
+  vy+0.2000_vz+0.4000         11         +1.099         1.375            64%
+  vy+0.4000_vz+0.4000         11         +4.837         5.047            82%
+  vy-0.2000_vz-0.2000         18         -3.392         3.392           100%
+  ALL                        509         -2.003         2.246            83%
+```
+
+  The sign follows `v0`: cells that start from rest spend their first cycle building speed and
+  do *better* on every cycle after, cells that start fast do worse. Concretely, the `(0,0)` shard
+  at `lambda = 0`:
+
+```
+      n     dy#1     dy#2     dy#5    rate#1   rate#5   (blocks/s)
+    200    5.438   10.650   10.493    0.5438   1.0493
+    300   19.064   21.456   21.488    1.2709   1.4325
+    500    7.918   11.262   11.262    0.3167   0.4505
+```
+
+  The `n = 300` cell's header says `dJ 19.474`; repeated, it settles at 21.49, which is the
+  reference cycle's own rate to three decimals -- it converges to the same limit cycle. Neither
+  number is wrong and they answer different questions ("launch from a standstill" against "cruise"),
+  but the header does not say which one it is, and 83% of the grid moves by more than a block
+  between them. The fixed-point iteration above resolves one cell; what a rebuild should sweep,
+  and how a fixed-point grid should relate to the current `v0` axis, is not settled here.
 * `--cap` and `--slew-cap`, the hard-constraint versions of the same idea, are implemented and
   were not swept. A cap is arguably the more honest instrument than a price -- it says a
   pitch profile is unavailable rather than expensive -- and `cap = 45` would admit every move
