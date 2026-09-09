@@ -340,3 +340,43 @@ fn a_block_step_cannot_report_a_loss_as_a_gain() {
         }
     }
 }
+
+/// Pitch is stored as `f32` and rounding is nearest-even, so a value clamped into an interval can
+/// round back out of it. Tiny -- 1.5e-9 degrees at a limit of 0.1 -- but `Rough::violation` gates
+/// certification, so it is the difference between a profile satisfying its own header and failing
+/// its own `verify`. Fractional limits and caps are the ones that expose it.
+#[test]
+fn quantization_cannot_break_a_fractional_limit() {
+    for (limit, cap) in [(0.1, f64::INFINITY), (89.5, f64::INFINITY), (0.1, 0.13), (37.3, 5.7)] {
+        let rough = Rough { limit, cap, ..Rough::default() };
+        let o = Objective { v0: V0, n: 24, lambda: 0.0 };
+        let seed: Vec<f64> = (0..o.n).map(|i| 80.0 * ((i as f64) * 0.9).cos()).collect();
+        // the projection alone, and then the polish on top of it
+        let proj = project_cap(&seed, rough);
+        assert_eq!(rough.violation(&proj), 0.0,
+                   "projection broke limit {limit} cap {cap}: by {}", rough.violation(&proj));
+        for p in &proj {
+            assert_eq!(*p, *p as f32 as f64, "projection returned a pitch that is not an f32");
+        }
+        let r = polish(&o, &seed, PolishOpts { max_passes: 3, tol: 0.0, rough, ..Default::default() });
+        assert_eq!(rough.violation(&r.pitches), 0.0,
+                   "polish broke limit {limit} cap {cap}: by {}", rough.violation(&r.pitches));
+        assert!(certify_reg(&o, &r.pitches, 0.25, Jitter::default(), rough).is_finite(),
+                "its own certificate rejected it at limit {limit} cap {cap}");
+    }
+}
+
+/// A tick with no admissible move still has to advance its own prefix. Skipping it left every
+/// state downstream stale whenever the previous tick had moved, so the rest of the sweep
+/// optimized against a trajectory nobody was flying.
+#[test]
+fn a_skipped_tick_still_advances_the_prefix() {
+    let o = Objective { v0: V0, n: 50, lambda: 0.0 };
+    // a cap tight enough that many ticks have an empty feasible interval mid-sweep
+    let rough = Rough { cap: 0.4, limit: 60.0, ..Rough::default() };
+    let seed: Vec<f64> = (0..o.n).map(|i| 30.0 * ((i as f64) * 0.3).sin()).collect();
+    let r = polish(&o, &seed, PolishOpts { max_passes: 5, tol: 0.0, rough, ..Default::default() });
+    // the recorded J must be the J of actually flying the schedule that was written
+    assert!((r.j - o.eval(&r.pitches)).abs() < 1e-12, "reported J is not the schedule's J");
+    assert_eq!(rough.violation(&r.pitches), 0.0);
+}

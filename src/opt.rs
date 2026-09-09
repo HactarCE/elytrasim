@@ -655,6 +655,25 @@ pub struct Polished {
     pub rough_cost: f64,
 }
 
+/// The nearest `f32` to `x` that lies inside `[lo, hi]`, or `None` if the interval holds none.
+///
+/// Pitch is stored as `f32`, so every candidate is rounded before it is flown -- and rounding is
+/// nearest-even, which can step back *out* of an interval the caller just clamped into. Small:
+/// a zero-pass polish at `limit = 0.1` wrote 0.10000000149011612, over by 1.5e-9 degrees. But
+/// `Rough::violation` gates certification now, so "over by 1.5e-9" is the difference between a
+/// profile satisfying its own header and failing its own `verify`.
+fn f32_inside(x: f64, lo: f64, hi: f64) -> Option<f64> {
+    let nudge = |v: f32, up: bool| -> f32 {
+        if v == 0.0 { return if up { f32::from_bits(1) } else { -f32::from_bits(1) } }
+        let b = v.to_bits();
+        f32::from_bits(if (v > 0.0) == up { b + 1 } else { b - 1 })
+    };
+    let mut v = x.clamp(lo, hi) as f32;
+    for _ in 0..3 { if (v as f64) < lo { v = nudge(v, true) } else { break } }
+    for _ in 0..3 { if (v as f64) > hi { v = nudge(v, false) } else { break } }
+    ((v as f64) >= lo && (v as f64) <= hi).then_some(v as f64)
+}
+
 /// Best pitch for tick `t`, holding every other tick fixed: a global sweep, then a ternary
 /// refine inside the winning cell, scored on the exact tail. Returns `(pitch, J)` with the
 /// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
@@ -681,7 +700,7 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
     // not an exact multiple of the step -- about half of them, by up to half a step. That is
     // 0.125 degrees at the global step, and it would let the search return a pitch outside the
     // admissible set the caller just computed. Clamp the sample, not just the ternary bracket.
-    let at = |i: i64| (lo + step * i as f64).min(hi);
+    let at = |i: i64| f32_inside(lo + step * i as f64, lo, hi);
     // The tail replays are independent, so the sweep is exactly parallel -- no approximation,
     // just the same evaluations on more cores.
     let j_cur = score(cur);
@@ -689,11 +708,12 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
     // is never brought in: it would simply out-score every candidate and be kept. `j_cur` still
     // reports the score of where we actually are, because that is what a residual is measured
     // against.
-    let start = cur.clamp(lo, hi);
+    // No representable pitch inside the interval: leave the tick alone rather than step out of it.
+    let Some(start) = f32_inside(cur, lo, hi) else { return (cur, j_cur, j_cur) };
     let (mut bp, mut bs) = (start, if start == cur { j_cur } else { score(start) });
     let (gp, gs) = (0..steps + 1)
         .into_par_iter()
-        .map(|i| { let p = at(i); (p, score(p)) })
+        .filter_map(|i| at(i).map(|p| (p, score(p))))
         .reduce(|| (start, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
     if gs > bs { bp = gp; bs = gs }
 
@@ -705,11 +725,11 @@ fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
     }
     // Round first, then score: the schedule that gets written must be the schedule that was
     // measured, or a cell can be certified on a pitch it does not contain.
-    let refined = (0.5 * (a + b)) as f32 as f64;
-    let rs = score(refined);
-    let bp32 = bp as f32 as f64;
-    let bs32 = if bp32 == bp { bs } else { score(bp32) };
-    let (p, j) = if rs > bs32 { (refined, rs) } else { (bp32, bs32) };
+    let refined = f32_inside(0.5 * (a + b), lo, hi);
+    let (p, j) = match refined {
+        Some(r) => { let rs = score(r); if rs > bs { (r, rs) } else { (bp, bs) } }
+        None => (bp, bs),
+    };
     (p, j, j_cur)
 }
 
@@ -946,8 +966,9 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair:
     // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
     // tick is skipped.
+    let lim = opts.rough.limit;
     let mut pitches: Vec<f64> = project_cap(init, opts.rough)
-        .into_iter().map(|p| p as f32 as f64).collect();
+        .into_iter().map(|p| f32_inside(p, -lim, lim).unwrap_or(0.0)).collect();
     let mut dv = opts.jitter.draws_at(0);
     let mut states = jittered_replays(obj, &pitches, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
@@ -985,7 +1006,13 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             // not on `J` with a correction bolted on afterwards.
             let w = win5(&pitches, t);
             let pen = |x: f64| opts.rough.local(&w, x);
-            let Some((lo, hi)) = opts.rough.feasible(&w, lo, hi) else { continue };
+            // A tick with no admissible move still has to advance its own prefix: the tick
+            // before it may have moved this pass, which makes every state downstream stale, and
+            // the rest of the sweep would then optimize against a trajectory nobody is flying.
+            let Some((lo, hi)) = opts.rough.feasible(&w, lo, hi) else {
+                for k in 0..states.len() { states[k][t + 1] = ticked(&states[k][t], pitches[t]) }
+                continue
+            };
             let (np, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], cur,
                                                lo, hi, step, opts.ternary_iters, &pen);
             if global { worst_tick = worst_tick.max(j - j_cur) }
@@ -1345,16 +1372,19 @@ pub fn smooth_median(p: &[f64], k: usize) -> Vec<f64> {
 /// second difference is zero. The width it settles on is a fair measure of how far outside the
 /// admissible set the seed was.
 pub fn project_cap(p: &[f64], rough: Rough) -> Vec<f64> {
+    // Quantize as we go. The projection's output is a control that will be flown, so it has to be
+    // representable *and* inside the set -- clamping in f64 and rounding afterwards can land back
+    // outside, which is the whole point of `f32_inside`.
+    let q32 = |x: f64| f32_inside(x, -rough.limit, rough.limit).unwrap_or(0.0);
     let causal = |src: &[f64]| -> Vec<f64> {
-        let mut q: Vec<f64> = src.iter().map(|x| x.clamp(-rough.limit, rough.limit)).collect();
+        let mut q: Vec<f64> = src.iter().map(|&x| q32(x)).collect();
         // Rate first, then acceleration: a schedule inside the slew limit is a milder input to
         // the curvature pass, and the curvature pass cannot make the rate worse than 2*cap.
         if rough.slew_cap.is_finite() {
             for j in 0..q.len().saturating_sub(1) {
                 let d = q[j + 1] - q[j];
                 if d.abs() > rough.slew_cap {
-                    q[j + 1] = (q[j] + d.clamp(-rough.slew_cap, rough.slew_cap))
-                        .clamp(-rough.limit, rough.limit);
+                    q[j + 1] = q32(q[j] + d.clamp(-rough.slew_cap, rough.slew_cap));
                 }
             }
         }
@@ -1362,22 +1392,28 @@ pub fn project_cap(p: &[f64], rough: Rough) -> Vec<f64> {
             for j in 0..q.len().saturating_sub(2) {
                 let d = q[j + 2] - 2.0 * q[j + 1] + q[j];
                 if d.abs() > rough.cap {
-                    q[j + 2] = (2.0 * q[j + 1] - q[j] + d.clamp(-rough.cap, rough.cap))
-                        .clamp(-rough.limit, rough.limit);
+                    q[j + 2] = q32(2.0 * q[j + 1] - q[j] + d.clamp(-rough.cap, rough.cap));
                 }
             }
         }
         q
     };
-    if !rough.cap.is_finite() && !rough.slew_cap.is_finite() { return causal(p) }
+    if !rough.cap.is_finite() && !rough.slew_cap.is_finite() { return causal(p) }   // already q32
     // `violation` is the termination test, so this cannot claim success on a constraint it
     // forgot to enforce -- which is exactly how the first version of this function was wrong.
     let mut k = 1;
-    loop {
+    while k <= p.len() + 1 {
         let q = causal(&smooth_box(p, k));
-        if rough.violation(&q) <= 1e-9 || k > p.len() { return q }
+        if rough.violation(&q) == 0.0 { return q }
         k += 2;
     }
+    // A wide `smooth_box` is *not* a constant: it clamps at the ends rather than wrapping, so it
+    // keeps a slope, and the widening loop can run out while still failing the cap. Fall back to
+    // the flattest thing there is, whose differences are all exactly zero. It throws the schedule
+    // away, which is why it is a fallback and not the method.
+    let m = p.iter().sum::<f64>() / p.len().max(1) as f64;
+    let m = f32_inside(m, -rough.limit, rough.limit).unwrap_or(0.0);
+    vec![m; p.len()]
 }
 
 /// FNV-1a over the raw bits of a canonical replay, for checking that two machines agree.
