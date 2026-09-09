@@ -288,6 +288,43 @@ loses 3.1 blocks on average and 10.6 at the fifth percentile. That is what "weir
 actually looks like once the chatter has been suppressed, and `lag1` cannot see it -- it reads a
 perfectly respectable +0.26.
 
+## The corpus as it stands
+
+`python3 tools/audit.py runs/corpus`, medians per shard:
+
+```
+shard                    cells   curv_l1  curv_max    lag1  at +-90
+vy+0.0000_vz+0.0000        403      4167       180   -0.77      91%
+vy+0.2000_vz+0.2000         11       542        90   +0.33      91%
+vy+0.2000_vz-0.2000         11       534        90   +0.14      91%
+vy+0.4000_vz+0.2000         11       667        94   +0.15      91%
+vy-0.2000_vz+0.2000         11       466        63   +0.42      82%
+vy-0.2000_vz-0.2000         18       437        96   +0.15      94%
+ALL                        509      2384       180   -0.70      91%
+reference cycle              1       147        38   +0.48       0%
+```
+
+Two things, and the second is the one that was not known.
+
+**The compounding under continuation is real and it is most of the grid.** The `(0, 0)` shard
+carries the whole `n` x `lambda` plane, so it has the longest continuation paths, and its median
+cell sits at `curv_l1` 4167 with `lag1` -0.77 -- fully degenerate, 28 times the reference cycle's
+curvature. The nine small shards are 11 to 18 cells each, so their paths are short, and they land
+at 437 to 667 with a positive `lag1`. `README-sweep.md` predicted exactly this ("a per-cell pass
+budget accumulates along the continuation path") and the guard for it defaults off; this is the
+measurement.
+
+**Ninety-one percent of cells park a pitch against the gate, in every shard including the healthy
+ones.** The anchor cell itself -- `n = 300, lambda = 0, v0 = 0`, the least-polished cell in the
+corpus, `curv_l1` 187 and `lag1` +0.65, by every existing statistic a good profile -- holds three
+ticks beyond 89.9 degrees. And the corpus is written under `trig = libm`, where that is the
+25-blocks-across-7.6e-6-degrees cliff rather than the merely expensive one. So it is not only
+that the degenerate cells are degenerate: the *good* cells are sitting on a discontinuity too,
+and no statistic in the header says so.
+
+Rebuilding wants `--trig mth_lut --limit 85 --mu 1e-4` and the relax/project/polish recipe per
+cell. That has not been done.
+
 ## What is still open
 
 * **The corpus is written under `trig = libm`.** Any cell leaning on pitch +90 is leaning on the
