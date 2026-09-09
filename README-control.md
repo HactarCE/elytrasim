@@ -653,6 +653,8 @@ Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/l
 ```
 00_baseline.png    the schedules as they were: reference, hard-polished, jittered
 01_hamiltonian.png the per-tick objective curve J(p) -- one peak, not two, so not a singular arc
+02_mu.png          the first mu sweep, from both a smooth and a chattering seed: the same price
+                   reaches the same place from either side, which is what made it worth pursuing
 03_razor.png       one tick scanned across the gate it parks against: libm at +90 (a
                    25-block cliff across 7.6e-6 of a degree), mth_lut at +90 (no cliff),
                    mth_lut at -90 (a 5-block step one table cell wide)
@@ -660,6 +662,9 @@ Under `runs/antichatter/fig` (regenerate with the `tools/plot_*.py` and `tools/l
 05_final.png       the priced schedules at mu = 1e-4, 1e-3, 5e-3
 06_robust.png      dJ against pitch noise: the picture of what overfitting costs
 07_best.png        reference / today's recipe / this recipe / the relaxed optimum
+08_fixpoint.png    the answer: reference, today's recipe, and the fixed-point schedule. The
+                   last has 3% of its per-tick delta power above 0.35 cycles/tick against the
+                   reference cycle's 14%, so it is the smoothest of the three
 09_projection.png  two relaxed optima under three box widths -- the picture behind a
                    hypothesis about why one projects and the other does not, which the
                    numbers then refuted; see "What is still open"
