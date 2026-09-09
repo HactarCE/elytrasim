@@ -180,12 +180,14 @@ is worth something as *search* even though it is worthless as an *answer*.
 recipe.** A second relaxed optimum, `B`, scores 22.402 -- the highest raw J anything found -- and
 projects *worse* than the 22.346 one under every filter but one:
 
-| projection of relaxed B (J 22.402) | J after | | projection of relaxed A (J 22.346) | J after |
-|---|---|---|---|---|
-| none | 14.23 | | median 5 | 22.179 |
-| box 3 / 5 / 9 | 15.49 / 15.73 / 15.67 | | median 7 | 22.167 |
-| median 3 / 5 / 7 / 9 | 15.32 / 15.69 / 15.92 / 16.01 | | box 3 / 5 / 9 | 22.165 / 22.161 / 22.156 |
-| median 13 | **22.136** | | box 15 / 25 | 22.130 / 22.047 |
+```
+projection          from relaxed B (J 22.402)     from relaxed A (J 22.346)
+none                            14.23                          -
+box 3 / 5 / 9        15.49 / 15.73 / 15.67       22.165 / 22.161 / 22.156
+box 15 / 25                       -              22.130 / 22.047
+median 3 / 5 / 7 / 9  15.32 / 15.69 / 15.92 / 16.01   -    / 22.179 / 22.167 / -
+median 13                       22.136                         -
+```
 
 Every one of those is converged -- residuals 1e-5 or better, several at the 200-pass ceiling. So
 `B` is simply a worse *basin* for a flyable schedule despite being a better relaxed point, and a
