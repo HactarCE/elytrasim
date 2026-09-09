@@ -753,8 +753,54 @@ removing a pathology rather than reshaping the answer.
 slams between exactly 0 and exactly +90 degrees *every tick*, and the differenced panel shows
 the change reversing sign on 34 of the 40 steps: a hand cannot do this and a wrist would not survive trying.
 The rebuilt cell crosses the same window as a straight ramp from +35.5 to +42.2 degrees, and scores
-**a block higher** (13.904 against 12.922) while doing it. This cell is the clearest case in the
-shard where the degenerate answer was also the worse answer.
+**a block higher** (13.904 against 12.922) while doing it. The next section is about why that is
+not the good news it looks like.
+
+### The priced cell scores higher on the unpriced objective. That is not a win
+
+Several panels of `11_profiles.png` show the restricted, priced solution beating the unrestricted
+one on `dJ`, which is the raw `TE(s_n) + w*z_n` and *not* what the rebuild maximized. Read as
+"the price improved `J`" that would be nonsense -- a smaller admissible set cannot contain a
+better point. Three candidate explanations, checked in order.
+
+**It is not the trig backend.** The old corpus is written under `trig = libm` and the rebuild
+under `mth_lut`, so the two headers are not literally comparable. Re-evaluating every schedule
+under both (`sweep polish --passes 0`): at this cell the old schedule scores 12.9219 under libm
+and 12.9152 under `mth_lut`, the new one 13.8994 and 13.9037. Across all 363 cells the median
+shift is -0.006 blocks and the largest is 0.014. The gap is a hundred times that.
+
+**It is not the jitter, though it is worth noticing.** The old cell's header reads
+`jitter 0.1 8 1592598191`: **the corpus we have was already regularized**, against a spread of
+initial velocities, which was the anti-chatter measure of the day. It carries `curv_l1` 6201 and
+23 ticks against the gate anyway. Its `dJ` is a *report* at the exact `v0` -- replay reproduces
+12.921859 to the digit -- not the quantity it maximized, but it is the same quantity the rebuilt
+header reports, so the comparison is fair.
+
+**It is the basin.** Release each schedule from every restriction -- no price, no limit, no
+jitter, `mth_lut`, polished to convergence -- and ask where the raw problem takes it:
+
+| polished raw, from | J | curv_l1 | lag1 | passes | residual |
+|---|---|---|---|---|---|
+| the old cell | **12.924** | 5968 | -0.56 | 13 | 3.6e-5 |
+| the rebuilt cell | **14.081** | 4078 | -0.23 | 84 | 2.2e-4 |
+
+The old cell climbs **0.002 blocks and stops**. It is already a converged local optimum of the
+raw problem; it is simply a *worse* one. The rebuilt cell, released, climbs to 14.081 -- and
+re-chatters at once, `curv_l1` 209 -> 4078 and `lag1` +0.65 -> -0.23, which is this whole
+document in one line.
+
+So the price costs exactly what a price should cost: **0.177 blocks** measured within one basin,
+14.081 down to 13.904. What the figure shows is not a constrained problem outscoring an
+unconstrained one; it is two pipelines landing in basins **1.16 blocks apart**, and the basin gap
+being six times the price. The regularizer makes the answer flyable. The multi-start relaxation
+is what makes it good. Those are two different jobs and they are separable.
+
+Shard-wide, with the trig confound removed, this is a wash rather than a gain: over the 297
+single-cycle cells the median `dJ(new) - dJ(old)` is **+0.020**, higher in 181 and lower in 116.
+Not a systematic improvement -- a basin lottery whose spread dwarfs the price. **Nothing here
+should be read as evidence that the regularizer buys objective value.** It buys flyability at a
+stated, small, measurable cost, and the cost is invisible in the shard table only because the
+search noise is larger.
 
 `13_family.png` is the check the grid cannot make. Along lambda the schedules share one
 structure -- an early phase that varies with the price on distance, then a common glide, then a
