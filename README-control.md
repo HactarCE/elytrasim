@@ -510,7 +510,8 @@ What it cost, split by regime:
 
 So inside the regime the corpus is *about*, the rebuild is **free** -- very slightly positive on
 the median, better in 168 cells and worse in 121 -- while cutting hand movement twenty-fold and
-eliminating gate parking entirely. The `n >= 550` band is the tiling degeneracy `README-sweep.md`
+eliminating gate parking entirely. All 363 re-certify from their own headers: `sweep verify`
+reports 363 ok, no mismatches and no bad headers, worst claimed residual 1.96e-3. The `n >= 550` band is the tiling degeneracy `README-sweep.md`
 already names: those old cells climb twice as far because they fly the cycle twice, and the
 rebuilt ones stay in the single-cycle family. `fig/10_shard.png` draws all of it; the third row is
 the one to look at, because the rebuilt panel is empty.
