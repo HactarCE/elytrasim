@@ -309,6 +309,9 @@ mu = 1e-4 at the same v0     21.525                1.43500             +0.14%
 relaxed, chattering          21.677                1.44513             +0.85%
 ```
 
+Those are each schedule repeated from the reference cycle's `v0`, which is nobody's fixed point
+but its own. The next section does it properly.
+
 ### The fix needs no change to the objective
 
 `v0` is already a swept axis, so the self-consistent cell is just a fixed point of `v0 := v_end`.
@@ -324,13 +327,31 @@ iter  v0                        -> v_end                    |dv|      dy
 
 `runs/antichatter/fix/i8.pitches`: `curv_l1` 149 against the reference's 147, `curv_max` 26.5
 against 38, `lag1` +0.696, residual **6.1e-9**, worst single-tick nudge 0.0145 blocks, and it
-repeats at 21.574 forever with `|dv|` 0.0000. **21.574 against a person's 21.494 is +0.37%
-sustained**, and the chatter is worth a further 0.48% on top of that -- consistent with the 0.7%
-it buys on a single cycle.
+repeats at 21.574 forever with `|dv|` 0.0000.
 
-Read against the stopping rule, the honest summary is: on *rate* the two are a tie (1.43827
-against 1.43767, a tenth of a percent), and the whole case for the price and the margin is
-robustness -- 0.0145 blocks from a 0.05 degree nudge against 5.369.
+The chatter has to be measured the same way or the comparison flatters somebody. Running the
+identical iteration with `--mu 0` and no margin, from the same starting schedule, converges to its
+own fixed point in three steps. All four of these are exact limit cycles:
+
+```
+                                       v0 it settles on        dy every cycle   |dv|
+reference cycle (a person)      (0.167467, 0.200887)                   21.494  0.0001
+priced, chain from the priced        (0.100033, 0.188800)              21.574  0.0000
+priced, chain from the relaxed       (0.150303, 0.198255)              21.573  0.0000
+relaxed, chattering                  (0.120937, 0.192570)              21.737  0.0000
+```
+
+So, sustained: **the flyable schedule beats a person by 0.080 blocks a cycle, +0.37%, and the
+chatter beats the flyable schedule by 0.163, +0.76%.** That 0.76% is the same quantity the
+single-cycle frontier put at 0.7%, arrived at by a completely different route, which is the best
+evidence available that both are measured right.
+
+Two things fall out of that table. The fixed point is **not unique** -- two chains landed on
+`v0` = (0.100, 0.189) and (0.150, 0.198), a long way apart, and agree on `dy` to 0.001 blocks, so
+there is a family of self-consistent cycles rather than a point. And read against the stopping
+rule, the honest summary is that on *rate* the two are a tie (1.43827 blocks/s against 1.43767),
+and the whole case for the price and the margin is robustness -- 0.0145 blocks lost from a 0.05
+degree nudge against 5.369.
 
 ## Is the answer actually robust, or only smooth?
 
