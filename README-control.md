@@ -27,11 +27,16 @@ The short version:
   cycle's own curvature budget, `dJ` **21.83 against a person's 21.49** for a single cycle from
   the reference's own starting velocity, with a *lower* peak angular acceleration and no
   fragility left.
-* **Most of that is a first-cycle transient, and saying so is the point.** Fly the same schedule
-  again from where it ended and it settles at 21.53, because it ends 0.08 blocks/tick slower than
-  it started and books the difference as climb. Iterating `v0 := v_end` -- which needs no change
-  to the objective, since `v0` is already a swept axis -- gives a schedule that closes exactly
-  and sustains **21.574 against a person's 21.494, +0.37%**. That is the honest number.
+* **21.83 is the answer to the question the sweep asks**, which is: best schedule of `n` ticks
+  from the swept `v0`, terminal velocity free. Every cell of the rebuilt corpus solves exactly
+  that and nothing else.
+* *Under a different question* -- if the schedule has to be **repeatable**, flown over and over
+  the way a person flies the reference -- most of that gain is a first-cycle transient. Fly it
+  again from where it ended and it settles at 21.53, because it ends 0.07 blocks/tick slower
+  than it started and books the difference as climb; iterating `v0 := v_end` to a self-consistent
+  cell sustains 21.574 against a person's 21.494, +0.37%. **That is a condition I added, not one
+  the objective states**, so it is scoped to its own section and does not apply to the corpus.
+  See the scope note under "Most of the gain is a first-cycle transient".
 
 Everything below is at the cell every chatter number in `README-sweep.md` was measured on:
 `n = 300`, `lambda = 0`, `v0 = (0.167467, 0.200887)`. `J` is `J(s_n)`; `dJ = J - 0.4275`.
@@ -145,6 +150,25 @@ header so `sweep verify` re-certifies against the same objective the writer used
 `--mu` is a term in the utility function and says so; `--limit` is a restriction of the
 admissible set. Neither is a stopping rule, and with either of them on, `--lag1-floor` is off,
 `--tol` is 0.002, and the polish runs until it stops moving. Residuals below are 1e-5 or better.
+
+**These replace the velocity jitter; they do not sit alongside it.** Every cell of the rebuilt
+corpus carries `# jitter 0`, meaning it was optimized from the exact swept `v0` -- against 403
+cells of the corpus we have, every one of them written under `# jitter 0.1 8 1592598191`. Three
+reasons to drop it:
+
+1. **It did not work.** The corpus we have *is* the jittered corpus, and its median `curv_l1` is
+   4457, its median `lag1` -0.78, and 91% of its cells park a pitch at the gate.
+2. **It answers a different question.** Jitter maximizes a mean over eight random starting
+   velocities; the sweep's stated problem is one schedule from one exact `v0`. The price and the
+   limit leave that problem alone and restrict the *control*.
+3. **It splits what is optimized from what is certified.** With jitter on, the header's `dJ` is
+   an exact-`v0` replay while the schedule maximized the jittered mean, so the file's headline
+   number is not the quantity that was maximized. With `# jitter 0` they are the same number,
+   which is what makes the certificate mean anything.
+
+Velocity jitter is still used, as a *test*: `examples/fragility.rs` perturbs `v0` after the fact
+to measure how sharp an optimum is. Testing against a perturbation and training against one are
+different things, and only the first survived.
 
 `--presmooth` is the piece that makes it work, and it is not cosmetic. A chattering control is
 the discrete stand-in for a *relaxed* control: at each tick the optimizer is really choosing a
@@ -276,6 +300,30 @@ factor of five less hand movement, costs 0.13 blocks. It only turns down below a
 already knows how to name.
 
 ## Most of the gain is a first-cycle transient
+
+> **Scope note, added 2026-09-09 after josie read this.** This section and the two under it are
+> about a question the corpus does not ask, and their conclusions must not be carried back into
+> it. **The sweep solves: best schedule of `n` ticks starting from the swept `v0`, terminal
+> velocity free.** That is the whole specification, and every cell of the rebuilt shard obeys it
+> exactly -- all 363 carry `# v0 0.000000000 0.000000000`, the swept value, unmodified.
+>
+> What follows instead iterates `v0 := v_end` until a schedule ends where it began, which is a
+> *self-consistency* condition I introduced, not a requirement of the problem. I went there
+> because the reference schedule is something a person flies over and over, so comparing a
+> one-shot optimum against it on one cycle seemed unfair. That reasoning only holds if the
+> deliverable is a repeatable cycle. **If the deliverable is the best schedule from a given
+> `v0` -- which is what the sweep actually produces -- then the first-cycle number *is* the
+> answer**, the frontier table above is the right comparison, and nothing below applies.
+>
+> Concretely: the "+0.37% sustained" figure, and any number here described as being at a fixed
+> point or a limit cycle, is measured under that extra condition. The single-cycle numbers from
+> the swept `v0` are the frontier table ("What it costs") and the head-to-head section.
+>
+> Also note that `# structure cyclic` and `# cycles N` in the profile headers have nothing to do
+> with any of this. They are shape classifiers on the *pitch schedule* -- whether it shows the
+> dive/snap/flick form or has collapsed, and how many dive-then-flick transitions it contains
+> (used to flag the `n >= 550` tiling degeneracy). Neither constrains `v0`, and neither is
+> affected by the iteration below.
 
 The objective optimizes one cycle with the terminal velocity free. Nothing in it asks the
 schedule to be *repeatable*, and the answers are not: the reference cycle returns to within 0.024
