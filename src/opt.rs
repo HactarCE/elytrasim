@@ -888,9 +888,11 @@ pub fn block_step(obj: &Objective, pitches: &[f64], step: f64, block: usize, jit
 pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
     // Project the seed into the admissible set first. A warm start routinely arrives outside it
-    // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair.
-    let mut pitches: Vec<f64> = init.iter()
-        .map(|&p| p.clamp(-opts.rough.limit, opts.rough.limit) as f32 as f64).collect();
+    // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair:
+    // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
+    // tick is skipped.
+    let mut pitches: Vec<f64> = project_cap(init, opts.rough.cap, opts.rough.limit)
+        .into_iter().map(|p| p as f32 as f64).collect();
     let mut dv = opts.jitter.draws_at(0);
     let mut states = jittered_replays(obj, &pitches, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
@@ -1263,6 +1265,51 @@ pub fn smooth_median(p: &[f64], k: usize) -> Vec<f64> {
         w.sort_by(f64::total_cmp);
         w[w.len() / 2]
     }).collect()
+}
+
+/// Bring a schedule inside a second-difference cap, by integrating a rate-limited tracker
+/// through it from the left.
+///
+/// A coordinate sweep cannot do this on its own. `Rough::feasible` asks what one pitch may be
+/// given its neighbors, and when the neighbors are themselves out of bounds the answer is
+/// nothing at all -- every tick returns `None` and the polish is a no-op. So a seed that breaks
+/// the cap has to be projected before the sweep starts, exactly as one that breaks `limit` is.
+///
+/// The core of it is the causal projection: walk forward, and wherever the schedule asks for
+/// more than `cap` of angular acceleration, give it `cap`. That is what a hand with a bounded
+/// acceleration would produce trying to track the target.
+///
+/// On its own it is not enough, and the failure is immediate rather than exotic. A tracker
+/// following a violent seed accumulates rate, runs into `+-limit`, and the clamp *is* a large
+/// second difference -- so the pass ends with a violation where it hit the wall. Alternating
+/// -60/+60 with `cap = 25` and `limit = 90` comes out with a worst of 90, unchanged in kind from
+/// the 240 it started with.
+///
+/// So: pre-smooth first, widening the window until the causal pass comes out clean. This
+/// terminates, because at a window as wide as the schedule the mean is a constant and every
+/// second difference is zero. The width it settles on is a fair measure of how far outside the
+/// admissible set the seed was.
+pub fn project_cap(p: &[f64], cap: f64, limit: f64) -> Vec<f64> {
+    let clamp = |q: &[f64]| -> Vec<f64> { q.iter().map(|x| x.clamp(-limit, limit)).collect() };
+    if !cap.is_finite() { return clamp(p) }
+    let causal = |src: &[f64]| -> Vec<f64> {
+        let mut q = clamp(src);
+        for j in 0..q.len().saturating_sub(2) {
+            let d = q[j + 2] - 2.0 * q[j + 1] + q[j];
+            if d.abs() > cap {
+                q[j + 2] = (2.0 * q[j + 1] - q[j] + d.clamp(-cap, cap)).clamp(-limit, limit);
+            }
+        }
+        q
+    };
+    let worst = |q: &[f64]| (0..q.len().saturating_sub(2))
+        .map(|j| (q[j] - 2.0 * q[j + 1] + q[j + 2]).abs()).fold(0.0, f64::max);
+    let mut k = 1;
+    loop {
+        let q = causal(&smooth_box(p, k));
+        if worst(&q) <= cap * (1.0 + 1e-9) + 1e-9 || k > p.len() { return q }
+        k += 2;
+    }
 }
 
 /// FNV-1a over the raw bits of a canonical replay, for checking that two machines agree.

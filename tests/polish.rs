@@ -177,3 +177,80 @@ fn the_roughness_price_round_trips_through_the_header() {
         .map(|l| format!("{l}\n")).collect();
     assert_eq!(Profile::parse(&older).expect("old header").rough, Rough::default());
 }
+
+/// `Rough::local` has to be exactly the terms of `Rough::cost` that the center pitch takes part
+/// in, or the coordinate search is optimizing a different objective than the one reported --
+/// silently, and worst at the two ends where the windows run off the schedule.
+#[test]
+fn the_local_roughness_price_matches_the_whole_schedule_price() {
+    let rough = Rough { mu: 0.013, mu_tv: 0.007, ..Rough::default() };
+    let mut st = 12345u64;
+    let mut next = || { st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        ((st >> 33) as f64 / (1u64 << 31) as f64) * 180.0 - 90.0 };
+    for n in [3usize, 4, 5, 9, 40] {
+        let p: Vec<f64> = (0..n).map(|_| next()).collect();
+        for t in 0..n {
+            let w = win5(&p, t);
+            for x in [-90.0, -12.5, 0.0, 7.25, 90.0] {
+                let mut q = p.clone();
+                q[t] = x;
+                let whole = rough.cost(&q) - rough.cost(&p);
+                let local = rough.local(&w, x) - rough.local(&w, p[t]);
+                assert!((whole - local).abs() < 1e-9,
+                        "n {n} t {t} x {x}: whole {whole} vs local {local}");
+            }
+        }
+    }
+}
+
+/// `Rough::feasible` is the interval the center pitch may take without breaking a cap. Whatever
+/// it returns must actually satisfy the caps against the neighbors it was given.
+#[test]
+fn the_feasible_interval_really_is_feasible() {
+    let mut st = 99u64;
+    let mut next = || { st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        ((st >> 33) as f64 / (1u64 << 31) as f64) * 180.0 - 90.0 };
+    for cap in [10.0, 45.0, f64::INFINITY] {
+        for slew in [8.0, 30.0, f64::INFINITY] {
+            for limit in [60.0, 85.0, 90.0] {
+                let rough = Rough { mu: 0.0, mu_tv: 0.0, cap, slew_cap: slew, limit };
+                for _ in 0..200 {
+                    let p: Vec<f64> = (0..9).map(|_| next()).collect();
+                    let t = 4;
+                    let Some((lo, hi)) = rough.feasible(&win5(&p, t), -90.0, 90.0) else { continue };
+                    for x in [lo, 0.5 * (lo + hi), hi] {
+                        let mut q = p.clone();
+                        q[t] = x;
+                        assert!(x.abs() <= limit + 1e-9, "limit broken: {x} > {limit}");
+                        for j in t - 2..=t {
+                            let d = (q[j] - 2.0 * q[j + 1] + q[j + 2]).abs();
+                            assert!(d <= cap + 1e-9, "cap broken at {j}: {d} > {cap}");
+                        }
+                        for j in t - 1..=t {
+                            let d = (q[j + 1] - q[j]).abs();
+                            assert!(d <= slew + 1e-9, "slew broken at {j}: {d} > {slew}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The same as the pitch-limit test, for the curvature cap: a seed that breaks it must be
+/// brought inside and stay inside.
+#[test]
+fn a_curvature_cap_is_respected_from_a_seed_that_breaks_it() {
+    let o = Objective { v0: V0, n: 40, lambda: 0.0 };
+    let seed: Vec<f64> = (0..o.n).map(|i| if i % 2 == 0 { -60.0 } else { 60.0 }).collect();
+    let rough = Rough { cap: 25.0, ..Rough::default() };
+    let r = polish(&o, &seed, PolishOpts { max_passes: 6, tol: 0.0, rough, ..Default::default() });
+    let worst = |p: &[f64]| (0..p.len() - 2)
+        .map(|j| (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs()).fold(0.0f64, f64::max);
+    // `project_cap` clamps to `limit` as it integrates, and a clamp can reintroduce a violation
+    // at the clamp itself, so the guarantee is one f32 rounding either side of the cap unless
+    // the tracker ran into +-limit -- which with the default limit of 90 and this seed it does
+    // not. Either way the violation has to be gone, not merely smaller.
+    assert!(worst(&r.pitches) <= 25.0 + 1e-3,
+            "cap 25 not enforced: seed {} -> {}", worst(&seed), worst(&r.pitches));
+}
