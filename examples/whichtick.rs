@@ -7,15 +7,24 @@ use elytrasim::opt::*;
 use elytrasim::sim::*;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
+    // --trig, if given, overrides every profile header for every file in this invocation.
+    let forced: Option<TrigMode> =
+        a.iter().position(|x| x == "--trig").map(|i| a[i + 1].parse().unwrap());
     let f = &a[1];
     let d: f64 = a[2].parse().unwrap();
     let top: usize = a.iter().position(|x| x == "--top").map(|i| a[i + 1].parse().unwrap()).unwrap_or(12);
     let text = std::fs::read_to_string(f).unwrap();
-    let (obj, ps) = match Profile::parse(&text) {
-        Ok(p) => { set_trig_mode(p.trig); (p.obj, p.pitches) }
-        Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
+    let (obj, ps) = {
+        // Each file picks its own mode from its own header, and an explicit --trig overrides
+        // every header. Setting the mode inside the loop without resetting it let a
+        // headerless file silently inherit the previous profile's physics.
+        let parsed = Profile::parse(&text);
+        set_trig_mode(forced.unwrap_or_else(|| parsed.as_ref().map(|p| p.trig).unwrap_or_default()));
+        match parsed {
+            Ok(p) => (p.obj, p.pitches),
+            Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
+        }
     };
-    if let Some(i) = a.iter().position(|x| x == "--trig") { set_trig_mode(a[i + 1].parse().unwrap()) }
     let obj = Objective { n: ps.len(), ..obj };
     let base = obj.eval(&ps);
     let mut worst: Vec<(f64, usize, f64)> = (0..ps.len()).map(|t| {

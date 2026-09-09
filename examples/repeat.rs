@@ -21,7 +21,6 @@ fn main() {
     while i < a.len() {
         if a[i].starts_with("--") { i += 2 } else { files.push(&a[i]); i += 1 }
     }
-    if let Some(i) = a.iter().position(|x| x == "--trig") { set_trig_mode(a[i + 1].parse().unwrap()) }
     let forced = a.iter().position(|x| x == "--trig").map(|i| a[i + 1].parse().unwrap());
 
     print!("{:<24}", "file");
@@ -31,11 +30,17 @@ fn main() {
     println!("   {:>9} {:>9}", "sum|dv|1", "sum|dv|N");
     for f in &files {
         let text = std::fs::read_to_string(f.as_str()).unwrap();
-        let (obj, ps) = match Profile::parse(&text) {
-            Ok(p) => { set_trig_mode(p.trig); (p.obj, p.pitches) }
-            Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
+        let (obj, ps) = {
+            // Each file picks its own mode from its own header, and an explicit --trig overrides
+            // every header. Setting the mode inside the loop without resetting it let a
+            // headerless file silently inherit the previous profile's physics.
+            let parsed = Profile::parse(&text);
+            set_trig_mode(forced.unwrap_or_else(|| parsed.as_ref().map(|p| p.trig).unwrap_or_default()));
+            match parsed {
+                Ok(p) => (p.obj, p.pitches),
+                Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
+            }
         };
-        if let Some(m) = forced { set_trig_mode(m) }
         let v0 = obj.v0;
         let mut s = State { pos: Vec3::ZERO, vel: v0 };
         print!("{:<24}", std::path::Path::new(f.as_str()).file_name().unwrap().to_string_lossy());

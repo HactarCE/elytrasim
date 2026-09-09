@@ -380,3 +380,27 @@ fn a_skipped_tick_still_advances_the_prefix() {
     assert!((r.j - o.eval(&r.pitches)).abs() < 1e-12, "reported J is not the schedule's J");
     assert_eq!(rough.violation(&r.pitches), 0.0);
 }
+
+/// A header field is the whole claim a profile makes, so a typo in it has to be an error rather
+/// than a silent default. `# rough 0 0 typo inf 85` used to parse cleanly as "no cap", which
+/// would have certified a schedule against a constraint nobody asked for.
+#[test]
+fn a_malformed_roughness_header_is_an_error() {
+    let o = Objective { v0: V0, n: 4, lambda: 0.0 };
+    let good = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(),
+                         rough: Rough { mu: 1e-3, cap: 45.0, limit: 85.0, ..Rough::default() },
+                         commit: "x".into(), pitches: vec![1.0; 4], residual: 0.0, passes: 1 };
+    let text = good.to_string();
+    assert!(Profile::parse(&text).is_ok());
+    for bad in ["# rough      0 0 typo inf 85", "# rough      0 0 NaN inf 85",
+                "# rough      0 0 1 2 3 4 5 6"] {
+        let broken: String = text.lines()
+            .map(|l| if l.starts_with("# rough") { bad } else { l })
+            .map(|l| format!("{l}\n")).collect();
+        assert!(Profile::parse(&broken).is_err(), "accepted a malformed header: {bad:?}");
+    }
+    // an absent field is still fine -- files written before the field existed must still read
+    let older: String = text.lines().filter(|l| !l.starts_with("# rough"))
+        .map(|l| format!("{l}\n")).collect();
+    assert_eq!(Profile::parse(&older).unwrap().rough, Rough::default());
+}

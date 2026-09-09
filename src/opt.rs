@@ -860,12 +860,25 @@ pub fn delta_structure(d: &[f64]) -> (f64, f64, Vec<(usize, f64)>) {
 /// Costs one global pass plus a handful of replays. Returns `None` when no step helps.
 pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter)
     -> Option<(Vec<f64>, f64, f64)> {
-    let d = residuals(obj, pitches, step, jit);
+    jacobi_step_reg(obj, pitches, step, jit, Rough::default())
+}
+
+/// `jacobi_step` against the regularized objective, and against a consistent one.
+///
+/// The original compared a *jittered* baseline with *unjittered* candidates -- `base` came from
+/// `eval_jittered` and the line search from `eval` -- so under jitter the reported gain was the
+/// difference of two different objectives. It is a diagnostic and off by default, which is why
+/// nothing depended on it, but a diagnostic that reports a number has to report the right one.
+pub fn jacobi_step_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough)
+    -> Option<(Vec<f64>, f64, f64)> {
+    let d = residuals_reg(obj, pitches, step, jit, rough);
     let dv = jit.draws_at_0();
-    let base = obj.eval_jittered(pitches, &dv);
+    let score = |p: &[f64]| obj.eval_jittered(p, &dv) - rough.cost(p);
+    let base = score(pitches);
+    let lim = rough.limit;
     let at = |alpha: f64| -> Vec<f64> {
         pitches.iter().zip(&d)
-            .map(|(p, (delta, _))| (p + alpha * delta).clamp(-90.0, 90.0) as f32 as f64)
+            .map(|(p, (delta, _))| f32_inside(p + alpha * delta, -lim, lim).unwrap_or(0.0))
             .collect()
     };
     // Coarse sweep then bisection-free refine: the gain along alpha is not unimodal either,
@@ -873,7 +886,7 @@ pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter)
     let (mut best_a, mut best_j) = (0.0, base);
     let mut alpha = 0.02;
     while alpha <= 1.6 {
-        let j = obj.eval(&at(alpha));
+        let j = score(&at(alpha));
         if j > best_j { best_j = j; best_a = alpha }
         alpha += 0.02;
     }
@@ -882,10 +895,12 @@ pub fn jacobi_step(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter)
     let (lo, hi) = (best_a - 0.02, best_a + 0.02);
     for i in 1..20 {
         let a = lo + (hi - lo) * i as f64 / 20.0;
-        let j = obj.eval(&at(a));
+        let j = score(&at(a));
         if j > best_j { best_j = j; best_a = a }
     }
-    Some((at(best_a), best_a, best_j - base))
+    let out = at(best_a);
+    if rough.violation(&out) > 0.0 { return None }
+    Some((out, best_a, best_j - base))
 }
 
 /// Line-search a separate step size for each block of ticks.
@@ -1186,14 +1201,24 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                     }
                 }
             },
+            // A header field is the whole claim, so a typo in it has to be an error and not a
+            // silent default: `# rough 0 0 typo inf 85` used to parse as "no cap".
             rough: match field("rough") {
                 None => Rough::default(),
                 Some(v) => {
                     let f: Vec<&str> = v.split_whitespace().collect();
-                    let g = |i: usize, d: f64| f.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
-                    Rough { mu: g(0, 0.0), mu_tv: g(1, 0.0),
-                            cap: g(2, f64::INFINITY), slew_cap: g(3, f64::INFINITY),
-                            limit: g(4, 90.0) }
+                    let g = |i: usize, d: f64| -> Result<f64, String> {
+                        match f.get(i) {
+                            None => Ok(d),
+                            Some(x) => x.parse().map_err(|e| format!("bad 'rough' field {i} {x:?}: {e}"))
+                                        .and_then(|y: f64| if y.is_nan() {
+                                            Err(format!("'rough' field {i} is NaN")) } else { Ok(y) }),
+                        }
+                    };
+                    if f.len() > 5 { return Err(format!("'rough' takes at most 5 numbers, got {}", f.len())) }
+                    Rough { mu: g(0, 0.0)?, mu_tv: g(1, 0.0)?,
+                            cap: g(2, f64::INFINITY)?, slew_cap: g(3, f64::INFINITY)?,
+                            limit: g(4, 90.0)? }
                 }
             },
             commit: field("commit").unwrap_or_default(),

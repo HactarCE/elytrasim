@@ -55,16 +55,30 @@ fn normals(k: usize, seed: u64) -> Vec<(f64, f64)> {
 }
 
 fn main() {
-    let files: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("--")).collect();
+    let argv: Vec<String> = std::env::args().collect();
+    // --trig, if given, overrides every profile header for every file in this invocation.
+    let forced: Option<TrigMode> =
+        argv.iter().position(|x| x == "--trig").map(|i| argv[i + 1].parse().unwrap());
+    let skip: Vec<&String> = argv.iter().position(|x| x == "--trig").map(|i| vec![&argv[i + 1]])
+        .unwrap_or_default();
+    let files: Vec<String> = std::env::args().skip(1)
+        .filter(|a| !a.starts_with("--") && !skip.iter().any(|s| **s == *a)).collect();
     let draws = normals(400, 0xC0FFEE);
     println!("{:<24} {:>7} {:>6} {:>5} {:>5} | {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7} {:>7}",
              "file", "dJ", "TV", "cvl1", "cvmx",
              "E[v.05]", "p05.05", "E[v.10]", "p05.10", "phase", "late1", "quant", "hold2");
     for f in &files {
         let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
-        let (obj, ps) = match Profile::parse(&text) {
-            Ok(p) => { set_trig_mode(p.trig); (p.obj, p.pitches) }
-            Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
+        let (obj, ps) = {
+            // Each file picks its own mode from its own header, and an explicit --trig overrides
+            // every header. Setting the mode inside the loop without resetting it let a
+            // headerless file silently inherit the previous profile's physics.
+            let parsed = Profile::parse(&text);
+            set_trig_mode(forced.unwrap_or_else(|| parsed.as_ref().map(|p| p.trig).unwrap_or_default()));
+            match parsed {
+                Ok(p) => (p.obj, p.pitches),
+                Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
+            }
         };
         let obj = Objective { n: ps.len(), ..obj };
         let j0 = obj.j(&State { pos: Vec3::ZERO, vel: obj.v0 });
