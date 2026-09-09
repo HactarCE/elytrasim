@@ -5,7 +5,7 @@ import numpy as np, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot 
 
 rows = [('reference cycle (a person)', 'runs/veljit/ref300.pitches', '#3fb950', 'o'),
         ('jitter + --lag1-floor 0.2 (today)', 'runs/antichatter/old/old8.pitches', '#d29922', 's'),
-        ('--mu 1e-4 --limit 85 (this)', 'runs/antichatter/front/mu0.0001.pitches', '#58a6ff', 'D'),
+        ('--mu 1e-4 --limit 85, fixed point (this)', 'runs/antichatter/fix/i8.pitches', '#58a6ff', 'D'),
         ('no price, no limit (relaxed)', 'runs/antichatter/alt/relax1.pitches', '#f85149', 'X')]
 amps = [1e-4, 1e-3, 1e-2, 0.05, 0.15, 0.5]
 out = subprocess.run(['./target/release/examples/sens', '--trig', 'mth_lut'] + [r[1] for r in rows],
