@@ -1140,6 +1140,8 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
 pub struct Profile {
     pub obj: Objective,
     pub trig: TrigMode,
+    /// The movement implementation used to optimize and certify this schedule.
+    pub flight: FlightMode,
     /// The jitter the schedule was optimized against. Part of the utility function, so a
     /// profile optimized at sigma = 1 is a different object from one optimized at sigma = 0,
     /// and `verify` re-certifies against whatever the header says.
@@ -1169,6 +1171,7 @@ impl Profile {
         w(&format!("# v0          {:.9} {:.9}    # vy vz", o.v0.y, o.v0.z));
         w(&format!("# n           {}", o.n));
         w(&format!("# trig        {}", self.trig));
+        w(&format!("# flight      {}", self.flight));
         if self.jitter.is_on() {
             w(&format!("# jitter      {} {} {}    # v0 sigma in blocks/tick, draws, seed",
                        self.jitter.sigma, self.jitter.draws, self.jitter.seed));
@@ -1249,6 +1252,8 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
         Ok(Profile {
             obj: Objective { v0: Vec3::new(0.0, vy, vz), n, lambda: num("lambda")? },
             trig: need("trig")?.parse()?,
+            // Profiles predating the algebraic route used the reference implementation.
+            flight: field("flight").map(|v| v.parse()).transpose()?.unwrap_or_default(),
             jitter: match field("jitter") {
                 None => Jitter::default(),
                 Some(v) => {

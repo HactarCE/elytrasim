@@ -5,7 +5,10 @@
 //! velocities. Thus each tick pays `v_y' + w v_z'` and the terminal value is kinetic energy.
 
 use elytrasim::opt::{Objective, replay_from, w_of_lambda};
-use elytrasim::sim::{GRAVITY, Rot, TrigMode, Vec3, set_trig_mode, trig_mode};
+use elytrasim::sim::{
+    FlightMode, GRAVITY, Rot, TrigMode, Vec3, flight_mode, set_flight_mode, set_trig_mode,
+    trig_mode,
+};
 use rayon::prelude::*;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -67,6 +70,7 @@ struct Args {
     horizon: usize,
     lambda: f64,
     trig: TrigMode,
+    flight: FlightMode,
     limit: f64,
     pitch_step: f64,
     grid: Grid,
@@ -75,7 +79,7 @@ struct Args {
 }
 
 fn usage() -> &'static str {
-    "usage: dp --n <horizon> --lambda <l> [--trig mth_lut] [--limit 85] \
+    "usage: dp --n <horizon> --lambda <l> [--trig mth_lut] [--flight algebraic] [--limit 85] \
      [--pitch-step 0.5] [--vy-lo -4.5 --vy-hi 1.5 --vz-lo -1.0 --vz-hi 4.5] \
      [--grid 513] [--out dp-out] [--probe vy:vz,...]"
 }
@@ -99,6 +103,7 @@ impl Args {
         let mut n = None;
         let mut lambda = None;
         let mut trig = TrigMode::MthLut;
+        let mut flight = FlightMode::Reference;
         let mut limit = 85.0;
         let mut pitch_step = 0.5;
         let (mut vy_lo, mut vy_hi) = (-4.5, 1.5);
@@ -117,6 +122,7 @@ impl Args {
                 "--n" => n = Some(parse_num(flag, value)),
                 "--lambda" => lambda = Some(parse_num(flag, value)),
                 "--trig" => trig = value.parse().unwrap_or_else(|e: String| panic!("{e}")),
+                "--flight" => flight = value.parse().unwrap_or_else(|e: String| panic!("{e}")),
                 "--limit" => limit = parse_num(flag, value),
                 "--pitch-step" => pitch_step = parse_num(flag, value),
                 "--vy-lo" => vy_lo = parse_num(flag, value),
@@ -145,6 +151,7 @@ impl Args {
             horizon: n.unwrap_or_else(|| panic!("--n is required\n{}", usage())),
             lambda: lambda.unwrap_or_else(|| panic!("--lambda is required\n{}", usage())),
             trig,
+            flight,
             limit,
             pitch_step,
             grid: Grid {
@@ -385,6 +392,7 @@ fn rollout_policy(
 fn main() {
     let args = Args::parse();
     set_trig_mode(args.trig);
+    set_flight_mode(args.flight);
     let pitch_values = controls(args.limit, args.pitch_step);
     assert!(
         pitch_values.len() <= u16::MAX as usize + 1,
@@ -395,13 +403,14 @@ fn main() {
         allocation_bytes(states, pitch_values.len(), args.horizon);
     let total_bytes = transition_bytes + policy_bytes + value_bytes;
     eprintln!(
-        "dp: grid {}x{} ({} states), {} controls, n {}, trig {}",
+        "dp: grid {}x{} ({} states), {} controls, n {}, trig {}, flight {}",
         args.grid.n,
         args.grid.n,
         states,
         pitch_values.len(),
         args.horizon,
-        trig_mode()
+        trig_mode(),
+        flight_mode()
     );
     eprintln!(
         "allocation before allocating: transitions {:.3} GiB, policy {:.3} GiB, \

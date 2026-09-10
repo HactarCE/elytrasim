@@ -41,6 +41,7 @@
 //! `--trig libm|mth_lut` picks the trig implementation for any subcommand. `mth_lut` is
 //! Minecraft's own 65536-entry sine table; `libm` (the default) is the platform's, which is
 //! what every number in README-myopic.md was measured with.
+//! `--flight reference|algebraic` selects the direct port or the faster yaw-zero equations.
 //!
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
@@ -979,6 +980,11 @@ fn main() {
     if let Some(i) = a.iter().position(|x| x == "--trig") {
         set_trig_mode(a.get(i + 1).unwrap_or_else(|| panic!("--trig needs a mode"))
                        .parse().unwrap_or_else(|e| panic!("{e}")));
+        a.drain(i..=i + 1);
+    }
+    if let Some(i) = a.iter().position(|x| x == "--flight") {
+        set_flight_mode(a.get(i + 1).unwrap_or_else(|| panic!("--flight needs a mode"))
+                        .parse().unwrap_or_else(|e| panic!("{e}")));
         a.drain(i..=i + 1);
     }
     let a = a;

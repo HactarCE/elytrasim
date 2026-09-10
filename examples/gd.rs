@@ -328,6 +328,7 @@ fn main() {
         let profile = Profile {
             obj,
             trig: trig_mode(),
+            flight: flight_mode(),
             jitter,
             // The curvature penalties gd applies live in its own flags, not in `Rough`; a
             // profile it writes is a stationary point of `J` plus those, so the header records

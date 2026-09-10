@@ -101,7 +101,8 @@ pitch.
 
 ```
 sweep polish --n 300 --lambda 0 --vy 0 --vz 0 --jitter 0.10 --draws 8 \
-             --passes 8 --tol 0 --lag1-floor 0.2 --anchor <file> --out <file>
+             --passes 8 --tol 0 --lag1-floor 0.2 --flight algebraic \
+             --anchor <file> --out <file>
 sweep run    --out <dir> --ns <list> --lams <list> --vys <list> --vzs <list> [--shard i,j]
 sweep verify <file>...
 sweep fingerprint
@@ -113,8 +114,15 @@ continuation runs breadth-first over the `(n, lambda)` plane from the cell neare
 policy seed lands degenerate (lag-1 -0.19 at 8 passes) where the reference cycle gives +0.73,
 and the anchor propagates to the whole shard.
 
-Resume is by file existence -- a cell whose file matches `(n, lambda, v0, trig)` is not redone
+Resume is by file existence -- a cell whose file matches `(n, lambda, v0, trig, flight)` is not redone
 but still seeds its neighbors, so a killed job costs at most one cell.
+
+`--flight reference|algebraic` selects the movement kernel. `reference` remains the default;
+`algebraic` routes yaw-zero movement through the collapsed equations and falls back to the
+reference path for nonzero yaw. Profiles and manifests record the route, and resume also
+requires it to match. On an Apple arm64 test machine, a representative `dp` transition-table
+build fell from 0.121 seconds to 0.057 seconds (2.12x); the generated value table and schedule
+were byte-identical.
 
 Check a corpus with `python3 runs/check.py <dir>`; read profiles from Python with
 `tools/load.py`.

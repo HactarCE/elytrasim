@@ -55,13 +55,19 @@ fn a_converged_certificate_does_not_mean_a_good_profile() {
 fn profiles_round_trip_through_the_file_format() {
     let o = obj(50, -1.25);
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 3, ..Default::default() });
-    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough: Rough::default(),
+    let p = Profile { obj: o, trig: trig_mode(), flight: flight_mode(), jitter: Jitter::default(), rough: Rough::default(),
                       commit: commit_hash().into(),
                       pitches: r.pitches.clone(), residual: r.residual, passes: r.passes };
     let back = Profile::parse(&p.to_string()).expect("must parse");
     assert_eq!(back.obj, o);
     assert_eq!(back.pitches, r.pitches);
     assert_eq!(back.trig, trig_mode());
+    assert_eq!(back.flight, flight_mode());
+    let older: String = p.to_string().lines()
+        .filter(|line| !line.starts_with("# flight"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(Profile::parse(&older).unwrap().flight, FlightMode::Reference);
 }
 
 /// `certify` must actually see a schedule that is not optimal. Ticks in the gain phase are the
@@ -95,7 +101,7 @@ fn jitter_is_reproducible_and_round_trips() {
 
     let o = obj(40, 0.0);
     let r = polish(&o, &seed_from_policy(&o), PolishOpts { max_passes: 2, jitter: j, ..Default::default() });
-    let p = Profile { obj: o, trig: trig_mode(), jitter: j, rough: Rough::default(), commit: commit_hash().into(),
+    let p = Profile { obj: o, trig: trig_mode(), flight: flight_mode(), jitter: j, rough: Rough::default(), commit: commit_hash().into(),
                       pitches: r.pitches, residual: r.residual, passes: r.passes };
     assert_eq!(Profile::parse(&p.to_string()).unwrap().jitter, j);
 }
@@ -168,7 +174,7 @@ fn the_roughness_price_round_trips_through_the_header() {
     let o = Objective { v0: V0, n: 12, lambda: 0.25 };
     let rough = Rough { mu: 1e-3, mu_tv: 0.0, cap: 45.0, slew_cap: f64::INFINITY,
                         limit: 85.0, ..Rough::default() };
-    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough,
+    let p = Profile { obj: o, trig: trig_mode(), flight: flight_mode(), jitter: Jitter::default(), rough,
                       commit: commit_hash().into(), pitches: vec![1.0; 12],
                       residual: 1e-7, passes: 3 };
     let back = Profile::parse(&p.to_string()).expect("header should parse");
@@ -389,7 +395,7 @@ fn a_skipped_tick_still_advances_the_prefix() {
 #[test]
 fn a_malformed_roughness_header_is_an_error() {
     let o = Objective { v0: V0, n: 4, lambda: 0.0 };
-    let good = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(),
+    let good = Profile { obj: o, trig: trig_mode(), flight: flight_mode(), jitter: Jitter::default(),
                          rough: Rough { mu: 1e-3, cap: 45.0, limit: 85.0, ..Rough::default() },
                          commit: "x".into(), pitches: vec![1.0; 4], residual: 0.0, passes: 1 };
     let text = good.to_string();
@@ -461,7 +467,7 @@ fn no_flick_restriction_is_byte_identical_to_the_old_path() {
 fn flick_header_round_trips_and_malformed_lines_are_errors() {
     let o = obj(4, 0.0);
     let rough = Rough { flick_at: Some(2), flick_pitch: -81.25, ..Rough::default() };
-    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough,
+    let p = Profile { obj: o, trig: trig_mode(), flight: flight_mode(), jitter: Jitter::default(), rough,
                       commit: "x".into(), pitches: vec![0.0, 0.0, -82.0, -70.0],
                       residual: 0.0, passes: 1 };
     let text = p.to_string();

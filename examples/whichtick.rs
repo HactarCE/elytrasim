@@ -20,6 +20,7 @@ fn main() {
         // headerless file silently inherit the previous profile's physics.
         let parsed = Profile::parse(&text);
         set_trig_mode(forced.unwrap_or_else(|| parsed.as_ref().map(|p| p.trig).unwrap_or_default()));
+        set_flight_mode(parsed.as_ref().map(|p| p.flight).unwrap_or_default());
         match parsed {
             Ok(p) => (p.obj, p.pitches),
             Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),

@@ -219,6 +219,7 @@ fn main() {
                 .map(|profile| profile.trig)
                 .unwrap_or_default()
         }));
+        set_flight_mode(parsed.as_ref().map(|p| p.flight).unwrap_or_default());
         let (obj, ps, limit) = match parsed {
             Ok(profile) => (profile.obj, profile.pitches, profile.rough.limit),
             Err(_) => (

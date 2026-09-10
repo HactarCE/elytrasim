@@ -12,7 +12,7 @@
 //!   pilot   [--out <dir>]           the coarse grid: axis bounds, strides, seed quality
 //!   run     --out <dir> [--shard vy=<i>,vz=<j>]      the full sweep
 //!
-//! Cell options: --n, --lambda, --vy, --vz, --passes, --tol, --trig, --init <file>
+//! Cell options: --n, --lambda, --vy, --vz, --passes, --tol, --trig, --flight, --init <file>
 //!   --flick-at <tick> restricts the first tick at or below --flick-pitch <deg> (default -80).
 //!
 //! Jitter options: --jitter <sigma>, --draws <k>, --fixed-draws, --seed <s>
@@ -93,7 +93,7 @@ fn write_profile(path: &str, p: &Profile) {
 fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> (Profile, Polished) {
     let r = polish(obj, init, opts);
     let profile = Profile {
-        obj: *obj, trig: trig_mode(), jitter: opts.jitter, rough: opts.rough,
+        obj: *obj, trig: trig_mode(), flight: flight_mode(), jitter: opts.jitter, rough: opts.rough,
         commit: commit_hash().to_string(),
         pitches: r.pitches.clone(), residual: r.residual, passes: r.passes,
     };
@@ -138,12 +138,13 @@ fn cmd_verify(files: &[String]) {
         let p = match Profile::parse(&text) { Ok(p) => p, Err(e) => { println!("{f}: BAD HEADER: {e}"); bad += 1; continue } };
         // the header is authoritative: replay under the physics it claims, not the shell's
         set_trig_mode(p.trig);
+        set_flight_mode(p.flight);
         let viol = p.rough.violation(&p.pitches);
         let res = certify_reg(&p.obj, &p.pitches, PolishOpts::default().global_step, p.jitter, p.rough);
         let claimed = p.residual;
         let ok = viol == 0.0 && res <= claimed.max(1e-6) * 1.5 + 1e-9;
-        println!("{f}: n {:>4} lambda {:+.4} trig {} | claimed {:.2e}, found {:.2e}  {}{}",
-                 p.obj.n, p.obj.lambda, p.trig, claimed, res, if ok { "ok" } else { "MISMATCH" },
+        println!("{f}: n {:>4} lambda {:+.4} trig {} flight {} | claimed {:.2e}, found {:.2e}  {}{}",
+                 p.obj.n, p.obj.lambda, p.trig, p.flight, claimed, res, if ok { "ok" } else { "MISMATCH" },
                  if viol > 0.0 { format!("  (outside its own control limits by {viol:.3} deg)") }
                  else { String::new() });
         if !ok { bad += 1 }
@@ -157,8 +158,8 @@ fn cmd_bench(a: &Args) {
     let obj = a.cell();
     let step = a.num("--every", 10usize);
     let total = a.num("--passes", 80usize);
-    eprintln!("trig {}  n {}  lambda {:+.4}  v0 ({:.4}, {:.4})",
-              trig_mode(), obj.n, obj.lambda, obj.v0.y, obj.v0.z);
+    eprintln!("trig {}  flight {}  n {}  lambda {:+.4}  v0 ({:.4}, {:.4})",
+              trig_mode(), flight_mode(), obj.n, obj.lambda, obj.v0.y, obj.v0.z);
 
     let seeds: Vec<(&str, Vec<f64>)> = vec![
         ("policy", seed_from_policy(&obj)),
@@ -214,7 +215,8 @@ fn cmd_pilot(a: &Args) {
     for &n in &ns { for &lambda in &lams { for &(vy, vz) in &vels {
         cells.push(Objective { v0: Vec3::new(0.0, vy, vz), n, lambda });
     }}}
-    eprintln!("pilot: {} cells, {passes} passes each, trig {}", cells.len(), trig_mode());
+    eprintln!("pilot: {} cells, {passes} passes each, trig {}, flight {}",
+              cells.len(), trig_mode(), flight_mode());
 
     println!("{:>5} {:>8} {:>8} {:>8} {:>10} {:>10} {:>9} {:>9} {:>10} {:>10} {:>8}",
              "n", "lambda", "vy0", "vz0", "J_seed", "J_opt", "dy", "dz", "residual", "close", "passes");
@@ -334,7 +336,8 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
             // The roughness price and the pitch margin are part of the utility function, so a
             // file written under a different one answers a different question and must be
             // resolved, not resumed.
-            .filter(|p| p.obj == obj && p.trig == trig_mode() && p.pitches.len() == obj.n
+            .filter(|p| p.obj == obj && p.trig == trig_mode() && p.flight == flight_mode()
+                       && p.pitches.len() == obj.n
                         && p.rough == opts.rough);
         let pitches = match existing {
             Some(p) => { skipped += 1; p.pitches }
@@ -365,6 +368,7 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
 "{{
   \"commit\": \"{}\",
   \"trig\": \"{}\",
+  \"flight\": \"{}\",
   \"objective\": \"J = TE(s_n) + w*z_n, TE in blocks (KE = |v|^2/(2g), PE = y), v_n free\",
   \"y_ref\": {Y_REF}, \"z_ref\": {Z_REF},
   \"axes\": {{
@@ -379,7 +383,7 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
   \"jitter\": {{ \"sigma\": {}, \"draws\": {}, \"resample\": {}, \"seed\": {} }},
   \"fingerprint\": \"{:016x}\"
 }}
-", commit_hash(), trig_mode(),
+", commit_hash(), trig_mode(), flight_mode(),
    g.ns.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "),
    list(&g.lams), list(&g.vys), list(&g.vzs),
    g.ns.len() * g.lams.len() * g.vys.len() * g.vzs.len(),
@@ -416,8 +420,9 @@ fn cmd_run(a: &Args) {
         shards = pick.iter().map(|&i| shards[i]).collect();
     }
     write_manifest(&dir, &g, opts);
-    eprintln!("sweep: {} shards x {} cells, {} passes, trig {}, commit {}",
-              shards.len(), g.ns.len() * g.lams.len(), opts.max_passes, trig_mode(), commit_hash());
+    eprintln!("sweep: {} shards x {} cells, {} passes, trig {}, flight {}, commit {}",
+              shards.len(), g.ns.len() * g.lams.len(), opts.max_passes, trig_mode(),
+              flight_mode(), commit_hash());
     let t0 = Instant::now();
     let totals: Vec<(usize, usize)> = shards.par_iter()
         .map(|&(vy, vz)| run_shard(&dir, &g, vy, vz, opts, force, anchor.as_deref())).collect();
@@ -426,7 +431,8 @@ fn cmd_run(a: &Args) {
 }
 
 fn cmd_fingerprint() {
-    println!("{:016x}  trig {}  commit {}", physics_fingerprint(), trig_mode(), commit_hash());
+    println!("{:016x}  trig {}  flight {}  commit {}",
+             physics_fingerprint(), trig_mode(), flight_mode(), commit_hash());
 }
 
 // ---------------------------------------------------------------- main
@@ -435,6 +441,10 @@ fn main() {
     let mut a = Args::new();
     if let Some(i) = a.0.iter().position(|x| x == "--trig") {
         set_trig_mode(a.0[i + 1].parse().unwrap_or_else(|e: String| panic!("{e}")));
+        a.0.drain(i..=i + 1);
+    }
+    if let Some(i) = a.0.iter().position(|x| x == "--flight") {
+        set_flight_mode(a.0[i + 1].parse().unwrap_or_else(|e: String| panic!("{e}")));
         a.0.drain(i..=i + 1);
     }
     match a.0.get(1).map(String::as_str) {
@@ -449,6 +459,7 @@ fn main() {
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
             let pr = Profile::parse(&text).unwrap_or_else(|e| panic!("{f}: {e}"));
             set_trig_mode(pr.trig);
+            set_flight_mode(pr.flight);
             let r = residuals_reg(&pr.obj, &pr.pitches, PolishOpts::default().global_step,
                                   pr.jitter, pr.rough);
             let (pos, neg) = (r.iter().filter(|x| x.0 > 1e-9).count(),

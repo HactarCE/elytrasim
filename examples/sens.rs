@@ -37,7 +37,7 @@ fn main() {
     for f in &files {
         let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         let (obj, ps) = match Profile::parse(&text) {
-            Ok(p) => { set_trig_mode(p.trig); (p.obj, p.pitches) }
+            Ok(p) => { set_trig_mode(p.trig); set_flight_mode(p.flight); (p.obj, p.pitches) }
             Err(_) => (Objective { v0: V0, n: 0, lambda: 0.0 }, read_pitches(f)),
         };
         if let Some(m) = forced { set_trig_mode(m) }

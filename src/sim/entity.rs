@@ -1,6 +1,55 @@
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::{GRAVITY, Mth, Rot, Vec3};
+
+/// Which implementation [`update_fall_flying_movement`] routes through.
+///
+/// `Reference` preserves the mutation-for-mutation port. `Algebraic` uses the collapsed
+/// yaw-zero equations when possible and falls back to the reference path for nonzero yaw.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FlightMode {
+    #[default]
+    Reference,
+    Algebraic,
+}
+
+static FLIGHT_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// Select the movement implementation. Set this once, before starting parallel physics work.
+pub fn set_flight_mode(mode: FlightMode) {
+    FLIGHT_MODE.store(mode as u8, Ordering::Relaxed);
+}
+
+pub fn flight_mode() -> FlightMode {
+    match FLIGHT_MODE.load(Ordering::Relaxed) {
+        0 => FlightMode::Reference,
+        _ => FlightMode::Algebraic,
+    }
+}
+
+impl std::str::FromStr for FlightMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "reference" | "ref" => Ok(Self::Reference),
+            "algebraic" | "algebra" => Ok(Self::Algebraic),
+            _ => Err(format!(
+                "unknown flight mode {s:?}, want reference or algebraic"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for FlightMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Reference => "reference",
+            Self::Algebraic => "algebraic",
+        })
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct Entity {
@@ -20,7 +69,20 @@ impl Entity {
     }
 }
 
-pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
+#[inline]
+pub fn update_fall_flying_movement(vel: Vec3, rot: Rot) -> Vec3 {
+    match flight_mode() {
+        FlightMode::Algebraic if rot.y == 0.0 => {
+            update_fall_flying_movement_yaw_zero(vel, rot.x)
+        }
+        FlightMode::Reference | FlightMode::Algebraic => {
+            update_fall_flying_movement_reference(vel, rot)
+        }
+    }
+}
+
+/// The direct port, retained as the comparison route and for arbitrary yaw.
+pub fn update_fall_flying_movement_reference(mut vel: Vec3, rot: Rot) -> Vec3 {
     let look_angle: Vec3 = rot.look_angle();
     let lean_angle: f32 = rot.x * (PI / 180.0) as f32;
 
@@ -61,4 +123,54 @@ pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
 
     vel * Vec3::new(0.99_f32 as f64, 0.98_f32 as f64, 0.99_f32 as f64)
     //vel
+}
+
+/// Algebraically collapsed movement for the yaw-zero plane used by the optimizers.
+///
+/// This preserves the deliberate split between `Mth` trigonometry for look/pull-up and the
+/// double-precision cosine used by vanilla's lift term. The `look_cos` guard also preserves
+/// the lookup-table behavior at vertical pitch and the rounded libm direction at the endpoints.
+#[inline]
+pub fn update_fall_flying_movement_yaw_zero(vel: Vec3, pitch: f32) -> Vec3 {
+    let lean = pitch * (PI / 180.0) as f32;
+    let look_cos = Mth::cos(lean);
+    // The optimizer's state plane has x = 0, where hypot(0, z) is exactly |z| and no square
+    // root is needed. Keep the full norm for other yaw-zero callers.
+    let move_hor_length = if vel.x == 0.0 {
+        vel.z.abs()
+    } else {
+        vel.horizontal_distance()
+    };
+    let lift_force = Mth::square((lean as f64).cos());
+    let gravity_y = vel.y + GRAVITY * (-1.0 + lift_force * 0.75);
+
+    // At yaw zero, normalizing the horizontal look vector leaves only sign(cos(pitch)) on z.
+    // A zero (or NaN) cosine makes the reference implementation skip all three guarded blocks.
+    if !(look_cos.abs() > 0.0) {
+        return Vec3::new(
+            vel.x * 0.99_f32 as f64,
+            gravity_y * 0.98_f32 as f64,
+            vel.z * 0.99_f32 as f64,
+        );
+    }
+    let look_z = if look_cos.is_sign_negative() { -1.0 } else { 1.0 };
+
+    let dive = if gravity_y < 0.0 {
+        gravity_y * -0.1 * lift_force
+    } else {
+        0.0
+    };
+    let climb = if lean < 0.0 {
+        move_hor_length * -Mth::sin(lean) as f64 * 0.04
+    } else {
+        0.0
+    };
+    let along_look = dive - climb;
+
+    Vec3::new(
+        0.9 * vel.x * 0.99_f32 as f64,
+        (gravity_y + dive + climb * 3.2) * 0.98_f32 as f64,
+        (0.9 * vel.z + look_z * (0.9 * along_look + 0.1 * move_hor_length))
+            * 0.99_f32 as f64,
+    )
 }

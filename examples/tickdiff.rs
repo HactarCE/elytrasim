@@ -4,7 +4,7 @@ use elytrasim::sim::*;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let text = std::fs::read_to_string(&a[1]).unwrap();
-    let (obj, ps) = { let p = Profile::parse(&text).unwrap(); set_trig_mode(p.trig); (p.obj, p.pitches) };
+    let (obj, ps) = { let p = Profile::parse(&text).unwrap(); set_trig_mode(p.trig); set_flight_mode(p.flight); (p.obj, p.pitches) };
     if let Some(i) = a.iter().position(|x| x == "--trig") { set_trig_mode(a[i + 1].parse().unwrap()) }
     let t: usize = a[2].parse().unwrap();
     let st = obj.replay(&ps);
