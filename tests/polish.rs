@@ -166,7 +166,8 @@ fn a_pitch_limit_is_respected_from_a_seed_that_breaks_it() {
 #[test]
 fn the_roughness_price_round_trips_through_the_header() {
     let o = Objective { v0: V0, n: 12, lambda: 0.25 };
-    let rough = Rough { mu: 1e-3, mu_tv: 0.0, cap: 45.0, slew_cap: f64::INFINITY, limit: 85.0 };
+    let rough = Rough { mu: 1e-3, mu_tv: 0.0, cap: 45.0, slew_cap: f64::INFINITY,
+                        limit: 85.0, ..Rough::default() };
     let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough,
                       commit: commit_hash().into(), pitches: vec![1.0; 12],
                       residual: 1e-7, passes: 3 };
@@ -213,11 +214,12 @@ fn the_feasible_interval_really_is_feasible() {
     for cap in [10.0, 45.0, f64::INFINITY] {
         for slew in [8.0, 30.0, f64::INFINITY] {
             for limit in [60.0, 85.0, 90.0] {
-                let rough = Rough { mu: 0.0, mu_tv: 0.0, cap, slew_cap: slew, limit };
+                let rough = Rough { mu: 0.0, mu_tv: 0.0, cap, slew_cap: slew, limit,
+                                    ..Rough::default() };
                 for _ in 0..200 {
                     let p: Vec<f64> = (0..9).map(|_| next()).collect();
                     let t = 4;
-                    let Some((lo, hi)) = rough.feasible(&win5(&p, t), -90.0, 90.0) else { continue };
+                    let Some((lo, hi)) = rough.feasible(&win5(&p, t), t, -90.0, 90.0) else { continue };
                     for x in [lo, 0.5 * (lo + hi), hi] {
                         let mut q = p.clone();
                         q[t] = x;
@@ -403,4 +405,78 @@ fn a_malformed_roughness_header_is_an_error() {
     let older: String = text.lines().filter(|l| !l.starts_with("# rough"))
         .map(|l| format!("{l}\n")).collect();
     assert_eq!(Profile::parse(&older).unwrap().rough, Rough::default());
+}
+
+/// The timing restriction is a statement about the first crossing, so checking only the named
+/// tick would accept an earlier flick and let `verify` certify the wrong admissible set.
+#[test]
+fn a_flick_at_the_wrong_tick_is_a_violation() {
+    let rough = Rough { flick_at: Some(3), flick_pitch: -80.0, ..Rough::default() };
+    assert_eq!(rough.violation(&[0.0, 0.0, 0.0, -80.0, -70.0]), 0.0);
+    assert!(rough.violation(&[0.0, -80.0, 0.0, -80.0, -70.0]) > 0.0,
+            "an early flick was accepted");
+    assert!(rough.violation(&[0.0, 0.0, 0.0, -79.0, -80.0]) > 0.0,
+            "a late flick was accepted");
+}
+
+/// Projection and every coordinate interval carry the tick. Starting entirely below the
+/// threshold makes this exercise the warm-start repair as well as the search itself.
+#[test]
+fn polish_keeps_the_first_flick_at_the_stated_tick() {
+    let o = obj(36, 0.0);
+    let t_flick = 18;
+    let rough = Rough { flick_at: Some(t_flick), flick_pitch: -80.0, ..Rough::default() };
+    let r = polish(&o, &vec![-90.0; o.n],
+                   PolishOpts { max_passes: 3, tol: 0.0, rough, ..Default::default() });
+    assert_eq!(r.pitches.iter().position(|&p| p <= rough.flick_pitch), Some(t_flick));
+    assert_eq!(rough.violation(&r.pitches), 0.0);
+}
+
+#[test]
+#[should_panic(expected = "tick 0")]
+fn an_unprojectable_flick_seed_fails_with_the_tick() {
+    let rough = Rough { flick_at: Some(2), flick_pitch: 90.0, ..Rough::default() };
+    let _ = project_cap(&[0.0, 0.0, 0.0], rough);
+}
+
+/// With no timing restriction, even a nondefault dormant threshold must not perturb existing
+/// profiles. This pins both the verifier and the optimizer's byte-level output.
+#[test]
+fn no_flick_restriction_is_byte_identical_to_the_old_path() {
+    let o = obj(32, 0.0);
+    let seed = seed_from_policy(&o);
+    let old = Rough::default();
+    let dormant = Rough { flick_at: None, flick_pitch: 12.345, ..Rough::default() };
+    assert_eq!(old.violation(&seed), dormant.violation(&seed));
+    let a = polish(&o, &seed, PolishOpts { max_passes: 2, tol: 0.0, rough: old,
+                                          ..Default::default() });
+    let b = polish(&o, &seed, PolishOpts { max_passes: 2, tol: 0.0, rough: dormant,
+                                          ..Default::default() });
+    assert_eq!(a.pitches, b.pitches);
+    assert_eq!(a.j.to_bits(), b.j.to_bits());
+    assert_eq!(a.residual.to_bits(), b.residual.to_bits());
+}
+
+#[test]
+fn flick_header_round_trips_and_malformed_lines_are_errors() {
+    let o = obj(4, 0.0);
+    let rough = Rough { flick_at: Some(2), flick_pitch: -81.25, ..Rough::default() };
+    let p = Profile { obj: o, trig: trig_mode(), jitter: Jitter::default(), rough,
+                      commit: "x".into(), pitches: vec![0.0, 0.0, -82.0, -70.0],
+                      residual: 0.0, passes: 1 };
+    let text = p.to_string();
+    assert_eq!(Profile::parse(&text).unwrap().rough, rough);
+    for bad in ["# flick      nope -80", "# flick      2 nope", "# flick      2",
+                "# flick      2 -80 extra", "# flick      2 NaN"] {
+        let broken: String = text.lines().map(|l| if l.starts_with("# flick") { bad } else { l })
+            .map(|l| format!("{l}\n")).collect();
+        assert!(Profile::parse(&broken).is_err(), "accepted malformed header {bad:?}");
+    }
+    assert!(Profile::parse(&format!("{text}# flick 2 -81.25\n")).is_err(),
+            "accepted two competing flick headers");
+    let older: String = text.lines().filter(|l| !l.starts_with("# flick"))
+        .map(|l| format!("{l}\n")).collect();
+    let parsed = Profile::parse(&older).unwrap();
+    assert_eq!(parsed.rough.flick_at, None);
+    assert_eq!(parsed.rough.flick_pitch, -80.0);
 }

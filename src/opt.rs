@@ -431,11 +431,18 @@ pub struct Rough {
     /// nothing and removes both cliffs. This is a *control-space* statement, like `cap`: the
     /// pitches outside it are not worse, they are unavailable.
     pub limit: f64,
+    /// The tick at which the schedule must first reach `flick_pitch`. This is a restriction of
+    /// the control set, not a price: before this tick the pitch is strictly above the threshold,
+    /// at this tick it is at or below it, and afterward the ordinary constraints take over.
+    pub flick_at: Option<usize>,
+    /// What counts as reaching the flick, in degrees.
+    pub flick_pitch: f64,
 }
 
 impl Default for Rough {
     fn default() -> Self {
-        Rough { mu: 0.0, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0 }
+        Rough { mu: 0.0, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0,
+                flick_at: None, flick_pitch: -80.0 }
     }
 }
 
@@ -505,7 +512,22 @@ impl Rough {
     /// `certify_reg` checks this first and returns infinity when it is not.
     pub fn violation(&self, p: &[f64]) -> f64 {
         let mut v: f64 = 0.0;
-        for &x in p { v = v.max(x.abs() - self.limit) }
+        for (t, &x) in p.iter().enumerate() {
+            v = v.max(x.abs() - self.limit);
+            if let Some(flick) = self.flick_at {
+                if t < flick && x <= self.flick_pitch {
+                    // Equality is outside a strict boundary too. Measure to the first pitch the
+                    // simulator can actually store above it, so equality cannot look feasible.
+                    v = v.max(f32_strictly_above(self.flick_pitch)
+                        .map_or(f64::INFINITY, |lo| lo - x));
+                } else if t == flick {
+                    v = v.max(x - self.flick_pitch);
+                }
+            }
+        }
+        if let Some(flick) = self.flick_at {
+            if !self.flick_pitch.is_finite() || flick >= p.len() { v = f64::INFINITY }
+        }
         if self.cap.is_finite() {
             for j in 0..p.len().saturating_sub(2) {
                 v = v.max((p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() - self.cap)
@@ -519,12 +541,21 @@ impl Rough {
         v.max(0.0)
     }
 
-    /// The interval the center pitch may take without breaking a cap, intersected with
-    /// `[lo, hi]`. Returns `None` when the caps and the neighbors are already inconsistent,
-    /// which a warm start can arrive in; the caller then leaves the tick alone.
-    pub fn feasible(&self, w: &Win5, lo: f64, hi: f64) -> Option<(f64, f64)> {
+    /// The interval the center pitch may take without breaking a control restriction,
+    /// intersected with `[lo, hi]`. Returns `None` when the restrictions and the neighbors are
+    /// already inconsistent, which a warm start can arrive in; the caller then leaves the tick
+    /// alone.
+    pub fn feasible(&self, w: &Win5, t: usize, lo: f64, hi: f64) -> Option<(f64, f64)> {
         let (mut a, mut b) = (lo.max(-self.limit), hi.min(self.limit));
         let mut clip = |l: f64, h: f64| { a = a.max(l); b = b.min(h) };
+        if let Some(flick) = self.flick_at {
+            if !self.flick_pitch.is_finite() { return None }
+            if t < flick {
+                clip(f32_strictly_above(self.flick_pitch)?, f64::INFINITY);
+            } else if t == flick {
+                clip(f64::NEG_INFINITY, self.flick_pitch);
+            }
+        }
         if self.cap.is_finite() {
             let c = self.cap;
             // |p[t-2] - 2p[t-1] + x| <= c
@@ -674,6 +705,20 @@ fn f32_inside(x: f64, lo: f64, hi: f64) -> Option<f64> {
     ((v as f64) >= lo && (v as f64) <= hi).then_some(v as f64)
 }
 
+/// The least `f32` strictly greater than `x`. The pre-flick half of the admissible set is open
+/// in real arithmetic, but schedules are flown and written as `f32`; turning it into this closed
+/// endpoint lets every later clamp and ternary refinement preserve the strict condition.
+fn f32_strictly_above(x: f64) -> Option<f64> {
+    if !x.is_finite() || x >= f32::MAX as f64 { return None }
+    let mut v = x as f32;
+    if v as f64 <= x {
+        let bits = v.to_bits();
+        v = if v == 0.0 { f32::from_bits(1) }
+            else { f32::from_bits(if v > 0.0 { bits + 1 } else { bits - 1 }) };
+    }
+    Some(v as f64)
+}
+
 /// Best pitch for tick `t`, holding every other tick fixed: a global sweep, then a ternary
 /// refine inside the winning cell, scored on the exact tail. Returns `(pitch, J)` with the
 /// pitch already rounded to `f32`, because the sim casts pitch to `f32` anyway -- so the value
@@ -752,7 +797,7 @@ pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, r
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
             let w = win5(pitches, t);
             let pen = |x: f64| rough.local(&w, x);
-            let (lo, hi) = rough.feasible(&w, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
+            let (lo, hi) = rough.feasible(&w, t, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
             let (p, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], pitches[t],
                                               lo, hi, step, 70, &pen);
             (p - pitches[t], j - j_cur)
@@ -885,10 +930,13 @@ pub fn jacobi_step_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter,
     let dv = jit.draws_at_0();
     let score = |p: &[f64]| obj.eval_jittered(p, &dv) - rough.cost(p);
     let base = score(pitches);
-    let lim = rough.limit;
     let at = |alpha: f64| -> Vec<f64> {
-        pitches.iter().zip(&d)
-            .map(|(p, (delta, _))| f32_inside(p + alpha * delta, -lim, lim).unwrap_or(0.0))
+        pitches.iter().zip(&d).enumerate()
+            .map(|(t, (p, (delta, _)))| {
+                let (lo, hi) = rough.feasible(&win5(pitches, t), t, -90.0, 90.0)
+                    .unwrap_or((*p, *p));
+                f32_inside(p + alpha * delta, lo, hi).unwrap_or(*p)
+            })
             .collect()
     };
     // Coarse sweep then bisection-free refine: the gain along alpha is not unimodal either,
@@ -960,8 +1008,10 @@ pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize,
         let at = |alpha: f64| -> Vec<f64> {
             let mut v = cur.clone();
             for t in start..end {
-                v[t] = (cur[t] + alpha * (pitches[t] + d[t].0 - cur[t]))
-                    .clamp(-rough.limit, rough.limit) as f32 as f64;
+                let (lo, hi) = rough.feasible(&win5(&cur, t), t, -90.0, 90.0)
+                    .unwrap_or((cur[t], cur[t]));
+                v[t] = f32_inside(cur[t] + alpha * (pitches[t] + d[t].0 - cur[t]), lo, hi)
+                    .unwrap_or(cur[t]);
             }
             v
         };
@@ -991,9 +1041,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair:
     // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
     // tick is skipped.
-    let lim = opts.rough.limit;
-    let mut pitches: Vec<f64> = project_cap(init, opts.rough)
-        .into_iter().map(|p| f32_inside(p, -lim, lim).unwrap_or(0.0)).collect();
+    let mut pitches = project_cap(init, opts.rough);
     let mut dv = opts.jitter.draws_at(0);
     let mut states = jittered_replays(obj, &pitches, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
@@ -1034,7 +1082,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             // A tick with no admissible move still has to advance its own prefix: the tick
             // before it may have moved this pass, which makes every state downstream stale, and
             // the rest of the sweep would then optimize against a trajectory nobody is flying.
-            let Some((lo, hi)) = opts.rough.feasible(&w, lo, hi) else {
+            let Some((lo, hi)) = opts.rough.feasible(&w, t, lo, hi) else {
                 for k in 0..states.len() { states[k][t + 1] = ticked(&states[k][t], pitches[t]) }
                 continue
             };
@@ -1135,6 +1183,10 @@ cap, slew_cap, |pitch| limit",
         } else {
             w("# rough       0 0 inf inf 90         # no price on hand movement, no pitch margin");
         }
+        if let Some(t) = self.rough.flick_at {
+            w(&format!("# flick       {t} {}              # first tick at or below this pitch",
+                       self.rough.flick_pitch));
+        }
         w(&format!("# commit      {}", self.commit));
         w(&format!("# dJ          {:.6}              # J(s_n) - J(s_0)", o.j(sn) - o.j(s0)));
         w(&format!("# dte         {:.6}              # TE(s_n) - TE(s_0), blocks", sn.total_energy() - s0.total_energy()));
@@ -1213,9 +1265,10 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
             },
             // A header field is the whole claim, so a typo in it has to be an error and not a
             // silent default: `# rough 0 0 typo inf 85` used to parse as "no cap".
-            rough: match field("rough") {
-                None => Rough::default(),
-                Some(v) => {
+            rough: {
+                let mut rough = match field("rough") {
+                    None => Rough::default(),
+                    Some(v) => {
                     let f: Vec<&str> = v.split_whitespace().collect();
                     let g = |i: usize, d: f64| -> Result<f64, String> {
                         match f.get(i) {
@@ -1228,8 +1281,30 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                     if f.len() > 5 { return Err(format!("'rough' takes at most 5 numbers, got {}", f.len())) }
                     Rough { mu: g(0, 0.0)?, mu_tv: g(1, 0.0)?,
                             cap: g(2, f64::INFINITY)?, slew_cap: g(3, f64::INFINITY)?,
-                            limit: g(4, 90.0)? }
+                            limit: g(4, 90.0)?, ..Rough::default() }
+                    }
+                };
+                let flick: Vec<String> = text.lines().filter_map(|l| {
+                    l.strip_prefix("# ")?.strip_prefix("flick")
+                        .map(|v| v.split('#').next().unwrap_or("").trim().to_string())
+                }).collect();
+                if flick.len() > 1 {
+                    return Err(format!("'flick' must appear at most once, got {} lines", flick.len()))
                 }
+                if let Some(v) = flick.first() {
+                    let f: Vec<&str> = v.split_whitespace().collect();
+                    if f.len() != 2 {
+                        return Err(format!("'flick' needs exactly 2 fields, got {}", f.len()))
+                    }
+                    rough.flick_at = Some(f[0].parse()
+                        .map_err(|e| format!("bad 'flick' tick {:?}: {e}", f[0]))?);
+                    rough.flick_pitch = f[1].parse()
+                        .map_err(|e| format!("bad 'flick' pitch {:?}: {e}", f[1]))?;
+                    if !rough.flick_pitch.is_finite() {
+                        return Err("'flick' pitch must be finite".into())
+                    }
+                }
+                rough
             },
             commit: field("commit").unwrap_or_default(),
             pitches,
@@ -1389,8 +1464,8 @@ pub fn smooth_median(p: &[f64], k: usize) -> Vec<f64> {
     }).collect()
 }
 
-/// Bring a schedule inside the admissible set -- `limit`, `slew_cap` and `cap` -- by integrating
-/// a rate-limited tracker through it from the left.
+/// Bring a schedule inside the admissible set -- the per-tick pitch interval, `slew_cap` and
+/// `cap` -- by integrating a rate-limited tracker through it from the left.
 ///
 /// A coordinate sweep cannot do this on its own. `Rough::feasible` asks what one pitch may be
 /// given its neighbors, and when the neighbors are themselves out of bounds the answer is
@@ -1415,16 +1490,32 @@ pub fn project_cap(p: &[f64], rough: Rough) -> Vec<f64> {
     // Quantize as we go. The projection's output is a control that will be flown, so it has to be
     // representable *and* inside the set -- clamping in f64 and rounding afterwards can land back
     // outside, which is the whole point of `f32_inside`.
-    let q32 = |x: f64| f32_inside(x, -rough.limit, rough.limit).unwrap_or(0.0);
+    let empty = [None; 5];
+    if let Some(t) = rough.flick_at {
+        assert!(t < p.len(), "cannot project seed: flick tick {t} is outside a {}-tick schedule", p.len());
+    }
+    let bounds: Vec<(f64, f64)> = (0..p.len()).map(|t| {
+        let (lo, hi) = rough.feasible(&empty, t, -90.0, 90.0)
+            .unwrap_or_else(|| panic!("cannot project seed: admissible interval is empty at tick {t}"));
+        if f32_inside(p[t], lo, hi).is_none() {
+            panic!("cannot project seed: admissible interval contains no representable pitch at tick {t}")
+        }
+        (lo, hi)
+    }).collect();
+    let q32 = |t: usize, x: f64| {
+        let (lo, hi) = bounds[t];
+        f32_inside(x, lo, hi)
+            .unwrap_or_else(|| panic!("cannot project seed: no representable pitch at tick {t}"))
+    };
     let causal = |src: &[f64]| -> Vec<f64> {
-        let mut q: Vec<f64> = src.iter().map(|&x| q32(x)).collect();
+        let mut q: Vec<f64> = src.iter().enumerate().map(|(t, &x)| q32(t, x)).collect();
         // Rate first, then acceleration: a schedule inside the slew limit is a milder input to
         // the curvature pass, and the curvature pass cannot make the rate worse than 2*cap.
         if rough.slew_cap.is_finite() {
             for j in 0..q.len().saturating_sub(1) {
                 let d = q[j + 1] - q[j];
                 if d.abs() > rough.slew_cap {
-                    q[j + 1] = q32(q[j] + d.clamp(-rough.slew_cap, rough.slew_cap));
+                    q[j + 1] = q32(j + 1, q[j] + d.clamp(-rough.slew_cap, rough.slew_cap));
                 }
             }
         }
@@ -1432,7 +1523,8 @@ pub fn project_cap(p: &[f64], rough: Rough) -> Vec<f64> {
             for j in 0..q.len().saturating_sub(2) {
                 let d = q[j + 2] - 2.0 * q[j + 1] + q[j];
                 if d.abs() > rough.cap {
-                    q[j + 2] = q32(2.0 * q[j + 1] - q[j] + d.clamp(-rough.cap, rough.cap));
+                    q[j + 2] = q32(j + 2, 2.0 * q[j + 1] - q[j]
+                                                   + d.clamp(-rough.cap, rough.cap));
                 }
             }
         }
@@ -1449,11 +1541,40 @@ pub fn project_cap(p: &[f64], rough: Rough) -> Vec<f64> {
     }
     // A wide `smooth_box` is *not* a constant: it clamps at the ends rather than wrapping, so it
     // keeps a slope, and the widening loop can run out while still failing the cap. Fall back to
-    // the flattest thing there is, whose differences are all exactly zero. It throws the schedule
-    // away, which is why it is a fallback and not the method.
+    // the flattest thing there is, whose differences are all exactly zero. A timed flick makes a
+    // constant unavailable; clamp that constant into each tick's box and reject it loudly if the
+    // resulting required crossing cannot satisfy a coupled cap. It throws the schedule away,
+    // which is why it is a fallback and not the method.
     let m = p.iter().sum::<f64>() / p.len().max(1) as f64;
-    let m = f32_inside(m, -rough.limit, rough.limit).unwrap_or(0.0);
-    vec![m; p.len()]
+    let q: Vec<f64> = (0..p.len()).map(|t| q32(t, m)).collect();
+    if rough.violation(&q) == 0.0 { return q }
+    let t = first_violation_tick(&q, rough).unwrap_or(rough.flick_at.unwrap_or(0));
+    panic!("cannot project seed into the admissible set at tick {t}")
+}
+
+fn first_violation_tick(p: &[f64], rough: Rough) -> Option<usize> {
+    if let Some(flick) = rough.flick_at {
+        if flick >= p.len() || !rough.flick_pitch.is_finite() { return Some(flick) }
+    }
+    for (t, &x) in p.iter().enumerate() {
+        if x.abs() > rough.limit { return Some(t) }
+        if let Some(flick) = rough.flick_at {
+            if (t < flick && x <= rough.flick_pitch) || (t == flick && x > rough.flick_pitch) {
+                return Some(t)
+            }
+        }
+    }
+    if rough.slew_cap.is_finite() {
+        for j in 0..p.len().saturating_sub(1) {
+            if (p[j + 1] - p[j]).abs() > rough.slew_cap { return Some(j + 1) }
+        }
+    }
+    if rough.cap.is_finite() {
+        for j in 0..p.len().saturating_sub(2) {
+            if (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() > rough.cap { return Some(j + 2) }
+        }
+    }
+    None
 }
 
 /// FNV-1a over the raw bits of a canonical replay, for checking that two machines agree.
