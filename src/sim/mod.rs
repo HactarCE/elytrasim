@@ -5,8 +5,9 @@ mod state;
 mod vec3;
 
 pub use entity::{
-    Entity, FlightMode, flight_mode, set_flight_mode, update_fall_flying_movement,
-    update_fall_flying_movement_reference, update_fall_flying_movement_yaw_zero,
+    Entity, FlightMode, PitchTrig, flight_mode, set_flight_mode, update_fall_flying_movement,
+    update_fall_flying_movement_cached, update_fall_flying_movement_reference,
+    update_fall_flying_movement_yaw_zero,
 };
 pub use mth::{Mth, TrigMode, set_trig_mode, sin_table, trig_mode};
 pub use rot::{Pitch, Rot, Yaw};

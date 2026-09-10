@@ -28,6 +28,12 @@ impl State {
         entity.into()
     }
 
+    #[inline]
+    pub fn ticked_cached(&self, pitch: PitchTrig) -> Self {
+        let vel = update_fall_flying_movement_cached(self.vel, pitch);
+        Self { pos: self.pos + vel, vel }
+    }
+
     pub fn sub(&self, other: &Self) -> DeltaState {
         Self {
             pos: self.pos - other.pos,

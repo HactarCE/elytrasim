@@ -81,6 +81,40 @@ pub fn update_fall_flying_movement(vel: Vec3, rot: Rot) -> Vec3 {
     }
 }
 
+/// The pitch-only inputs to one yaw-zero flight tick.
+///
+/// Optimizer candidates repeatedly fly the same schedule tail from different prefix states.
+/// None of these values depends on the state, so computing them once per tail pitch avoids
+/// recomputing three pitch-dependent trigonometric values on every forward-pass tick.
+#[derive(Debug, Clone, Copy)]
+pub struct PitchTrig {
+    cos_sq: f64,
+    sin: f32,
+    cos: f32,
+}
+
+impl PitchTrig {
+    #[inline]
+    pub fn new(pitch: f32) -> Self {
+        let lean = pitch * (PI / 180.0) as f32;
+        Self {
+            // Vanilla uses double-precision Math.cos here, independently of Mth trig.
+            cos_sq: Mth::square((lean as f64).cos()),
+            sin: Mth::sin(lean),
+            cos: Mth::cos(lean),
+        }
+    }
+}
+
+/// Fly one yaw-zero tick using pitch terms cached independently of the entity state.
+#[inline]
+pub fn update_fall_flying_movement_cached(vel: Vec3, pitch: PitchTrig) -> Vec3 {
+    match flight_mode() {
+        FlightMode::Reference => update_fall_flying_movement_reference_cached(vel, pitch),
+        FlightMode::Algebraic => update_fall_flying_movement_yaw_zero_cached(vel, pitch),
+    }
+}
+
 /// The direct port, retained as the comparison route and for arbitrary yaw.
 pub fn update_fall_flying_movement_reference(mut vel: Vec3, rot: Rot) -> Vec3 {
     let look_angle: Vec3 = rot.look_angle();
@@ -125,6 +159,42 @@ pub fn update_fall_flying_movement_reference(mut vel: Vec3, rot: Rot) -> Vec3 {
     //vel
 }
 
+#[inline]
+fn update_fall_flying_movement_reference_cached(mut vel: Vec3, pitch: PitchTrig) -> Vec3 {
+    let look_hor_length = (pitch.cos as f64).abs();
+    let move_hor_length = vel.horizontal_distance();
+    let lift_force = pitch.cos_sq;
+    vel.y += GRAVITY * (-1.0 + lift_force * 0.75);
+
+    if vel.y < 0.0 && look_hor_length > 0.0 {
+        let convert = vel.y * -0.1 * lift_force;
+        vel += Vec3::new(
+            0.0,
+            convert,
+            pitch.cos as f64 * convert / look_hor_length,
+        );
+    }
+
+    if pitch.sin < 0.0 && look_hor_length > 0.0 {
+        let convert = move_hor_length * -pitch.sin as f64 * 0.04;
+        vel += Vec3::new(
+            0.0,
+            convert * 3.2,
+            -pitch.cos as f64 * convert / look_hor_length,
+        );
+    }
+
+    if look_hor_length > 0.0 {
+        vel += Vec3::new(
+            -vel.x * 0.1,
+            0.0,
+            (pitch.cos as f64 / look_hor_length * move_hor_length - vel.z) * 0.1,
+        );
+    }
+
+    vel * Vec3::new(0.99_f32 as f64, 0.98_f32 as f64, 0.99_f32 as f64)
+}
+
 /// Algebraically collapsed movement for the yaw-zero plane used by the optimizers.
 ///
 /// This preserves the deliberate split between `Mth` trigonometry for look/pull-up and the
@@ -162,6 +232,46 @@ pub fn update_fall_flying_movement_yaw_zero(vel: Vec3, pitch: f32) -> Vec3 {
     };
     let climb = if lean < 0.0 {
         move_hor_length * -Mth::sin(lean) as f64 * 0.04
+    } else {
+        0.0
+    };
+    let along_look = dive - climb;
+
+    Vec3::new(
+        0.9 * vel.x * 0.99_f32 as f64,
+        (gravity_y + dive + climb * 3.2) * 0.98_f32 as f64,
+        (0.9 * vel.z + look_z * (0.9 * along_look + 0.1 * move_hor_length))
+            * 0.99_f32 as f64,
+    )
+}
+
+#[inline]
+fn update_fall_flying_movement_yaw_zero_cached(vel: Vec3, pitch: PitchTrig) -> Vec3 {
+    let look_cos = pitch.cos;
+    let move_hor_length = if vel.x == 0.0 {
+        vel.z.abs()
+    } else {
+        vel.horizontal_distance()
+    };
+    let lift_force = pitch.cos_sq;
+    let gravity_y = vel.y + GRAVITY * (-1.0 + lift_force * 0.75);
+
+    if !(look_cos.abs() > 0.0) {
+        return Vec3::new(
+            vel.x * 0.99_f32 as f64,
+            gravity_y * 0.98_f32 as f64,
+            vel.z * 0.99_f32 as f64,
+        );
+    }
+    let look_z = if look_cos.is_sign_negative() { -1.0 } else { 1.0 };
+
+    let dive = if gravity_y < 0.0 {
+        gravity_y * -0.1 * lift_force
+    } else {
+        0.0
+    };
+    let climb = if pitch.sin < 0.0 {
+        move_hor_length * -pitch.sin as f64 * 0.04
     } else {
         0.0
     };

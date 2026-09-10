@@ -15,6 +15,11 @@ pub fn rot(p: f64) -> Rot { Rot { x: p as f32, y: 0.0 } }
 pub fn gamma(v: Vec3) -> f64 { (-v.y).atan2(v.z).to_degrees() }
 
 pub fn ticked(s: &State, p: f64) -> State { s.ticked(rot(p)) }
+#[inline]
+fn ticked_cached(s: &State, p: PitchTrig) -> State { s.ticked_cached(p) }
+fn cache_pitches(pitches: &[f64]) -> Vec<PitchTrig> {
+    pitches.iter().map(|&p| PitchTrig::new(p as f32)).collect()
+}
 pub fn run_n(s: &State, p: f64, n: usize) -> State {
     let r = rot(p);
     let mut s = s.clone();
@@ -23,8 +28,9 @@ pub fn run_n(s: &State, p: f64, n: usize) -> State {
 }
 /// Replay a schedule from `v0` at the origin. Returns `pitches.len() + 1` states.
 pub fn replay_from(v0: Vec3, pitches: &[f64]) -> Vec<State> {
+    let trig = cache_pitches(pitches);
     let mut v = vec![State { pos: Vec3::ZERO, vel: v0 }];
-    for &p in pitches { let s = ticked(v.last().unwrap(), p); v.push(s) }
+    for p in trig { let s = ticked_cached(v.last().unwrap(), p); v.push(s) }
     v
 }
 pub fn replay(pitches: &[f64]) -> Vec<State> { replay_from(V0, pitches) }
@@ -266,17 +272,19 @@ impl Objective {
 
     /// `J` at the end of the schedule.
     pub fn eval(&self, pitches: &[f64]) -> f64 {
+        let trig = cache_pitches(pitches);
         let mut s = State { pos: Vec3::ZERO, vel: self.v0 };
-        for &p in pitches { s = ticked(&s, p) }
+        for p in trig { s = ticked_cached(&s, p) }
         self.j(&s)
     }
 
     /// `J` averaged over the jitter draws: the value of flying this schedule from a starting
     /// velocity you do not know exactly.
     pub fn eval_jittered(&self, pitches: &[f64], dv: &[Vec3]) -> f64 {
+        let trig = cache_pitches(pitches);
         dv.iter().map(|d| {
             let mut s = State { pos: Vec3::ZERO, vel: self.v0 + *d };
-            for &p in pitches { s = ticked(&s, p) }
+            for &p in &trig { s = ticked_cached(&s, p) }
             self.j(&s)
         }).sum::<f64>() / dv.len() as f64
     }
@@ -727,16 +735,17 @@ fn f32_strictly_above(x: f64) -> Option<f64> {
 /// `pen` is the roughness price of putting a given pitch here -- the terms of `Rough::cost`
 /// that this tick takes part in. It is subtracted from the score, so the coordinate search
 /// optimizes the same regularized objective the polish reports, not `J` alone.
-fn best_pitch_at(obj: &Objective, s: &[State], tail: &[f64],
+fn best_pitch_at(obj: &Objective, s: &[State], tail: &[PitchTrig],
                  cur: f64, lo: f64, hi: f64, step: f64, ternary_iters: usize,
                  pen: &(dyn Fn(f64) -> f64 + Sync)) -> (f64, f64, f64) {
     // One prefix state per jitter draw. The draws differ only in where they started, so the
     // tail is the exact schedule flown from each of them -- this is E[J | v0 + dv] under common
     // random numbers, with no per-tick noise to average away.
     let score = |p: f64| -> f64 {
+        let trig = PitchTrig::new(p as f32);
         s.iter().map(|s0| {
-            let mut st = ticked(s0, p);
-            for &q in tail { st = ticked(&st, q) }
+            let mut st = ticked_cached(s0, trig);
+            for &q in tail { st = ticked_cached(&st, q) }
             obj.j(&st)
         }).sum::<f64>() / s.len() as f64 - pen(p)
     };
@@ -791,14 +800,15 @@ pub fn residuals(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> Ve
 pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough)
     -> Vec<(f64, f64)> {
     let dv = jit.draws_at_0();
-    let states = jittered_replays(obj, pitches, &dv);
+    let trig = cache_pitches(pitches);
+    let states = jittered_replays(obj, &trig, &dv);
     (0..pitches.len())
         .map(|t| {
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
             let w = win5(pitches, t);
             let pen = |x: f64| rough.local(&w, x);
             let (lo, hi) = rough.feasible(&w, t, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
-            let (p, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], pitches[t],
+            let (p, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], pitches[t],
                                               lo, hi, step, 70, &pen);
             (p - pitches[t], j - j_cur)
         })
@@ -807,11 +817,11 @@ pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, r
 
 /// One replay per jitter draw. `out[k][t]` is the state at tick `t` having started from
 /// `v0 + dv[k]`.
-fn jittered_replays(obj: &Objective, pitches: &[f64], dv: &[Vec3]) -> Vec<Vec<State>> {
+fn jittered_replays(obj: &Objective, pitches: &[PitchTrig], dv: &[Vec3]) -> Vec<Vec<State>> {
     dv.iter().map(|d| {
         let mut v = vec![State { pos: Vec3::ZERO, vel: obj.v0 + *d }];
         for &p in pitches {
-            let s = ticked(v.last().unwrap(), p);
+            let s = ticked_cached(v.last().unwrap(), p);
             v.push(s);
         }
         v
@@ -1042,8 +1052,9 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
     // tick is skipped.
     let mut pitches = project_cap(init, opts.rough);
+    let mut trig = cache_pitches(&pitches);
     let mut dv = opts.jitter.draws_at(0);
-    let mut states = jittered_replays(obj, &pitches, &dv);
+    let mut states = jittered_replays(obj, &trig, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
     let mut stopped_degenerate = false;
     let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
@@ -1051,7 +1062,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     for pass in 0..opts.max_passes {
         if opts.jitter.is_on() && opts.jitter.resample && pass > 0 {
             dv = opts.jitter.draws_at(pass as u64);
-            states = jittered_replays(obj, &pitches, &dv);
+            states = jittered_replays(obj, &trig, &dv);
         }
         let before = obj.eval_jittered(&pitches, &dv) - opts.rough.cost(&pitches);
         let prev = pitches.clone();
@@ -1062,7 +1073,11 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         if global && opts.block > 0 {
             if let Some((next, gain)) = block_step_reg(obj, &pitches, opts.global_step, opts.block,
                                                        opts.jitter, opts.rough) {
-                if gain > 0.0 { pitches = next; states = jittered_replays(obj, &pitches, &dv) }
+                if gain > 0.0 {
+                    pitches = next;
+                    trig = cache_pitches(&pitches);
+                    states = jittered_replays(obj, &trig, &dv);
+                }
             }
         }
         let mut worst_tick = 0.0f64;
@@ -1083,17 +1098,20 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             // before it may have moved this pass, which makes every state downstream stale, and
             // the rest of the sweep would then optimize against a trajectory nobody is flying.
             let Some((lo, hi)) = opts.rough.feasible(&w, t, lo, hi) else {
-                for k in 0..states.len() { states[k][t + 1] = ticked(&states[k][t], pitches[t]) }
+                for state in &mut states {
+                    state[t + 1] = ticked_cached(&state[t], trig[t])
+                }
                 continue
             };
-            let (np, j, j_cur) = best_pitch_at(obj, &row, &pitches[t + 1..], cur,
+            let (np, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], cur,
                                                lo, hi, step, opts.ternary_iters, &pen);
             if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
+            trig[t] = PitchTrig::new(np as f32);
             // every draw's prefix must stay consistent with the pitch just changed, or the
             // next tick's line search optimizes against a stale state and the schedule diverges
-            for k in 0..states.len() {
-                states[k][t + 1] = ticked(&states[k][t], pitches[t]);
+            for state in &mut states {
+                state[t + 1] = ticked_cached(&state[t], trig[t]);
             }
         }
         // The regularizer: if this pass pushed the schedule into chatter, throw the pass away
