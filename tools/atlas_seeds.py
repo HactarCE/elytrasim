@@ -265,6 +265,12 @@ def main():
                          "optima are separate basins or one connected ridge: if the converged "
                          "flick tick tracks the seed's flick tick continuously it is a ridge, "
                          "and if it snaps to a few values they are separate basins.")
+    ap.add_argument("--flick-lo", type=int, default=None,
+                    help="first flick tick (default int(0.12n)). The default window is a guess "
+                         "about where the manoeuvre belongs; pass 0 to scan the whole horizon "
+                         "and let the result say so instead.")
+    ap.add_argument("--flick-hi", type=int, default=None,
+                    help="last flick tick, inclusive (default int(0.96n))")
     args = ap.parse_args()
 
     ref = read_pitches(args.ref) if args.ref else None
@@ -274,7 +280,10 @@ def main():
     manifest = {}
     if args.flick_step > 0:
         ramp, snap, dive, gain = 6, 10, 30.0, -20.0
-        lo, hi = int(0.12 * args.n), int(0.96 * args.n)
+        lo = int(0.12 * args.n) if args.flick_lo is None else args.flick_lo
+        hi = int(0.96 * args.n) if args.flick_hi is None else args.flick_hi
+        lo, hi = max(0, lo), min(args.n, hi)
+        assert lo <= hi, f"empty flick range {lo}..{hi}"
         for tf in range(lo, hi + 1, args.flick_step):
             s = []
             for t in range(args.n):
@@ -294,7 +303,7 @@ def main():
         assert manifest, "flick sweep produced nothing"
         with open(os.path.join(args.out, "seeds.json"), "w") as f:
             json.dump({"n": args.n, "limit": LIMIT, "flick_step": args.flick_step,
-                       "seeds": manifest}, f, indent=1)
+                       "flick_lo": lo, "flick_hi": hi, "seeds": manifest}, f, indent=1)
         print(f"{len(manifest)} flick-sweep seeds -> {args.out} "
               f"(ticks {lo}..{hi} step {args.flick_step})")
         return
