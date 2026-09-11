@@ -32,9 +32,12 @@ while IFS=$'\t' read -r NAME N LAM VY VZ FAM; do
     python3 "$SELF/atlas_seeds.py" --n "$N" --flick-step "$STEP" \
       --flick-lo "$LO" --flick-hi "$HI" --out "$SD" > /dev/null || exit 1
   fi
+  # Create the output directory once here, not per-solve: eight workers racing on the
+  # same `mkdir -p` is a needless way to lose a solve.
+  mkdir -p "$OD"
   for f in "$SD"/tight_t*.pitches; do
-    printf '%s\t%s/%s\t%s\t%s\t%s\t%s\n' "$f" "$OD" "$(basename "$f")" "$N" "$LAM" "$VY" "$VZ" >> "$WORK"
+    printf '%s %s/%s %s %s %s %s\n' "$f" "$OD" "$(basename "$f")" "$N" "$LAM" "$VY" "$VZ" >> "$WORK"
   done
 done < cells.tsv
 
-echo "stage $STAGE: $(wc -l < "$WORK" | tr -d ' ') solves queued in $WORK${skipped:+  ($skipped cells skipped)}"
+echo "stage $STAGE: $(wc -l < "$WORK" | tr -d ' ') solves queued in $WORK$( [ "$skipped" -gt 0 ] && echo "  ($skipped cells skipped)" )"

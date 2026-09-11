@@ -9,7 +9,8 @@
 # Each solve is a whole profile on one core -- polish's internal rayon scales to only ~5.7x on
 # 10 cores, so one-solve-per-core beats one-solve-using-all-cores by a wide margin.
 set -u
-cd "$HOME/atlas-run" || exit 1
+export RUN="${RUN:-$HOME/atlas-run}"
+cd "$RUN" || exit 1
 export SWEEP="$HOME/elytra-atlas/target/release/sweep"
 export FLIGHT=algebraic
 export RAYON_NUM_THREADS=1
@@ -21,6 +22,6 @@ awk -v n="$NSHARD" -v i="$ID" 'NR % n == i' "$WORK" > "$MINE"
 echo "node=$(hostname) shard=$ID/$NSHARD lines=$(wc -l < "$MINE") work=$WORK"
 [ -s "$MINE" ] || { echo "nothing to do"; exit 0; }
 t0=$(date +%s)
-xargs -P 8 -d '\n' -I@ "$HOME/elytra-atlas/tools/snapsweep_solve.sh" "@" < "$MINE"
+xargs -P 8 -I@ "$HOME/elytra-atlas/tools/snapsweep_solve.sh" "@" < "$MINE"
 echo "shard $ID done in $(( $(date +%s) - t0 ))s"
 rm -f "$MINE"
