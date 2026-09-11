@@ -124,6 +124,25 @@ requires it to match. On an Apple arm64 test machine, a representative `dp` tran
 build fell from 0.121 seconds to 0.057 seconds (2.12x); the generated value table and schedule
 were byte-identical.
 
+That 2.12x was measured before pitch trigonometry was cached, and caching has since taken most
+of it back -- `PitchTrig` hoists the sin/cos out of *both* routes, and eliminating that trig was
+most of what the algebraic route was winning. What is left is three divisions and a sqrt per
+tick, and whether removing them pays depends on the machine. Measured on `sweep polish`, one
+n=300 cell at 30 passes, single core:
+
+```
+                          reference   algebraic
+  Apple M5 (arm64)           7.15 s      7.98 s     algebraic 1.12x SLOWER
+  Intel i7-6700 (Skylake)   14.11 s      6.93 s     algebraic 2.04x faster
+```
+
+On Skylake f64 division is long-latency and poorly pipelined, so dropping three of them per
+tick is worth 2x; on the M5 division is cheap and the extra branches the collapsed form needs
+(`vel.x == 0.0`, `is_sign_negative`) cost more than they save. So pick the route for the
+machine: `reference` on arm64, `algebraic` on the cluster. Both are recorded in the header, and
+`verify` replays under the route the file claims, so a corpus may mix them without ambiguity --
+though a single corpus is easier to reason about if it does not.
+
 Check a corpus with `python3 runs/check.py <dir>`; read profiles from Python with
 `tools/load.py`.
 
