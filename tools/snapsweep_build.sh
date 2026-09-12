@@ -11,6 +11,9 @@ set -u
 SELF=$(cd "$(dirname "$0")" && pwd)
 RUN=${RUN:-$HOME/atlas-run}
 STAGE=${1:?usage: snapsweep_build.sh <1|2>}
+# HALF is the stride-2 window half-width around the coarse winner. 100 for atlas cells, where
+# the population breadth IS the product; 20 where only the optimum matters -- the coarse winner
+# localizes a real manoeuvre to within 6 ticks, measured over 208 cells.
 cd "$RUN" || exit 1
 mkdir -p seeds out work logs
 
@@ -23,7 +26,7 @@ while IFS=$'\t' read -r NAME N LAM VY VZ FAM; do
     SD="seeds/$NAME/coarse"; OD="out/$NAME/coarse"; STEP=10; LO=0; HI=$N
   else
     SD="seeds/$NAME/fine";   OD="out/$NAME";        STEP=2
-    if ! W=$(python3 "$SELF/snapsweep_pick.py" "out/$NAME" "$N" --half 100 --step 2 2>&1); then
+    if ! W=$(python3 "$SELF/snapsweep_pick.py" "out/$NAME" "$N" --half "${HALF:-100}" --step 2 2>&1); then
       echo "SKIP $NAME: $W" >&2; skipped=$((skipped+1)); continue
     fi
     LO=${W% *}; HI=${W#* }
