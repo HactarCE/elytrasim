@@ -151,7 +151,7 @@ sbatch --export=ALL,WORK=work/stage1.tsv tools/snapsweep.sbatch
 RUN=... tools/snapsweep_finish.sh      # stage 2, then delete coarse once it is complete
 tools/snapsweep_pull.sh                # tar on the far side; 20k few-kB files
 tools/snapsweep_figs.sh
-python3 tools/snapsweep_table.py runs/atlas/snapsweep/out --csv .../summary.csv
+python3 tools/snapsweep_best.py  runs/atlas/crossproduct --csv .../best.csv
 ```
 
 `--flight algebraic` is a cluster choice, not a universal one -- see `README-sweep.md`.
