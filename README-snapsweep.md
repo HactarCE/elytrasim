@@ -36,16 +36,22 @@ stopping time than the other 126 with nothing in the file to say so.
 
 ## What was run
 
-388 cells, 36,088 profiles.
+Two grids, in two directories, because they answer two questions and mixing them makes a
+listing of either one misleading:
 
 ```
-main    n in {150, 300, 450}  x  lambda in {-2,-1,0,+1,+2}  x  v0 in {-0.2, 0, 0.2, 0.4}^2
-        -- the complete 3 x 5 x 16 = 240-cell cross product
-sweep   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)  -- 148 further cells
+runs/atlas/crossproduct   240 cells   n in {150, 300, 450} x lambda in {-2,-1,0,+1,+2}
+                                      x v0 in {-0.2, 0, 0.2, 0.4}^2      -- complete 3 x 5 x 16
+runs/atlas/nsweep         151 cells   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)
 ```
 
-The v0 grid was filled in by a second run and merged in. That is only legitimate because the
-two agree set-wise, not merely because each file certifies: `sweep verify` replays a profile
+The three cells at the intersection (`n = 150, 300, 450` at `lambda = 0, v0 = 0`) are in both,
+duplicated rather than assigned, so neither directory is missing a row of its own grid. Each
+carries its own `cells.tsv`, its own `best.csv`, and a figure per cell under
+`runs/atlas/fig/<grid>`.
+
+The v0 grid was filled in by a second run. Combining it with the first is only legitimate
+because the two agree set-wise, not merely because each file certifies: `sweep verify` replays a profile
 under the physics its *own* header claims, so it would pass just as happily on a corpus built
 with a different window or pass budget. What licenses the merge is that every profile in both
 carries the same `trig`, `flight`, `jitter`, `rough` and 30-pass stopping time, every
@@ -54,13 +60,15 @@ blob for `src/`, and the profiles-per-cell distributions match at each n (74.2 v
 99.2 vs 99.0 at 300, 101 vs 101 at 450). The `cells.tsv` label column still records which run
 each cell came from.
 
+Splitting is the easy direction: a partition of a set that is uniform in every parameter is
+uniform in every parameter.
+
 `n = 600` is deliberately absent: it is well inside the two-cycle-optimal zone, so its best
 profile answers a different question than the single-cycle cells around it.
 
 Every profile carries `flight algebraic` and `commit bf5b9e3`; all 19,613 kept profiles
-certify. The corpus is `runs/atlas/snapsweep/out`, one figure per cell under
-`runs/atlas/fig/snapsweep`, and one row per cell in `runs/atlas/snapsweep/summary.csv`
-(`tools/snapsweep_table.py`).
+certify. One row per cell in each grid's `best.csv` (`tools/snapsweep_best.py`) -- dJ, dy, dz, structure
+and the winning profile -- which is the input to any post-hoc constraint filter.
 
 ## The hold-0 invariant is sharper than the atlas could see
 
