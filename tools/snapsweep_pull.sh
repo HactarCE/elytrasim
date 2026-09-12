@@ -9,6 +9,10 @@
 # track of which copy is authoritative, so the pull deletes the remote run directory as its
 # last act -- per sweep, not per session. `--keep` opts out for a sweep you intend to resume.
 #
+# Only the run directory goes. The toolchain, the source tree and the compiled target/ are not
+# data and are left alone: the filesystem there is 2.3T at 6% used, so deleting anything
+# rebuildable buys nothing and costs a cold compile on the next run.
+#
 # Deletion is gated on a name-by-name comparison, not on a count: the point of the check is to
 # catch a truncated transfer, and two different sets can have the same size. Nothing is removed
 # unless every remote cell is present locally and every cell holds the profile count the remote

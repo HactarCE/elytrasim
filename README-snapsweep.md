@@ -161,5 +161,7 @@ The cluster is compute only; a sweep left there is a second copy of the corpus t
 tracking. Deletion is gated on a per-cell name-and-count comparison -- a total alone would not
 catch a truncated transfer, since two different sets can have the same size -- and it refuses,
 keeping the remote, if anything does not match. `--keep` opts out for a sweep you mean to
-resume. The toolchain is not data and stays put: keeping `.rustup` and `.cargo` on the cluster
-makes the next sweep an rsync plus a ~100 second rebuild.
+resume. Only *output* is deleted: the toolchain, the source trees and the compiled `target/`
+directories all stay, so the next sweep is an rsync and an incremental build rather than a
+rustup install and a cold compile. The cluster filesystem is 2.3T at 6% used -- deleting
+anything rebuildable buys nothing and costs time later.
