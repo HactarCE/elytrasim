@@ -10,8 +10,8 @@ SELF=$(cd "$(dirname "$0")" && pwd)
 RUN=${RUN:-$HOME/atlas-run}
 cd "$RUN" || exit 1
 
-echo "== building stage 2 =="
-RUN="$RUN" "$SELF/snapsweep_build.sh" 2 || exit 1
+echo "== building stage 2 (HALF=${HALF:-100}) =="
+RUN="$RUN" HALF="${HALF:-100}" python3 "$SELF/snapsweep_build.py" 2 || exit 1
 
 echo "== submitting =="
 JID=$(sbatch --parsable --export=ALL,WORK=work/stage2.tsv "$SELF/snapsweep.sbatch")
