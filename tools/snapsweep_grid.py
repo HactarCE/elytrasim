@@ -2,8 +2,8 @@
 """Emit a cells.tsv for an arbitrary (n, lambda, v0) grid.
 
     python3 tools/snapsweep_grid.py --ns 60:300:2 --lams 0:8:0.25 --v0s 0,0.4 > cells.tsv
-    python3 tools/snapsweep_grid.py --ns 150,300,450 --lams -2:2:1 \
-        --v0s -0.2,-0.2 -0.2,0 ... --tag v0expand > cells.tsv
+    python3 tools/snapsweep_grid.py --ns 150,300,450 --lams=-2:2:1 \
+        --v0s='-0.2,-0.2;-0.2,0;0.4,0.4' --label v0expand > cells.tsv
 
 Ranges are `lo:hi:step` (inclusive) or a comma list. `--exclude` drops cells already on disk
 elsewhere, so an expansion of an existing corpus does not redo what it already has.
@@ -45,7 +45,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ns", required=True)
     ap.add_argument("--lams", required=True)
-    ap.add_argument("--v0s", nargs="+", required=True, help='each "vy,vz"')
+    # One ';'-separated string rather than nargs="+": a v0 list starting with a negative
+    # velocity ("-0.2,0.0") is read by argparse as an option flag, and `--v0s=...` does not
+    # rescue a multi-value argument.
+    ap.add_argument("--v0s", required=True, help='semicolon-separated "vy,vz" pairs')
     ap.add_argument("--label", default="grid")
     ap.add_argument("--exclude", default=None, help="a cells.tsv whose cells to skip")
     a = ap.parse_args()
@@ -57,7 +60,7 @@ def main():
     n_out = 0
     for n in nums(a.ns, int):
         for lam in nums(a.lams, float):
-            for v in a.v0s:
+            for v in a.v0s.split(";"):
                 vy, vz = (float(x) for x in v.split(","))
                 t = tag(n, lam, vy, vz)
                 if t in skip:
