@@ -149,9 +149,17 @@ python3 tools/snapsweep_cells.py > cells.tsv
 RUN=... tools/snapsweep_build.sh 1     # coarse seeds + work list
 sbatch --export=ALL,WORK=work/stage1.tsv tools/snapsweep.sbatch
 RUN=... tools/snapsweep_finish.sh      # stage 2, then delete coarse once it is complete
-tools/snapsweep_pull.sh                # tar on the far side; 20k few-kB files
-tools/snapsweep_figs.sh
+tools/snapsweep_pull.sh <remote> <dest>   # tars home, verifies, deletes the remote
+tools/snapsweep_figs.sh <celldir> <outdir>
 python3 tools/snapsweep_best.py  runs/atlas/crossproduct --csv .../best.csv
 ```
 
 `--flight algebraic` is a cluster choice, not a universal one -- see `README-sweep.md`.
+
+The pull deletes the remote run directory as its last act, per sweep rather than per session.
+The cluster is compute only; a sweep left there is a second copy of the corpus that nobody is
+tracking. Deletion is gated on a per-cell name-and-count comparison -- a total alone would not
+catch a truncated transfer, since two different sets can have the same size -- and it refuses,
+keeping the remote, if anything does not match. `--keep` opts out for a sweep you mean to
+resume. The toolchain is not data and stays put: keeping `.rustup` and `.cargo` on the cluster
+makes the next sweep an rsync plus a ~100 second rebuild.
