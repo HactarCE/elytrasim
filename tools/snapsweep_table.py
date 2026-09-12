@@ -60,7 +60,9 @@ def cell_row(d):
 
 def main():
     a = [x for x in sys.argv[1:] if not x.startswith("--")]
-    src = a[0] if a else "runs/atlas/snapsweep/out"
+    if not a:
+        sys.exit("usage: snapsweep_table.py <celldir> [--csv out.csv]")
+    src = a[0]
     cols = ["cell", "n", "lambda", "vy", "vz", "profiles", "n_cyclic", "n_multi", "n_glide",
             "best_cyc", "flick", "hold0", "best_multi", "best_glide"]
     man = os.path.join(os.path.dirname(src.rstrip("/")), "cells.tsv")

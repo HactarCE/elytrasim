@@ -1,11 +1,11 @@
 #!/bin/bash
 # One field figure per cell, the same instrument as flicksoft30_v00_n300_field.png.
 #
-#   tools/snapsweep_figs.sh [celldir] [outdir] [jobs]
+#   tools/snapsweep_figs.sh <celldir> <outdir> [jobs]
 set -u
 SELF=$(cd "$(dirname "$0")" && pwd)
-SRC=${1:-$SELF/../runs/atlas/snapsweep/out}
-OUT=${2:-$SELF/../runs/atlas/fig/snapsweep}
+SRC=${1:?usage: snapsweep_figs.sh <celldir> <outdir> [jobs]}
+OUT=${2:?usage: snapsweep_figs.sh <celldir> <outdir> [jobs]}
 JOBS=${3:-8}
 mkdir -p "$OUT"
 ls -d "$SRC"/*/ | sed 's:/$::' > /tmp/snapfigs.$$
