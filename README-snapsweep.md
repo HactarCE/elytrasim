@@ -36,12 +36,23 @@ stopping time than the other 126 with nothing in the file to say so.
 
 ## What was run
 
-208 cells, 25,973 solves, 45 minutes on 11 cluster nodes.
+388 cells, 36,088 profiles.
 
 ```
-main    n in {150, 300, 450}  x  lambda in {-2,-1,0,+1,+2}  x  v0 in {(0,0),(0.2,0),(0,0.2),(0.2,0.2)}
-sweep   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)
+main    n in {150, 300, 450}  x  lambda in {-2,-1,0,+1,+2}  x  v0 in {-0.2, 0, 0.2, 0.4}^2
+        -- the complete 3 x 5 x 16 = 240-cell cross product
+sweep   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)  -- 148 further cells
 ```
+
+The v0 grid was filled in by a second run and merged in. That is only legitimate because the
+two agree set-wise, not merely because each file certifies: `sweep verify` replays a profile
+under the physics its *own* header claims, so it would pass just as happily on a corpus built
+with a different window or pass budget. What licenses the merge is that every profile in both
+carries the same `trig`, `flight`, `jitter`, `rough` and 30-pass stopping time, every
+`snap_window.json` in both reads `half=100, step=2, coarse_step=10`, the two binaries share one
+blob for `src/`, and the profiles-per-cell distributions match at each n (74.2 vs 74.6 at 150,
+99.2 vs 99.0 at 300, 101 vs 101 at 450). The `cells.tsv` label column still records which run
+each cell came from.
 
 `n = 600` is deliberately absent: it is well inside the two-cycle-optimal zone, so its best
 profile answers a different question than the single-cycle cells around it.
@@ -53,7 +64,7 @@ certify. The corpus is `runs/atlas/snapsweep/out`, one figure per cell under
 
 ## The hold-0 invariant is sharper than the atlas could see
 
-Across all 207 cells that have a cyclic optimum:
+Across all 207 cells of the original n-sweep that have a cyclic optimum:
 
 ```
   hold-0   9   10    11    12    13
@@ -62,6 +73,13 @@ Across all 207 cells that have a cyclic optimum:
 
 204 of 207 sit in 11-13, and **161 of them are exactly 12**. The atlas reported a band; the
 cross product says it is a number with a little noise on it.
+
+Filling in the v0 grid to all sixteen combinations of `{-0.2, 0, 0.2, 0.4}^2` -- doubling the
+span of the velocity domain -- does not move it. Over the 235 cross-product cells with a cyclic
+optimum the mean hold-0 by component is `vy` 11.49 to 11.60 and `vz` 11.47 to 11.61: a range of
+**0.11 and 0.14 ticks**. Sixteen of the nineteen cells outside 11-13 are at `n = 150` with
+`lambda < 0` and negative `dJ`, which is to say the invariant weakens exactly where the cycle is
+barely worth flying -- the same place the short horizons weakened it.
 
 Nothing moves it. Mean hold-0 by parameter:
 
