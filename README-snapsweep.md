@@ -36,14 +36,27 @@ stopping time than the other 126 with nothing in the file to say so.
 
 ## What was run
 
-Two grids, in two directories, because they answer two questions and mixing them makes a
-listing of either one misleading:
+Four grids, in four directories, because they answer four questions and mixing them makes a
+listing of any one misleading:
 
 ```
 runs/atlas/crossproduct   240 cells   n in {150, 300, 450} x lambda in {-2,-1,0,+1,+2}
                                       x v0 in {-0.2, 0, 0.2, 0.4}^2      -- complete 3 x 5 x 16
 runs/atlas/nsweep         151 cells   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)
+runs/atlas/mapsweep      5986 cells   n = 60 .. 350 stride 2 x lambda = -2 .. 8 stride 0.25
+                                      at v0 = (0, 0.4)                   -- complete 146 x 41
+runs/atlas/mapfine       6601 cells   n = 120 .. 200 stride 2 x lambda = -2 .. 6 stride 0.05
+                                      at v0 = (0, 0.4)                   -- complete 41 x 161
 ```
+
+The first two isolate the hold-0 invariant; the last two exist to be filtered post-hoc for a
+distance-and-height constraint, which is why they are dense in lambda and thin in v0. `mapfine`
+is a lambda refinement of `mapsweep`'s interior, not an extension of it: its ranges nest inside
+`mapsweep`'s on both axes, so the two never disagree, they only differ in resolution.
+
+The map grids use a **+/-20** stride-2 fine window, not the +/-100 the first two use. A wider
+window is wasted here because the coarse stride-10 scan already localizes the flick to within
+five ticks, and at 12,587 cells the difference is hours.
 
 The three cells at the intersection (`n = 150, 300, 450` at `lambda = 0, v0 = 0`) are in both,
 duplicated rather than assigned, so neither directory is missing a row of its own grid. Each
@@ -66,8 +79,18 @@ uniform in every parameter.
 `n = 600` is deliberately absent: it is well inside the two-cycle-optimal zone, so its best
 profile answers a different question than the single-cycle cells around it.
 
-Every profile carries `flight algebraic` and `commit bf5b9e3`; all 19,613 kept profiles
-certify. One row per cell in each grid's `best.csv` (`tools/snapsweep_best.py`) -- dJ, dy, dz, structure
+`crossproduct` and `nsweep` carry `commit bf5b9e3` / `20d3304`; every profile in all four
+grids carries `flight algebraic` and certifies.
+
+The map grids each carry **two** commit stamps, because they were extended after they were
+first built: `20d3304` on the original cells and `cd8f19b` on the expansion (mapsweep 80,869 +
+40,429; mapfine 104,181 + 34,430). That is a provenance record, not a physics difference --
+`git rev-parse` gives the same tree hash for `src/`, `Cargo.lock` and `Cargo.toml` at both
+commits, so `git diff 20d3304 cd8f19b -- src/` is empty and every commit between the two is
+tools and prose. The expansion was built at its real HEAD rather than forged back to `20d3304`
+with `ELYTRASIM_COMMIT_OVERRIDE`: that override exists so a source-only export can state a hash
+it cannot prove, and using it to manufacture a uniform-looking corpus would spend exactly the
+trust it depends on. One row per cell in each grid's `best.csv` (`tools/snapsweep_best.py`) -- dJ, dy, dz, structure
 and the winning profile -- which is the input to any post-hoc constraint filter.
 
 ## The hold-0 invariant is sharper than the atlas could see
@@ -151,7 +174,7 @@ sbatch --export=ALL,WORK=work/stage1.tsv tools/snapsweep.sbatch
 RUN=... tools/snapsweep_finish.sh      # stage 2, then delete coarse once it is complete
 tools/snapsweep_pull.sh <remote> <dest>   # tars home, verifies, deletes the remote
 tools/snapsweep_figs.sh <celldir> <outdir>
-python3 tools/snapsweep_best.py  runs/atlas/crossproduct --csv .../best.csv
+python3 tools/snapsweep_best.py runs/atlas/crossproduct --csv runs/atlas/crossproduct/best.csv
 ```
 
 `--flight algebraic` is a cluster choice, not a universal one -- see `README-sweep.md`.

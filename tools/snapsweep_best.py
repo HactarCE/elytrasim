@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Best profile per cell: dJ, dy, dz. The input to any post-hoc constraint filter.
 
-    python3 tools/snapsweep_best.py runs/atlas/mapsweep --csv best.csv
+    python3 tools/snapsweep_best.py runs/atlas/mapsweep --csv runs/atlas/mapsweep/best.csv
+
+--csv is resolved against the working directory, not against <root>. Spell it out: running this
+for two sweeps in a row with a bare `--csv best.csv` writes both to the same file and the second
+silently clobbers the first.
 
 "Best" is plain argmax dJ over the cell's certified profiles -- the same thing the optimizer
 would hand you at that cell. No structure filter: see snapsweep_pick.py for why.
