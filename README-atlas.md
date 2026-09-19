@@ -9,6 +9,11 @@ So: at one cell, polish 264 different seeds under the *unchanged* objective and 
 converged result. Then ask what the population looks like, and measure each member against a
 battery of human error models.
 
+For the later `mapfine` sweep, [implied lambda](docs/implied-lambda.md) uses the population's upper
+utility envelope to infer the exchange rate at which each fixed profile comes closest to the
+sampled optimum. This separates a profile's achieved timing from the lambda of the cell whose seed
+happened to produce it.
+
 Two decisions up front, both of which are load-bearing.
 
 **Diversity goes in the seed, never in the objective.** The obvious way to collect different
