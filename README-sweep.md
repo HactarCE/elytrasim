@@ -112,7 +112,10 @@ A shard is one `(vy0, vz0)` cell, so it is a directory and an independent job. I
 continuation runs breadth-first over the `(n, lambda)` plane from the cell nearest `n = 300`,
 `lambda = 0`; `--anchor` seeds that one cell from a file. This matters: at `v0 = 0` the built-in
 policy seed lands degenerate (lag-1 -0.19 at 8 passes) where the reference cycle gives +0.73,
-and the anchor propagates to the whole shard.
+and the anchor propagates to the whole shard. Once the `v0 = 0` shard exists, anchor the
+nonzero-velocity shards on its *solved* `n = 300, lambda = 0` cell rather than on the raw
+reference file: it is the nearest solved point, so continuation starts closer and is less
+likely to pick a bad branch.
 
 Resume is by file existence -- a cell whose file matches `(n, lambda, v0, trig, flight)` is not redone
 but still seeds its neighbors, so a killed job costs at most one cell.
@@ -143,8 +146,19 @@ machine: `reference` on arm64, `algebraic` on the cluster. Both are recorded in 
 `verify` replays under the route the file claims, so a corpus may mix them without ambiguity --
 though a single corpus is easier to reason about if it does not.
 
-Check a corpus with `python3 runs/check.py <dir>`; read profiles from Python with
+Check a corpus with `python3 tools/check.py <dir>`; read profiles from Python with
 `tools/load.py`.
+
+**What `runs/corpus` actually is.** It was built in four phases -- the `n` axis at stride 10,
+then `lambda` at `n` stride 50, then the velocity corners, then `lambda` at those corners --
+over `n = 100..600` and `lambda = -4..4` stride 0.25, with `--trig libm` and
+`--passes 8 --tol 0 --jitter 0.10 --draws 8`. **The lag-1 floor was off** (`--lag1-floor -2`,
+below the -1 a correlation can reach), so every cell ran all 8 passes; all 509 profiles read
+`(8 passes)`, which is how you can confirm it from the corpus alone. That is worth stating
+because the synopsis above shows `--lag1-floor 0.2` and the section on degeneracy argues for
+it: the guard is the recommendation, it is not what produced this corpus, and a re-run with it
+on would not be comparable. The per-phase manifests record the cells of each phase:
+`manifest_a_n.json`, `manifest_b_lambda.json`, `manifest_c_vel.json`.
 
 ## Portability
 
