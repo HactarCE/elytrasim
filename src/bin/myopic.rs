@@ -36,6 +36,7 @@
 //!   gprofile <file> <tag>                flight-path angle at ten points through the dive
 //!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick rule
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
+//!   rules    <file> <vy0> <vz0> <N>       pointwise rules for an arbitrary initial velocity
 //!   policy   [opt] [leak|floor|hold]     fly the four bugs; NGAIN=<n> sets the gain lookahead
 //!
 //! `--trig libm|mth_lut` picks the trig implementation for any subcommand. `mth_lut` is
@@ -197,6 +198,109 @@ fn cmd_sweepn(path: &str, off: usize, lo: usize, hi: usize, nmax: usize) {
         for n in 1..=nmax { print!(",{:.4}", bug_dte_n(s, n)) }
         println!();
     }
+}
+
+fn hold_gamma_branches(s: &State) -> Vec<f64> {
+    let h = |p: f64| gamma(ticked(s, p).vel) - gamma(s.vel);
+    let step = 0.125;
+    let mut roots = vec![];
+    let (mut pp, mut prev) = (-90.0, h(-90.0));
+    for i in 1..=1440 {
+        let p = -90.0 + step * i as f64;
+        let cur = h(p);
+        if prev == 0.0 {
+            roots.push(pp);
+        } else if cur == 0.0 {
+            roots.push(p);
+        } else if prev.is_sign_positive() != cur.is_sign_positive() {
+            let (mut lo, mut hi, increasing) = (pp, p, cur > prev);
+            for _ in 0..60 {
+                let mid = 0.5 * (lo + hi);
+                let value = h(mid);
+                if (value <= 0.0) == increasing { lo = mid } else { hi = mid }
+            }
+            roots.push(0.5 * (lo + hi));
+        }
+        pp = p;
+        prev = cur;
+    }
+    roots.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    roots.dedup_by(|a, b| (*a - *b).abs() < 0.02);
+    // Mth's lookup table can jump across zero at a cell boundary without attaining it.
+    // Those are not solutions to gamma(v') = gamma(v), even though a sign-only bisection
+    // returns the boundary.  Keep only roots that actually satisfy the equation.
+    roots.retain(|&p| h(p).abs() < 1e-4);
+    roots
+}
+
+fn dte_argmax_branches(s: &State, n: usize) -> (Vec<f64>, Option<f64>) {
+    let f = |p: f64| run_n(s, p, n).total_energy() - s.total_energy();
+    // The mapfine profile was optimized with an 85-degree pitch cap.  The Mth lookup table
+    // also makes the exact poles singular, so they are not meaningful competing controls.
+    let (lo, hi) = (-85.0, 85.0);
+    let step = 0.125;
+    let steps = ((hi - lo) / step) as usize;
+    let values: Vec<f64> = (0..=steps).map(|i| f(lo + step * i as f64)).collect();
+    let mut peaks = vec![];
+    for i in 0..=steps {
+        let left = if i == 0 { f64::NEG_INFINITY } else { values[i - 1] };
+        let right = if i == steps { f64::NEG_INFINITY } else { values[i + 1] };
+        if values[i] < left || values[i] < right { continue }
+        let p = lo + step * i as f64;
+        if peaks.last().is_some_and(|&(q, _): &(f64, f64)| p - q < step * 1.5) { continue }
+        let (mut bp, mut bs) = (p, values[i]);
+        if i > 0 && i < steps {
+            let (mut a, mut b) = (p - step, p + step);
+            for _ in 0..60 {
+                let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+                if f(m1) < f(m2) { a = m1 } else { b = m2 }
+            }
+            let q = 0.5 * (a + b);
+            let score = f(q);
+            if score > bs { bp = q; bs = score }
+        }
+        peaks.push((bp, bs));
+    }
+    peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let best = peaks[0].1;
+    let tolerance = 1e-8_f64.max(best.abs() * 1e-10);
+    let runner_up_gap = peaks.iter().skip(1).map(|&(_, score)| best - score)
+        .find(|&gap| gap > tolerance);
+    let mut branches: Vec<f64> = peaks.iter().filter(|&&(_, score)| best - score <= tolerance)
+        .map(|&(p, _)| p).collect();
+    branches.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (branches, runner_up_gap)
+}
+
+/// Dump the optimum and pointwise rules used by the mapfine comparison plot.
+/// Atlas profiles supply their initial velocity explicitly instead of using `V0`.
+fn cmd_rules(path: &str, vy0: f64, vz0: f64, nmax: usize) {
+    let ps = read_pitches(path);
+    let st = replay_from(Vec3::new(0.0, vy0, vz0), &ps);
+    print!("tick,optimum,hold_gamma");
+    for n in 1..=nmax { print!(",n{n}") }
+    println!();
+    let (mut max_hold, mut max_argmax, mut multi_argmax, mut closest_gap, mut hold_residual) =
+        (0usize, 0usize, 0usize, f64::INFINITY, 0.0_f64);
+    for t in 0..ps.len() {
+        let s = &st[t];
+        let holds = hold_gamma_branches(s);
+        max_hold = max_hold.max(holds.len());
+        for &p in &holds {
+            hold_residual = hold_residual.max((gamma(ticked(s, p).vel) - gamma(s.vel)).abs());
+        }
+        let hold = bug_gamma_to(s, gamma(s.vel));
+        print!("{t},{:.5},{hold:.5}", ps[t]);
+        for n in 1..=nmax {
+            let (branches, gap) = dte_argmax_branches(s, n);
+            max_argmax = max_argmax.max(branches.len());
+            if branches.len() > 1 { multi_argmax += 1 }
+            if let Some(gap) = gap { closest_gap = closest_gap.min(gap) }
+            print!(",{:.5}", branches[0]);
+        }
+        println!();
+    }
+    eprintln!("branch check: at most {max_hold} hold-gamma roots (max residual {hold_residual:.3e} deg) and {max_argmax} tied global argmax modes; {multi_argmax} tick/lookahead cells have multiple argmax modes; closest non-tied local mode is {closest_gap:.3e} blocks below the maximum");
 }
 
 /// Find the cycle in a schedule without being told where it is, then report how well the
@@ -1016,6 +1120,7 @@ fn main() {
         Some("singular") => cmd_singular(&a[2]),
         Some("adjoint") => cmd_adjoint(&a[2], a.get(3).map_or(0.0, |s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
+        Some("rules") => cmd_rules(&a[2], a[3].parse().unwrap(), a[4].parse().unwrap(), n(5)),
         Some("policy") => cmd_policy(a.iter().any(|x| x == "opt"),
                                      match a.iter().find(|x| ["leak", "floor", "hold", "target"].contains(&x.as_str())) {
                                          Some(x) if x == "floor" => Dive::Floor,
@@ -1023,7 +1128,7 @@ fn main() {
                                          Some(x) if x == "target" => Dive::Target,
                                          _ => Dive::Leak,
                                      }),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|rules|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }
