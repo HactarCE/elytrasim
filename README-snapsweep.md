@@ -36,21 +36,24 @@ stopping time than the other 126 with nothing in the file to say so.
 
 ## What was run
 
-Four grids, in four directories, because they answer four questions and mixing them makes a
+Five grids, in five directories, because they answer five questions and mixing them makes a
 listing of any one misleading:
 
 ```
 runs/atlas/crossproduct   240 cells   n in {150, 300, 450} x lambda in {-2,-1,0,+1,+2}
                                       x v0 in {-0.2, 0, 0.2, 0.4}^2      -- complete 3 x 5 x 16
 runs/atlas/nsweep         151 cells   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)
+runs/atlas/nsweepv0      3406 cells   n = 150 .. 350 stride 2 x v0 in {-0.2,0,0.1,0.2,0.3,0.4}^2
+                                      at lambda = 0      -- 34 of 36 columns; see below
 runs/atlas/mapsweep      5986 cells   n = 60 .. 350 stride 2 x lambda = -2 .. 8 stride 0.25
                                       at v0 = (0, 0.4)                   -- complete 146 x 41
 runs/atlas/mapfine       6601 cells   n = 120 .. 200 stride 2 x lambda = -2 .. 6 stride 0.05
                                       at v0 = (0, 0.4)                   -- complete 41 x 161
 ```
 
-The first two isolate the hold-0 invariant; the last two exist to be filtered post-hoc for a
-distance-and-height constraint, which is why they are dense in lambda and thin in v0. `mapfine`
+The first two isolate the hold-0 invariant; `nsweepv0` asks whether the best horizon depends on
+where you start; the last two exist to be filtered post-hoc for a distance-and-height
+constraint, which is why they are dense in lambda and thin in v0. `mapfine`
 is a lambda refinement of `mapsweep`'s interior, not an extension of it: its ranges nest inside
 `mapsweep`'s on both axes, so the two never disagree, they only differ in resolution.
 
@@ -79,8 +82,8 @@ uniform in every parameter.
 `n = 600` is deliberately absent: it is well inside the two-cycle-optimal zone, so its best
 profile answers a different question than the single-cycle cells around it.
 
-`crossproduct` and `nsweep` carry `commit bf5b9e3` / `20d3304`; every profile in all four
-grids carries `flight algebraic` and certifies.
+`crossproduct` and `nsweep` carry `commit bf5b9e3` / `20d3304`, `nsweepv0` carries `56d1ca6`;
+every profile in all five grids carries `flight algebraic` and certifies.
 
 The map grids each carry **two** commit stamps, because they were extended after they were
 first built: `20d3304` on the original cells and `cd8f19b` on the expansion (mapsweep 80,869 +
@@ -141,6 +144,47 @@ is all within 0.01 -- so the number to take from this is not "328" but "the refe
 point sits on the rising limb, and about half a block is available for free by lengthening the
 run ~9%". Why 328 is unknown; `hold0 = 12` holds across the entire range, so whatever sets the
 peak is not the hold.
+
+## The best horizon depends on where you start, and monotonically
+
+The section above says `n = 328` is the best horizon. That is true at `v0 = (0,0)` and nowhere
+else. Across the 36 velocity columns below -- 34 from `nsweepv0`, two from the grids that
+already had them -- the `n` that maximizes `dJ` runs from
+**290 to 344** -- 54 ticks, 2.7 seconds at 20 ticks per second -- and it moves in an orderly way:
+
+```
+        vz    -0.2    0.0    0.1    0.2    0.3    0.4
+  vy -0.2     322    316    310    304    298    290
+  vy +0.0     332    328    322    312    302    294
+  vy +0.1     334    332    326    316    306    296
+  vy +0.2     338    336    332    322    314    304
+  vy +0.3     342    340    336    328    320    314
+  vy +0.4     344    344    340    332    328    324
+```
+
+**Monotone in both components, with opposite signs**: more initial `vz` shortens the best
+horizon, more initial `vy` lengthens it. No cell in the table breaks either ordering. So the
+optimal horizon is not a constant with noise on it the way hold-0 is -- it is a smooth function
+of the entry velocity, and quoting a single number for it is quoting one cell of this table.
+
+Two things stop this from being an artifact of the window. Every one of the 34 columns
+`nsweepv0` measured has its maximum in the **interior**, with `dJ` falling monotonically from
+the peak out to `n = 350`; the closest to the edge is `v0 = (0.4,-0.2)` peaking at 344, whose
+tail still falls. And the `vy = 0` row interleaves three separately built grids -- 332, **328**,
+322, 312, 302, **294** -- where the two bold entries come from `nsweep` and `mapsweep`, run at
+different times under different fine windows. They land exactly where this grid's neighbours
+predict.
+
+That last point is also the caveat: `nsweep` used a +/-100 fine window and the other two use
++/-20. Since `best.csv` is an argmax, a wider window can only find an equal-or-better optimum,
+so the columns are comparable *at the optimum* -- which is all this table uses them for. They
+are not comparable at the level of the profile population.
+
+`nsweepv0` holds 34 of the 36 columns; `v0 = (0,0)` is already complete over `150 .. 450` in
+`nsweep`, and `v0 = (0,0.4)` over `60 .. 350` in `mapsweep`'s `lambda = 0` row, so those two
+were excluded rather than rebuilt. 230 cells in total were excluded as already on disk, which
+is what `snapsweep_grid.py --exclude` is for. All 3406 optima are `cyclic`; there is no
+degenerate cell anywhere in this grid.
 
 ## Three smaller things the grid makes visible
 
