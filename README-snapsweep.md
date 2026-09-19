@@ -36,7 +36,7 @@ stopping time than the other 126 with nothing in the file to say so.
 
 ## What was run
 
-Five grids, in five directories, because they answer five questions and mixing them makes a
+Six grids, in six directories, because they answer six questions and mixing them makes a
 listing of any one misleading:
 
 ```
@@ -45,6 +45,8 @@ runs/atlas/crossproduct   240 cells   n in {150, 300, 450} x lambda in {-2,-1,0,
 runs/atlas/nsweep         151 cells   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)
 runs/atlas/nsweepv0      3636 cells   n = 150 .. 350 stride 2 x v0 in {-0.2,0,0.1,0.2,0.3,0.4}^2
                                       at lambda = 0                      -- complete 101 x 36
+runs/atlas/nsweepv0fine  4949 cells   n = 150 .. 350 stride 2 x v0 in {0,.05,.1,.15,.2,.25,.3}^2
+                                      at lambda = 0                      -- complete 101 x 49
 runs/atlas/mapsweep      5986 cells   n = 60 .. 350 stride 2 x lambda = -2 .. 8 stride 0.25
                                       at v0 = (0, 0.4)                   -- complete 146 x 41
 runs/atlas/mapfine       6601 cells   n = 120 .. 200 stride 2 x lambda = -2 .. 6 stride 0.05
@@ -52,14 +54,19 @@ runs/atlas/mapfine       6601 cells   n = 120 .. 200 stride 2 x lambda = -2 .. 6
 ```
 
 The first two isolate the hold-0 invariant; `nsweepv0` asks whether the best horizon depends on
-where you start; the last two exist to be filtered post-hoc for a distance-and-height
+where you start and `nsweepv0fine` resolves that dependence at 0.05 inside the positive quadrant;
+the last two exist to be filtered post-hoc for a distance-and-height
 constraint, which is why they are dense in lambda and thin in v0. `mapfine`
 is a lambda refinement of `mapsweep`'s interior, not an extension of it: its ranges nest inside
 `mapsweep`'s on both axes, so the two never disagree, they only differ in resolution.
 
-The map grids use a **+/-20** stride-2 fine window, not the +/-100 the first two use. A wider
-window is wasted here because the coarse stride-10 scan already localizes the flick to within
-five ticks, and at 12,587 cells the difference is hours.
+`crossproduct` and `nsweep` use a **+/-100** stride-2 fine window; everything built after them
+uses **+/-20**. A wider window is wasted where only the optimum is wanted, because the coarse
+stride-10 scan already localizes the flick to within five ticks, and across the four later grids
+it is the difference between hours and a day. The cost is that the two conventions are not
+comparable at the level of the profile *population* -- a +/-100 cell holds up to 101 profiles
+against a +/-20 cell's 21 -- so the grids that import cells from the older two say so where they
+do it, and every cell's `snap_window.json` states its own `half`.
 
 The three cells at the intersection (`n = 150, 300, 450` at `lambda = 0, v0 = 0`) are in both,
 duplicated rather than assigned, so neither directory is missing a row of its own grid. Each
@@ -83,8 +90,9 @@ uniform in every parameter.
 profile answers a different question than the single-cycle cells around it.
 
 `crossproduct` and `nsweep` carry `commit bf5b9e3` / `20d3304`; `nsweepv0` carries `56d1ca6` on
-the 3406 cells it solved and its sources' stamps on the 230 it imported. Every profile in all
-five grids carries `flight algebraic` and certifies.
+the 3406 cells it solved and its sources' stamps on the 230 it imported, and `nsweepv0fine`
+`56d1ca6` on its own 3333 and `nsweepv0`'s mix on the 1616 it imported. Every profile in all
+six grids carries `flight algebraic` and certifies.
 
 The map grids each carry **two** commit stamps, because they were extended after they were
 first built: `20d3304` on the original cells and `cd8f19b` on the expansion (mapsweep 80,869 +
@@ -178,6 +186,67 @@ fall monotonically after it; the other 7 reverse somewhere by **at most 0.0026 b
 peak values near 20, which is the resolution of the instrument rather than structure. So the
 number to take from a column is "the peak is near here", not the exact tick.
 
+### At 0.05 resolution the dependence is affine
+
+`nsweepv0fine` re-runs the same question on a 0.05 velocity grid over `[0, 0.3]^2` -- 49 columns
+where `nsweepv0` has 16 in that box. The argmax table:
+
+```
+        vz     0.00   0.05   0.10   0.15   0.20   0.25   0.30
+  vy 0.00      328    324    322    316    312    306    302
+  vy 0.05      330    326    322    320    314    312    302
+  vy 0.10      332    330    326    322    316    310    306
+  vy 0.15      334    332    328    326    320    316    310
+  vy 0.20      336    334    332    328    322    320    314
+  vy 0.25      338    334    334    330    326    322    320
+  vy 0.30      340    338    336    332    328    324    320
+```
+
+**A plane fits it to 1.63 ticks rms, which is less than one grid step:**
+
+```
+  n* = 327.3 + 53.5 * vy - 78.6 * vz          max residual 4.4 ticks, rms 1.63, grid step 2
+```
+
+So inside this box the ordering the coarse grid found is not merely monotone, it is *linear* --
+the best horizon shifts about 54 ticks per unit of `vy` and 79 the other way per unit of `vz`,
+and `vz` is 1.47x the lever `vy` is. That ratio is the content: the two components do not
+trade off one-for-one, so the anti-diagonal is not flat but drifts from 328 to 320.
+
+**The plane does not survive being extrapolated, and `nsweepv0` is the grid that says so.**
+Its 16 columns inside `[0, 0.3]^2` sit within **3.4 ticks** of the fit, as they should. Its 20
+columns outside it miss by up to **20 ticks** -- and not randomly: every column at `vz = -0.2`
+falls short of the plane, by 11 ticks at `vy = 0` growing to 20 at `vy = 0.4`. The surface is
+affine in this box and bends away from linear as `vz` goes negative, so the coefficients above
+are local and quoting them outside the box is an error the corpus can already catch you in.
+
+The finer grid is also a check on the coarser one rather than just a refinement of it, because
+the 33 new columns interleave with the 16 old ones in the same table. They interleave without
+contradiction: **49 of 49 columns preserve the `vz` ordering and 48 of 49 the `vy` ordering.**
+The single exception is `vz = 0.25`, where `vy` 0.05 to 0.10 moves the argmax 312 to 310 --
+a one-step reversal worth **0.0011 blocks**, against a peak region that spans 0.078 blocks over
+`n = 300 .. 324`. That is the same flat-peak noise the coarse grid showed, not a different
+answer.
+
+All 4949 optima are `cyclic`, as in `nsweepv0`.
+
+**`nsweepv0fine` is complete on its own, and 1616 of its 4949 cells are the 16 columns it shares
+with `nsweepv0`.** Only the 33 columns off the 0.1 grid were solved -- 3333 cells, 85,338 coarse
+and 69,993 fine solves -- and the shared 16 were copied in afterwards, the same duplicate-rather-
+than-assign choice made everywhere else here. So the two directories overlap by 1616 cells and
+neither is missing a row of its own grid; the `cells.tsv` label column says which is which.
+Its own cells all carry `half=20` and `commit 56d1ca6`, so the only non-uniformity it has is the
+one it inherited: 107 of the imported cells read `half=100` -- the `v0 = (0,0)` column, which came
+from `nsweep`, and six `crossproduct` cells. 4842 of 4949 read `half=20`.
+
+**The cell name could not encode a 0.05 grid before this run.** `snapsweep_grid.py` rendered
+velocity in tenths, so 0.05 collided with 0 and 0.15, 0.2 and 0.25 all collided on `02` --
+three velocity columns would have shared one output directory, and since the solver resumes by
+file existence the sweep would have reported success. Velocity now takes `lam_tag`'s shape for
+anything finer than a tenth (0.05 is `00p50`), which resolves a 0.001 grid, and the generator
+refuses a grid finer than the name can encode instead of colliding. The 16,614 names already on
+disk across the five older grids all regenerate unchanged.
+
 **`nsweepv0` is complete on its own, and 230 of its 3636 cells were imported rather than
 solved.** It was *built* with `--exclude`, so the run produced only the 3406 cells no other grid
 had: 14 of the 36 columns were missing `n = 150` and `n = 300` (already in `crossproduct`), and
@@ -236,10 +305,12 @@ tools/snapsweep_figs.sh <celldir> <outdir>
 python3 tools/snapsweep_best.py runs/atlas/crossproduct --csv runs/atlas/crossproduct/best.csv
 ```
 
-This is a recipe for building *a* grid, not a replay of the four above: each grid's own
+This is a recipe for building *a* grid, not a replay of the six above: each grid's own
 `cells.tsv` is the authoritative record of what it contains, and `--exclude` is what keeps an
-expansion from redoing cells that are already on disk. `HALF` defaults to 100 and wants to be
-20 for any grid where only the optimum matters. Submit through `snapsweep_submit.sh` rather
+expansion from redoing cells that are already on disk. `HALF` has no default and must be given:
+100 keeps the profile population, 20 keeps only the neighbourhood of the optimum at 2.4x fewer
+solves, and the two are not comparable, so nothing picks for you. Submit through
+`snapsweep_submit.sh` rather
 than `sbatch` directly -- it sizes the array to the partition, which a number in the batch
 script cannot do without going stale.
 
