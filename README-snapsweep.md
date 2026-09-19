@@ -167,24 +167,35 @@ horizon, more initial `vy` lengthens it. No cell in the table breaks either orde
 optimal horizon is not a constant with noise on it the way hold-0 is -- it is a smooth function
 of the entry velocity, and quoting a single number for it is quoting one cell of this table.
 
-Two things stop this from being an artifact of the window. Every one of the 34 columns
-`nsweepv0` measured has its maximum in the **interior**, with `dJ` falling monotonically from
-the peak out to `n = 350`; the closest to the edge is `v0 = (0.4,-0.2)` peaking at 344, whose
-tail still falls. And the `vy = 0` row interleaves three separately built grids -- 332, **328**,
-322, 312, 302, **294** -- where the two bold entries come from `nsweep` and `mapsweep`, run at
-different times under different fine windows. They land exactly where this grid's neighbours
-predict.
+**The table is over the whole corpus, not over one directory.** All 36 columns are complete at
+101 cells each across `nsweepv0` + `crossproduct` + `nsweep` + `mapsweep`, but no single
+directory holds a whole column. `nsweepv0` is missing `n = 150` and `n = 300` in each of the 14
+columns whose both components lie in `{-0.2, 0, 0.2, 0.4}`, because `crossproduct` already had
+those cells and `--exclude` skipped them; and it has no `v0 = (0,0)` or `(0,0.4)` column at all,
+those being complete in `nsweep` and `mapsweep`. **Reading `nsweepv0/best.csv` on its own gives
+14 columns with a hole at `n = 300`, in the middle of the band where every peak lives.** Merge
+the four grids at `lambda = 0` before taking an argmax over `n`.
 
-That last point is also the caveat: `nsweep` used a +/-100 fine window and the other two use
-+/-20. Since `best.csv` is an argmax, a wider window can only find an equal-or-better optimum,
-so the columns are comparable *at the optimum* -- which is all this table uses them for. They
-are not comparable at the level of the profile population.
+Two things stop the result from being an artifact of the fine window. Every one of the 36
+columns peaks in the **interior** of `150 .. 350`, the closest to an edge being `v0 = (0.4,-0.2)`
+at 344. And the `vy = 0` row interleaves three separately built grids -- 332, **328**, 322, 312,
+302, **294** -- where the two bold entries come from `nsweep` and `mapsweep`, run at different
+times under different fine windows. They land exactly where this grid's neighbours predict.
 
-`nsweepv0` holds 34 of the 36 columns; `v0 = (0,0)` is already complete over `150 .. 450` in
-`nsweep`, and `v0 = (0,0.4)` over `60 .. 350` in `mapsweep`'s `lambda = 0` row, so those two
-were excluded rather than rebuilt. 230 cells in total were excluded as already on disk, which
-is what `snapsweep_grid.py --exclude` is for. All 3406 optima are `cyclic`; there is no
-degenerate cell anywhere in this grid.
+The mixed windows are the caveat on that merge: `nsweep` and `crossproduct` used a +/-100 fine
+window, the map grids and `nsweepv0` use +/-20. Since `best.csv` is an argmax, a wider window
+can only find an equal-or-better optimum, so the columns are comparable *at the optimum* --
+which is all this table asks of them. They are not comparable at the level of the profile
+population.
+
+The peak is flat, as it is at `v0 = 0`. 29 of the 36 columns rise monotonically to the peak and
+fall monotonically after it; the other 7 reverse somewhere by **at most 0.0026 blocks** against
+peak values near 20, which is the resolution of the instrument rather than structure. So the
+number to take from a column is "the peak is near here", not the exact tick.
+
+`nsweepv0` itself holds 34 of the 36 columns and 3406 cells. 230 cells were excluded as already
+on disk, which is what `snapsweep_grid.py --exclude` is for. All 3406 of its optima are
+`cyclic`; there is no degenerate cell anywhere in the grid.
 
 ## Three smaller things the grid makes visible
 
