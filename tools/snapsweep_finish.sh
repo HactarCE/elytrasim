@@ -1,7 +1,15 @@
 #!/bin/bash
 # Stage 2, cleanup, and the per-cell figures. Run after stage 1 has drained.
 #
-#   tools/snapsweep_finish.sh            on the cluster: build stage 2, submit, wait, clean
+#   RUN=... HALF=20 tools/snapsweep_finish.sh   on the cluster: build stage 2, submit, wait, clean
+#
+# HALF is the stride-2 window half-width around the coarse winner, and it is required rather
+# than defaulted. why? it is the one parameter that changes what the corpus *is* -- 100 keeps
+# the breadth of the population, which is the product for an atlas cell; 20 keeps only the
+# neighbourhood of the optimum, and costs 2.4x fewer solves. A default would pick one silently,
+# and the two are not comparable at the level of the profile population. The coarse stride-10
+# scan localizes a real manoeuvre to within six ticks, so 20 is ample where only the optimum
+# matters.
 #
 # The coarse profiles are deleted only after stage 2 has written its own output, so an
 # interrupted run never loses the scaffolding it still needs.
@@ -10,13 +18,12 @@ SELF=$(cd "$(dirname "$0")" && pwd)
 RUN=${RUN:-$HOME/atlas-run}
 cd "$RUN" || exit 1
 
-echo "== building stage 2 (HALF=${HALF:-100}) =="
-RUN="$RUN" HALF="${HALF:-100}" python3 "$SELF/snapsweep_build.py" 2 || exit 1
+HALF=${HALF:?set HALF to the stride-2 window half-width (20 or 100 -- see the header)}
+echo "== building stage 2 (HALF=$HALF) =="
+RUN="$RUN" HALF="$HALF" python3 "$SELF/snapsweep_build.py" 2 || exit 1
 
 echo "== submitting =="
-JID=$(sbatch --parsable --export=ALL,WORK=work/stage2.tsv "$SELF/snapsweep.sbatch")
-echo "job $JID  $(date '+%Y-%m-%d %H:%M:%S %Z')"
-while squeue -j "$JID" -h -o '%T' 2>/dev/null | grep -q .; do sleep 15; done
+RUN="$RUN" "$SELF/snapsweep_submit.sh" work/stage2.tsv --wait > /dev/null
 echo "== stage 2 done $(date '+%Y-%m-%d %H:%M:%S %Z') =="
 
 want=$(wc -l < work/stage2.tsv | tr -d ' ')

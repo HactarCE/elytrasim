@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Build the seeds and work list for one stage, in a single interpreter.
 
-    RUN=... python3 tools/snapsweep_build.py <1|2> [--half 20] [--jobs 8]
+    RUN=... python3 tools/snapsweep_build.py 1 [--jobs 8]
+    RUN=... python3 tools/snapsweep_build.py 2 --half 20 [--jobs 8]
 
-Same contract as snapsweep_build.sh and byte-compatible with it -- this exists only because the
-shell version spawns one Python per cell. That is invisible at 208 cells (55s) and costs eleven
-minutes at 3993, and stage 2 pays it twice because it also picks each cell's window. Here the
-helpers are imported once and called in a loop, and the cells (which are independent) go over a
-process pool.
+This replaced a shell version (snapsweep_build.sh, removed 2026-09-19) that spawned one Python
+per cell: invisible at 208 cells (55s), eleven minutes at 3993, and stage 2 paid it twice
+because it also picks each cell's window. Here the helpers are imported once and called in a
+loop, and the cells (which are independent) go over a process pool. 3406 cells build in 39s.
 
 The helpers are invoked through their own main() with sys.argv patched rather than by reaching
 into their internals, so there is still exactly one implementation of what a seed file is.
@@ -63,10 +63,15 @@ def one(job):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", type=int, choices=(1, 2))
-    ap.add_argument("--half", type=int, default=int(os.environ.get("HALF", 100)))
+    # No default: --half decides what the corpus is, not merely how long it takes, and the two
+    # widths produce populations that are not comparable. Stage 1 never uses it.
+    ap.add_argument("--half", type=int, default=(int(os.environ["HALF"]) if "HALF" in os.environ
+                                                 else None))
     ap.add_argument("--jobs", type=int, default=8)
     a = ap.parse_args()
     run = os.environ.get("RUN") or sys.exit("set RUN to the run directory")
+    if a.stage == 2 and a.half is None:
+        sys.exit("stage 2 needs --half (or HALF=) -- 20 keeps the optimum, 100 keeps the population")
     os.chdir(run)
     for d in ("seeds", "out", "work", "logs"):
         os.makedirs(d, exist_ok=True)

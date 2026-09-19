@@ -168,14 +168,22 @@ handled.
 ## Reproducing
 
 ```
-python3 tools/snapsweep_cells.py > cells.tsv
-RUN=... tools/snapsweep_build.sh 1     # coarse seeds + work list
-sbatch --export=ALL,WORK=work/stage1.tsv tools/snapsweep.sbatch
-RUN=... tools/snapsweep_finish.sh      # stage 2, then delete coarse once it is complete
+python3 tools/snapsweep_grid.py --ns 150:350:2 --lams 0 --v0s='0,0;0,0.2' \
+    --label mygrid --exclude runs/atlas/nsweep/cells.tsv > cells.tsv
+RUN=... python3 tools/snapsweep_build.py 1          # coarse seeds + work list
+RUN=... tools/snapsweep_submit.sh work/stage1.tsv --wait
+RUN=... HALF=20 tools/snapsweep_finish.sh           # stage 2, then delete coarse once complete
 tools/snapsweep_pull.sh <remote> <dest>   # tars home, verifies, deletes the remote
 tools/snapsweep_figs.sh <celldir> <outdir>
 python3 tools/snapsweep_best.py runs/atlas/crossproduct --csv runs/atlas/crossproduct/best.csv
 ```
+
+This is a recipe for building *a* grid, not a replay of the four above: each grid's own
+`cells.tsv` is the authoritative record of what it contains, and `--exclude` is what keeps an
+expansion from redoing cells that are already on disk. `HALF` defaults to 100 and wants to be
+20 for any grid where only the optimum matters. Submit through `snapsweep_submit.sh` rather
+than `sbatch` directly -- it sizes the array to the partition, which a number in the batch
+script cannot do without going stale.
 
 `--flight algebraic` is a cluster choice, not a universal one -- see `README-sweep.md`.
 
