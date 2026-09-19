@@ -43,8 +43,8 @@ listing of any one misleading:
 runs/atlas/crossproduct   240 cells   n in {150, 300, 450} x lambda in {-2,-1,0,+1,+2}
                                       x v0 in {-0.2, 0, 0.2, 0.4}^2      -- complete 3 x 5 x 16
 runs/atlas/nsweep         151 cells   n = 150 .. 450 stride 2, at lambda = 0, v0 = (0,0)
-runs/atlas/nsweepv0      3406 cells   n = 150 .. 350 stride 2 x v0 in {-0.2,0,0.1,0.2,0.3,0.4}^2
-                                      at lambda = 0      -- 34 of 36 columns; see below
+runs/atlas/nsweepv0      3636 cells   n = 150 .. 350 stride 2 x v0 in {-0.2,0,0.1,0.2,0.3,0.4}^2
+                                      at lambda = 0                      -- complete 101 x 36
 runs/atlas/mapsweep      5986 cells   n = 60 .. 350 stride 2 x lambda = -2 .. 8 stride 0.25
                                       at v0 = (0, 0.4)                   -- complete 146 x 41
 runs/atlas/mapfine       6601 cells   n = 120 .. 200 stride 2 x lambda = -2 .. 6 stride 0.05
@@ -82,8 +82,9 @@ uniform in every parameter.
 `n = 600` is deliberately absent: it is well inside the two-cycle-optimal zone, so its best
 profile answers a different question than the single-cycle cells around it.
 
-`crossproduct` and `nsweep` carry `commit bf5b9e3` / `20d3304`, `nsweepv0` carries `56d1ca6`;
-every profile in all five grids carries `flight algebraic` and certifies.
+`crossproduct` and `nsweep` carry `commit bf5b9e3` / `20d3304`; `nsweepv0` carries `56d1ca6` on
+the 3406 cells it solved and its sources' stamps on the 230 it imported. Every profile in all
+five grids carries `flight algebraic` and certifies.
 
 The map grids each carry **two** commit stamps, because they were extended after they were
 first built: `20d3304` on the original cells and `cd8f19b` on the expansion (mapsweep 80,869 +
@@ -148,9 +149,8 @@ peak is not the hold.
 ## The best horizon depends on where you start, and monotonically
 
 The section above says `n = 328` is the best horizon. That is true at `v0 = (0,0)` and nowhere
-else. Across the 36 velocity columns below -- 34 from `nsweepv0`, two from the grids that
-already had them -- the `n` that maximizes `dJ` runs from
-**290 to 344** -- 54 ticks, 2.7 seconds at 20 ticks per second -- and it moves in an orderly way:
+else. Across the 36 velocity columns of `nsweepv0`, the `n` that maximizes `dJ` runs from **290
+to 344** -- 54 ticks, 2.7 seconds at 20 ticks per second -- and it moves in an orderly way:
 
 ```
         vz    -0.2    0.0    0.1    0.2    0.3    0.4
@@ -167,35 +167,38 @@ horizon, more initial `vy` lengthens it. No cell in the table breaks either orde
 optimal horizon is not a constant with noise on it the way hold-0 is -- it is a smooth function
 of the entry velocity, and quoting a single number for it is quoting one cell of this table.
 
-**The table is over the whole corpus, not over one directory.** All 36 columns are complete at
-101 cells each across `nsweepv0` + `crossproduct` + `nsweep` + `mapsweep`, but no single
-directory holds a whole column. `nsweepv0` is missing `n = 150` and `n = 300` in each of the 14
-columns whose both components lie in `{-0.2, 0, 0.2, 0.4}`, because `crossproduct` already had
-those cells and `--exclude` skipped them; and it has no `v0 = (0,0)` or `(0,0.4)` column at all,
-those being complete in `nsweep` and `mapsweep`. **Reading `nsweepv0/best.csv` on its own gives
-14 columns with a hole at `n = 300`, in the middle of the band where every peak lives.** Merge
-the four grids at `lambda = 0` before taking an argmax over `n`.
-
 Two things stop the result from being an artifact of the fine window. Every one of the 36
 columns peaks in the **interior** of `150 .. 350`, the closest to an edge being `v0 = (0.4,-0.2)`
 at 344. And the `vy = 0` row interleaves three separately built grids -- 332, **328**, 322, 312,
 302, **294** -- where the two bold entries come from `nsweep` and `mapsweep`, run at different
 times under different fine windows. They land exactly where this grid's neighbours predict.
 
-The mixed windows are the caveat on that merge: `nsweep` and `crossproduct` used a +/-100 fine
-window, the map grids and `nsweepv0` use +/-20. Since `best.csv` is an argmax, a wider window
-can only find an equal-or-better optimum, so the columns are comparable *at the optimum* --
-which is all this table asks of them. They are not comparable at the level of the profile
-population.
-
 The peak is flat, as it is at `v0 = 0`. 29 of the 36 columns rise monotonically to the peak and
 fall monotonically after it; the other 7 reverse somewhere by **at most 0.0026 blocks** against
 peak values near 20, which is the resolution of the instrument rather than structure. So the
 number to take from a column is "the peak is near here", not the exact tick.
 
-`nsweepv0` itself holds 34 of the 36 columns and 3406 cells. 230 cells were excluded as already
-on disk, which is what `snapsweep_grid.py --exclude` is for. All 3406 of its optima are
-`cyclic`; there is no degenerate cell anywhere in the grid.
+**`nsweepv0` is complete on its own, and 230 of its 3636 cells were imported rather than
+solved.** It was *built* with `--exclude`, so the run produced only the 3406 cells no other grid
+had: 14 of the 36 columns were missing `n = 150` and `n = 300` (already in `crossproduct`), and
+`v0 = (0,0)` and `(0,0.4)` were missing entirely (complete in `nsweep` and `mapsweep`). Read
+that way the directory has a hole at `n = 300` in 14 columns -- in the middle of the band where
+every peak lives -- so the 230 cells were copied in afterwards, the same duplicate-rather-than-
+assign choice made for the three cells shared by `crossproduct` and `nsweep`. The `cells.tsv`
+label column names each cell's origin: 3406 `nsweepv0`, 101 `nsweep`, 101 `mapsweep`, 28
+`crossproduct`.
+
+**That makes the directory non-uniform, and the non-uniformity is the fine window.** 3507 cells
+read `half=20`, and the 129 that came from `nsweep` and `crossproduct` read `half=100`; commit
+stamps are `56d1ca6` for the run's own cells and `bf5b9e3`/`20d3304`/`cd8f19b` for the imports.
+Everything that is physics is uniform -- `mth_lut`, `algebraic`, `jitter 0`, the same roughness
+price, a 30-pass stopping time. So the grid is comparable **at the optimum**, which is what a
+`best.csv` argmax asks of it, and **not** at the level of the profile population, where a
++/-100 cell has up to 101 profiles against a +/-20 cell's 21. Each cell's `snap_window.json`
+states its own `half`, so a population-level analysis can filter on it rather than trusting the
+directory.
+
+All 3636 optima in the grid are `cyclic`; there is no degenerate cell anywhere in it.
 
 ## Three smaller things the grid makes visible
 
