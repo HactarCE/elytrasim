@@ -131,6 +131,43 @@ pub fn equilibrium(p: f64) -> Vec3 {
     v
 }
 
+/// The velocity a schedule settles onto when flown back to back: the fixed point of
+/// `v -> (replay the whole schedule from v).vel`.
+///
+/// This is what makes a *steady-state* profile possible without a constraint or a penalty
+/// anywhere. A cycle that ends at a different velocity than it started is not wrong, it is
+/// just not the cycle you would fly twice; iterating the schedule finds the one you would.
+/// At the fixed point `v_final == v0` identically, so there is nothing left to enforce.
+///
+/// Iterated to convergence, not damped and not truncated to a lap. Damping would make `v0` a
+/// lagged average of past schedules, and it is exactly that lag that could make the outer
+/// alternation ring; converging leaves `v0` a memoryless function of the schedule. The map is
+/// a strong contraction with a unique attractor -- measured, from starts as far off as
+/// `(-3, 3)` and from schedules as degenerate as all-`+90`, chatter, and uniform random, it
+/// lands on the same velocity to 1e-13 in 4 to 29 laps.
+///
+/// `guess` only buys laps. Warm-starting from the previous schedule's fixed point is worth
+/// doing and is never load-bearing: the answer does not depend on it.
+pub fn steady_vel(pitches: &[f64], guess: Vec3) -> Vec3 {
+    const TOL: f64 = 1e-12;
+    const MAX_LAPS: usize = 200;          // 29 is the worst seen; this only guards divergence
+    let trig = cache_pitches(pitches);
+    let mut v = guess;
+    for _ in 0..MAX_LAPS {
+        let mut s = State { pos: Vec3::ZERO, vel: v };
+        for &t in &trig { s = ticked_cached(&s, t) }
+        let d = (s.vel.y - v.y).abs() + (s.vel.z - v.z).abs();
+        v = s.vel;
+        if !v.y.is_finite() || !v.z.is_finite() { return guess }
+        if d < TOL { break }
+    }
+    v
+}
+
+/// L1 distance between two velocities in the `(v_y, v_z)` plane. A closure *test*, not a speed
+/// difference -- see the note in `examples/repeat.rs`.
+pub fn dv_l1(a: Vec3, b: Vec3) -> f64 { (a.y - b.y).abs() + (a.z - b.z).abs() }
+
 // ---------------------------------------------------------------- cycle segmentation
 
 pub fn segment(ps: &[f64], st: &[State], tag: &str) -> Option<(usize, usize, usize, usize, usize)> {
@@ -318,6 +355,16 @@ impl Objective {
 /// happen, keeps its value across the whole spread. This also states the honest problem: you do
 /// not know your velocity to three decimals when you start a cycle.
 ///
+/// **Superseded for chatter control, and off by default.** What is written above held when
+/// stopping time was the only other lever: jitter suppresses chatter *only while the polish is
+/// stopped early*, and polished hard it does nothing (`README-sweep.md` has the numbers -- total
+/// variation is flat across an 8x range of `sigma` while `dz` falls monotonically). The l1
+/// curvature price in `Rough` replaced it, because that one survives running to convergence.
+/// Current runs set `sigma = 0` and carry `mu`; only `runs/corpus` and `runs/veljit`, the older
+/// generation, were optimized at `sigma = 0.1`. Reach for this when the question really is
+/// "does this schedule work from a starting velocity I do not know exactly", which is what it
+/// measures and what it is still good for -- not when the question is chatter.
+///
 /// `sigma` 0.1 on each component is what this was settled on with, against a reference start of
 /// about `(0.17, 0.20)` -- a perturbation of the same order as the velocity itself, so the
 /// schedule is being asked to work over a genuinely wide basin rather than to be locally smooth.
@@ -404,6 +451,14 @@ impl Jitter {
 /// polish can then run to convergence: `mu` names the exchange rate between blocks of `J` and
 /// degrees per tick squared of wrist, and the answer at that rate is a real optimum rather than
 /// wherever the optimizer happened to be when it was interrupted.
+///
+/// **`Default` is not current practice.** It is `mu = 0, limit = 90` -- the *unpriced* objective,
+/// because `certify` and `residuals` need exactly that to check a profile against plain `J`.
+/// Runs that are actually flown set the price: `runs/atlas` uses `mu = 1e-4, limit = 85` and
+/// `runs/antichatter` uses `mu = 1e-3, limit = 85` (as of commit bf5b9e3). Seeding new work from
+/// a profile means inheriting *its* header, not this default -- and the two older generations,
+/// `runs/corpus` and `runs/veljit`, carry no `rough` line at all and were regularized by jitter
+/// and stopping time instead. See the generations table in `README.md`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rough {
     /// Blocks of `J` charged per degree/tick^2 of summed |second difference|.
@@ -445,12 +500,22 @@ pub struct Rough {
     pub flick_at: Option<usize>,
     /// What counts as reaching the flick, in degrees.
     pub flick_pitch: f64,
+    /// Price the curvature *around the seam*, treating the schedule as a loop: the windows at
+    /// the first and last two ticks wrap instead of running off the end.
+    ///
+    /// Off by default, and for a single cycle it should stay off -- there is no seam to cross,
+    /// the schedule is flown once and `p[n-1]` is followed by whatever comes next, not by
+    /// `p[0]`. It is for a *steady-state* schedule, which is flown back to back by definition,
+    /// where `p[n-1] -> p[0]` is a move a hand actually has to make and the open penalty does
+    /// not charge for it. Measured on the corpus: the seam jump is 98.4 deg at n=200 against a
+    /// sharpest interior move of 49.6, so it is not always small.
+    pub cyclic: bool,
 }
 
 impl Default for Rough {
     fn default() -> Self {
         Rough { mu: 0.0, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0,
-                flick_at: None, flick_pitch: -80.0 }
+                flick_at: None, flick_pitch: -80.0, cyclic: false }
     }
 }
 
@@ -458,13 +523,16 @@ impl Default for Rough {
 /// search can hold them while the schedule itself is mid-sweep. `None` off the ends.
 pub type Win5 = [Option<f64>; 5];
 
-/// The window at `t`: indices `t-2 ..= t+2`, `None` where that runs off the schedule.
-pub fn win5(p: &[f64], t: usize) -> Win5 {
+/// The window at `t`: indices `t-2 ..= t+2`, `None` where that runs off the schedule -- or
+/// wrapped around the seam, and so never `None`, when `cyclic`.
+pub fn win5(p: &[f64], t: usize, cyclic: bool) -> Win5 {
     let n = p.len() as isize;
     let t = t as isize;
     std::array::from_fn(|k| {
         let i = t + k as isize - 2;
-        if i >= 0 && i < n { Some(p[i as usize]) } else { None }
+        if cyclic && n > 0 { Some(p[i.rem_euclid(n) as usize]) }
+        else if i >= 0 && i < n { Some(p[i as usize]) }
+        else { None }
     })
 }
 
@@ -477,12 +545,17 @@ impl Rough {
 
     /// The whole schedule's roughness cost, in blocks of `J`.
     pub fn cost(&self, p: &[f64]) -> f64 {
+        let n = p.len();
         let mut c = 0.0;
+        // Cyclic adds exactly the two second differences and the one first difference that
+        // straddle the seam; every interior term is identical either way.
+        let (d2, d1) = if self.cyclic && n >= 3 { (n, n) } else { (n.saturating_sub(2), n.saturating_sub(1)) };
+        let at = |i: usize| p[if self.cyclic { i % n } else { i }];
         if self.mu != 0.0 {
-            for j in 0..p.len().saturating_sub(2) { c += self.mu * (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() }
+            for j in 0..d2 { c += self.mu * (at(j) - 2.0 * at(j + 1) + at(j + 2)).abs() }
         }
         if self.mu_tv != 0.0 {
-            for j in 0..p.len().saturating_sub(1) { c += self.mu_tv * (p[j + 1] - p[j]).abs() }
+            for j in 0..d1 { c += self.mu_tv * (at(j + 1) - at(j)).abs() }
         }
         c
     }
@@ -536,14 +609,17 @@ impl Rough {
         if let Some(flick) = self.flick_at {
             if !self.flick_pitch.is_finite() || flick >= p.len() { v = f64::INFINITY }
         }
+        let n = p.len();
+        let (d2, d1) = if self.cyclic && n >= 3 { (n, n) } else { (n.saturating_sub(2), n.saturating_sub(1)) };
+        let at = |i: usize| p[if self.cyclic { i % n } else { i }];
         if self.cap.is_finite() {
-            for j in 0..p.len().saturating_sub(2) {
-                v = v.max((p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() - self.cap)
+            for j in 0..d2 {
+                v = v.max((at(j) - 2.0 * at(j + 1) + at(j + 2)).abs() - self.cap)
             }
         }
         if self.slew_cap.is_finite() {
-            for j in 0..p.len().saturating_sub(1) {
-                v = v.max((p[j + 1] - p[j]).abs() - self.slew_cap)
+            for j in 0..d1 {
+                v = v.max((at(j + 1) - at(j)).abs() - self.slew_cap)
             }
         }
         v.max(0.0)
@@ -653,6 +729,21 @@ pub struct PolishOpts {
     /// interrupted; a price on curvature bounds it by making it cost something, which leaves an
     /// answer that can be polished to convergence and certified.
     pub rough: Rough,
+    /// Re-solve `v0` to the schedule's own steady state after each pass, instead of holding the
+    /// objective's stated `v0` fixed. See `steady_vel`.
+    ///
+    /// Off by default, and deliberately: the single-cycle problem is the simpler object and is
+    /// still the one most questions are about. This is the same opt-in the `cycle-optimizer`
+    /// made with its `Optimizer<const STEADY_STATE: bool>`.
+    ///
+    /// The update lands at the *end* of a pass, after `last_gain` and the stall test, for the
+    /// reason the gradient-descent version froze it through the finite differences: `before`
+    /// and `last_gain` have to be evaluated against the same objective or their difference
+    /// mixes the schedule step with the `v0` move, and the stall test is then reading a number
+    /// that is not a gain. Convergence also needs `v0` to have stopped moving, not just `J` --
+    /// otherwise the schedule is written out with a header `v0` that is not its own fixed
+    /// point, which is the one thing this mode exists to prevent.
+    pub steady: bool,
 }
 
 impl Default for PolishOpts {
@@ -668,6 +759,7 @@ impl Default for PolishOpts {
             lag1_floor: f64::NEG_INFINITY,
             jitter: Jitter::default(),
             rough: Rough::default(),
+            steady: false,
         }
     }
 }
@@ -692,6 +784,12 @@ pub struct Polished {
     /// regularized answer is still readable: the schedule is worth `j` blocks and cost
     /// `rough_cost` blocks of wrist to fly.
     pub rough_cost: f64,
+    /// The `v0` the schedule is optimal for. Equal to the objective's `v0` unless
+    /// `PolishOpts::steady` was set, in which case it is the schedule's own fixed point and the
+    /// caller must write *this* into the header, not the `v0` it asked for.
+    pub v0: Vec3,
+    /// How far `v0` moved on the last pass, L1 in `(v_y, v_z)`. 0 when `steady` is off.
+    pub dv0: f64,
 }
 
 /// The nearest `f32` to `x` that lies inside `[lo, hi]`, or `None` if the interval holds none.
@@ -805,7 +903,7 @@ pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, r
     (0..pitches.len())
         .map(|t| {
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
-            let w = win5(pitches, t);
+            let w = win5(pitches, t, rough.cyclic);
             let pen = |x: f64| rough.local(&w, x);
             let (lo, hi) = rough.feasible(&w, t, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
             let (p, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], pitches[t],
@@ -943,7 +1041,7 @@ pub fn jacobi_step_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter,
     let at = |alpha: f64| -> Vec<f64> {
         pitches.iter().zip(&d).enumerate()
             .map(|(t, (p, (delta, _)))| {
-                let (lo, hi) = rough.feasible(&win5(pitches, t), t, -90.0, 90.0)
+                let (lo, hi) = rough.feasible(&win5(pitches, t, rough.cyclic), t, -90.0, 90.0)
                     .unwrap_or((*p, *p));
                 f32_inside(p + alpha * delta, lo, hi).unwrap_or(*p)
             })
@@ -1018,7 +1116,7 @@ pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize,
         let at = |alpha: f64| -> Vec<f64> {
             let mut v = cur.clone();
             for t in start..end {
-                let (lo, hi) = rough.feasible(&win5(&cur, t), t, -90.0, 90.0)
+                let (lo, hi) = rough.feasible(&win5(&cur, t, rough.cyclic), t, -90.0, 90.0)
                     .unwrap_or((cur[t], cur[t]));
                 v[t] = f32_inside(cur[t] + alpha * (pitches[t] + d[t].0 - cur[t]), lo, hi)
                     .unwrap_or(cur[t]);
@@ -1045,6 +1143,25 @@ pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize,
 /// one given the rest. Non-unimodality in pitch is why the sweep has to be global, and the
 /// corner at pitch 0 -- the forward-to-up conversion is gated on `lean_angle < 0` -- is why it
 /// cannot be replaced by a derivative method.
+/// How still `v0` has to be, summed over a `stall_window` of passes, before a steady-state
+/// polish may call itself converged. L1 in `(v_y, v_z)`.
+///
+/// Summed rather than per-pass because a drift and a jitter of the same per-pass size are the
+/// same number and completely different situations: measured on n=150, 9.5e-3 a pass read as
+/// converged while it carried `v0y` from 0.568 to 0.430 over 40 passes.
+///
+/// Absolute rather than priced against `tol`. Pricing it was tried and was a mistake: `v0` error
+/// costs about 5.5 blocks of `TE` per unit (measured 2.0 at n=100, 4.0 at n=600, 5.3 at n=150,
+/// 5.5 at n=300, linear over 1e-3 to 1e-2), so `tol = 0.1` admits a windowed drift of 0.018 --
+/// and the polish then stopped at 18 passes with `dv0` at 3e-4, six orders short of converged,
+/// writing a header `v0` the schedule does not reproduce. `tol` is a coarse threshold on the
+/// *schedule's* gain and does not transfer.
+///
+/// The value is set by what the iteration actually reaches, not by what is tolerable: the inner
+/// solve converges to 1e-12 and the outer drift falls to 1e-10 on its own, so this is slack by
+/// two orders and still worth under 1e-6 blocks.
+const STEADY_DRIFT_TOL: f64 = 1e-7;
+
 pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
     // Project the seed into the admissible set first. A warm start routinely arrives outside it
@@ -1052,17 +1169,23 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
     // tick is skipped.
     let mut pitches = project_cap(init, opts.rough);
+    // `v0` is an iterate in steady mode, so the objective cannot stay borrowed. Seeded from the
+    // schedule we were handed: under continuation that is the previous cell's answer, which is
+    // already near its own fixed point, so the first solve is a few laps rather than a cold one.
+    let mut obj = *obj;
+    if opts.steady { obj.v0 = steady_vel(&pitches, obj.v0) }
     let mut trig = cache_pitches(&pitches);
     let mut dv = opts.jitter.draws_at(0);
-    let mut states = jittered_replays(obj, &trig, &dv);
+    let mut states = jittered_replays(&obj, &trig, &dv);
     let (mut passes, mut last_gain) = (0, f64::INFINITY);
-    let mut stopped_degenerate = false;
+    let (mut dv0, mut stopped_degenerate) = (0.0f64, false);
     let mut recent: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut drift: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
 
     for pass in 0..opts.max_passes {
         if opts.jitter.is_on() && opts.jitter.resample && pass > 0 {
             dv = opts.jitter.draws_at(pass as u64);
-            states = jittered_replays(obj, &trig, &dv);
+            states = jittered_replays(&obj, &trig, &dv);
         }
         let before = obj.eval_jittered(&pitches, &dv) - opts.rough.cost(&pitches);
         let prev = pitches.clone();
@@ -1071,12 +1194,12 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         // moves point the same way this leaps; when they do not it finds no step and costs
         // one pass.
         if global && opts.block > 0 {
-            if let Some((next, gain)) = block_step_reg(obj, &pitches, opts.global_step, opts.block,
+            if let Some((next, gain)) = block_step_reg(&obj, &pitches, opts.global_step, opts.block,
                                                        opts.jitter, opts.rough) {
                 if gain > 0.0 {
                     pitches = next;
                     trig = cache_pitches(&pitches);
-                    states = jittered_replays(obj, &trig, &dv);
+                    states = jittered_replays(&obj, &trig, &dv);
                 }
             }
         }
@@ -1092,7 +1215,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             // The neighbors as they stand right now, so the price this tick pays reflects the
             // ticks already moved in this sweep -- Gauss-Seidel on the regularized objective,
             // not on `J` with a correction bolted on afterwards.
-            let w = win5(&pitches, t);
+            let w = win5(&pitches, t, opts.rough.cyclic);
             let pen = |x: f64| opts.rough.local(&w, x);
             // A tick with no admissible move still has to advance its own prefix: the tick
             // before it may have moved this pass, which makes every state downstream stale, and
@@ -1103,7 +1226,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
                 }
                 continue
             };
-            let (np, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], cur,
+            let (np, j, j_cur) = best_pitch_at(&obj, &row, &trig[t + 1..], cur,
                                                lo, hi, step, opts.ternary_iters, &pen);
             if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
@@ -1135,14 +1258,37 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
         if recent.len() > opts.stall_window { recent.pop_front(); }
         // Stop when the last `stall_window` passes together earned less than `tol`. Judging on
         // one pass would stop in the lulls between the jumps that the global passes find.
-        if recent.len() == opts.stall_window && recent.iter().sum::<f64>() < opts.tol { break }
+        // In steady mode `v0` must also have settled: `J` can go quiet for a window while the
+        // fixed point is still walking, and stopping there writes a header `v0` the schedule
+        // does not actually reproduce.
+        let stalled = recent.len() == opts.stall_window && recent.iter().sum::<f64>() < opts.tol;
+        // `v0` has to have stopped drifting as well as `J` having stopped gaining. See
+        // `STEADY_DRIFT_TOL` for why this is summed over the window and why it is absolute.
+        let v0_settled = !opts.steady
+            || (drift.len() == opts.stall_window
+                && drift.iter().sum::<f64>() < STEADY_DRIFT_TOL);
+        if stalled && v0_settled { break }
+
+        // Only now, with the pass scored and the stall test read, does the objective move. See
+        // `PolishOpts::steady`.
+        if opts.steady {
+            let next = steady_vel(&pitches, obj.v0);
+            dv0 = dv_l1(next, obj.v0);
+            if dv0 > 0.0 {
+                obj.v0 = next;
+                states = jittered_replays(&obj, &trig, &dv);   // every prefix starts at v0
+            }
+            drift.push_back(dv0);
+            if drift.len() > opts.stall_window { drift.pop_front(); }
+        }
     }
 
     let j = obj.eval(&pitches);
-    let residual = certify_reg(obj, &pitches, opts.global_step, opts.jitter, opts.rough);
+    let residual = certify_reg(&obj, &pitches, opts.global_step, opts.jitter, opts.rough);
     let l1 = lag1(&pitches);
     let rough_cost = opts.rough.cost(&pitches);
-    Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate, rough_cost }
+    Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate, rough_cost,
+               v0: obj.v0, dv0 }
 }
 
 // ---------------------------------------------------------------- the profile file
@@ -1197,12 +1343,12 @@ impl Profile {
             w("# jitter      0                     # optimized from the exact starting velocity");
         }
         if self.rough.is_on() {
-            w(&format!("# rough       {} {} {} {} {}    # mu (per deg/tick^2), mu_tv (per deg/tick), \
-cap, slew_cap, |pitch| limit",
+            w(&format!("# rough       {} {} {} {} {} {}    # mu (per deg/tick^2), mu_tv (per deg/tick), \
+cap, slew_cap, |pitch| limit, cyclic",
                        self.rough.mu, self.rough.mu_tv, self.rough.cap, self.rough.slew_cap,
-                       self.rough.limit));
+                       self.rough.limit, self.rough.cyclic as u8));
         } else {
-            w("# rough       0 0 inf inf 90         # no price on hand movement, no pitch margin");
+            w("# rough       0 0 inf inf 90 0       # no price on hand movement, no pitch margin");
         }
         if let Some(t) = self.rough.flick_at {
             w(&format!("# flick       {t} {}              # first tick at or below this pitch",
@@ -1301,10 +1447,16 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                                             Err(format!("'rough' field {i} is NaN")) } else { Ok(y) }),
                         }
                     };
-                    if f.len() > 5 { return Err(format!("'rough' takes at most 5 numbers, got {}", f.len())) }
+                    // 6th field is `cyclic`, added later; a 5-field header is every profile
+                    // written before the seam was priced and reads back as non-cyclic.
+                    if f.len() > 6 { return Err(format!("'rough' takes at most 6 numbers, got {}", f.len())) }
+                    let cyc = g(5, 0.0)?;
+                    if cyc != 0.0 && cyc != 1.0 {
+                        return Err(format!("'rough' field 5 (cyclic) must be 0 or 1, got {cyc}"))
+                    }
                     Rough { mu: g(0, 0.0)?, mu_tv: g(1, 0.0)?,
                             cap: g(2, f64::INFINITY)?, slew_cap: g(3, f64::INFINITY)?,
-                            limit: g(4, 90.0)?, ..Rough::default() }
+                            limit: g(4, 90.0)?, cyclic: cyc == 1.0, ..Rough::default() }
                     }
                 };
                 let flick: Vec<String> = text.lines().filter_map(|l| {

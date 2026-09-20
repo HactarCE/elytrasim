@@ -50,8 +50,9 @@ Things that were tried and measured:
 | slew-rate limit | no. Any limit loose enough to keep the real flicks keeps the chatter. |
 | per-tick pitch jitter | no. Held fixed it made chatter *worse* (TV 2406 -> 3493); resampled it cut TV 29% for 2.3 blocks of climb. The chattering end is pitch-insensitive -- `lift_force = cos^2(lean_angle)` is flat at 90 degrees. |
 | initial-velocity jitter, polished hard | no. At 60 forced passes TV is 925, 871, 838, 826, 884 for sigma 0, 0.05, 0.1, 0.2, 0.4 -- flat across an 8x range, while `dz` falls monotonically 345 -> 337. |
-| initial-velocity jitter, stopped early | **yes.** At every small pass count, both horizons, for 0.02-0.03 blocks of `dJ`. |
-| stopping time | **yes.** This is what bounds it. |
+| initial-velocity jitter, stopped early | **yes**, but only while stopped early -- which leaves the answer depending on when the optimizer was interrupted. Superseded. |
+| stopping time | **yes**, and it was what bounded it before the curvature price. Same objection: the answer is wherever the polish was cut off. |
+| l1 curvature price (`Rough::mu`) | **yes, and this is what is used now.** A price rather than a stopping rule, so the polish runs to convergence and the result is a real optimum that `verify` can re-check from the header. `runs/atlas` at `mu = 1e-4`, `runs/antichatter` at `mu = 1e-3`, both with `limit = 85` and `jitter 0`. |
 
 lag-1 against pass count from the reference cycle at `n = 300`, `sigma = 0`:
 

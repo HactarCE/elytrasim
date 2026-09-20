@@ -197,7 +197,7 @@ fn the_local_roughness_price_matches_the_whole_schedule_price() {
     for n in [3usize, 4, 5, 9, 40] {
         let p: Vec<f64> = (0..n).map(|_| next()).collect();
         for t in 0..n {
-            let w = win5(&p, t);
+            let w = win5(&p, t, rough.cyclic);
             for x in [-90.0, -12.5, 0.0, 7.25, 90.0] {
                 let mut q = p.clone();
                 q[t] = x;
@@ -225,7 +225,7 @@ fn the_feasible_interval_really_is_feasible() {
                 for _ in 0..200 {
                     let p: Vec<f64> = (0..9).map(|_| next()).collect();
                     let t = 4;
-                    let Some((lo, hi)) = rough.feasible(&win5(&p, t), t, -90.0, 90.0) else { continue };
+                    let Some((lo, hi)) = rough.feasible(&win5(&p, t, rough.cyclic), t, -90.0, 90.0) else { continue };
                     for x in [lo, 0.5 * (lo + hi), hi] {
                         let mut q = p.clone();
                         q[t] = x;
