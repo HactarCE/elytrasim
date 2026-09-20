@@ -24,9 +24,10 @@
 //!   Off by default. Re-solves `v0` to the schedule's own fixed point after every pass, so the
 //!   result is the cycle you would fly back to back rather than one whose terminal velocity is
 //!   free. `--vy/--vz` then *seed* that iteration instead of naming the answer, and the written
-//!   header states the fixed point actually reached -- so under `run` the shard directory is
-//!   named for the seed while the files inside state their own `v0`. Worth between +0.94 blocks
-//!   of TE per lap (n=150) and nothing at all (n~330); see `steady_vel` in `opt.rs`.
+//!   header states the fixed point actually reached. `v0` stops being a grid axis, so `run`
+//!   writes these under `steady/` rather than a `vy.../vz...` shard and takes a single
+//!   --vys/--vzs pair. Worth between +0.94 blocks of TE per lap (n=150) and nothing at all
+//!   (n~330); see `steady_vel` in `opt.rs`.
 //!
 //! Jitter options: --jitter <sigma>, --draws <k>, --fixed-draws, --seed <s>
 //!   `--jitter` is the standard deviation of the *initial velocity* error, in blocks/tick,
@@ -96,11 +97,17 @@ impl Args {
     }
 }
 
-/// Where a cell's file lives. Under `--steady` the `vy/vz` in the path are the shard's *seed*,
-/// not the profile's `v0`: the answer's `v0` is the schedule's own fixed point and is stated in
-/// the header. So read `v0` from the header, never from the directory name.
-fn cell_path(dir: &str, o: &Objective) -> String {
-    format!("{dir}/vy{:+.4}_vz{:+.4}/n{:04}_lam{:+.6}.pitches", o.v0.y, o.v0.z, o.n, o.lambda)
+/// Where a cell's file lives. The path names the coordinates that *determine* the answer.
+///
+/// Without `--steady` that includes `v0`, which is an input: two cells differing only in `v0`
+/// are different problems with different answers. With `--steady` `v0` is an output -- the
+/// schedule's own fixed point, reached from a seed that barely influences it -- so it is not a
+/// coordinate of the grid and naming a directory after it would claim a distinction the files
+/// do not have. Steady cells live under `steady/` and state their `v0` in the header.
+fn cell_path(dir: &str, o: &Objective, steady: bool) -> String {
+    let shard = if steady { "steady".to_string() }
+                else { format!("vy{:+.4}_vz{:+.4}", o.v0.y, o.v0.z) };
+    format!("{dir}/{shard}/n{:04}_lam{:+.6}.pitches", o.n, o.lambda)
 }
 
 fn write_profile(path: &str, p: &Profile) {
@@ -264,7 +271,7 @@ fn cmd_pilot(a: &Args) {
         }
         let st = obj.replay(&p.pitches);
         let sn = st.last().unwrap();
-        write_profile(&cell_path(&dir, obj), &p);
+        write_profile(&cell_path(&dir, obj, false), &p);
         format!("{:>5} {:>8.3} {:>8.4} {:>8.4} {j_seed:>10.4} {:>10.4} {:>9.3} {:>9.2} {:>10.2e} {:>10.2e} {:>8}",
                 obj.n, obj.lambda, obj.v0.y, obj.v0.z, obj.eval(&p.pitches),
                 sn.pos.y, sn.pos.z, p.residual, (sn.vel - obj.v0).length(), p.passes)
@@ -321,7 +328,7 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
 
     while let Some((i, j, from)) = queue.pop_front() {
         let obj = cell(i, j);
-        let path = cell_path(dir, &obj);
+        let path = cell_path(dir, &obj, opts.steady);
         // Warm start from whichever solved neighbor got here first; the anchor has none.
         // The anchor is the one cell with no solved neighbor. `seed_from_policy` was tuned
         // against the reference cycle's operating point, so away from it -- v0 = 0 especially --
@@ -461,6 +468,15 @@ fn cmd_run(a: &Args) {
     if let Some(sel) = a.get("--shard") {
         let pick: Vec<usize> = sel.split(',').map(|x| x.parse().unwrap()).collect();
         shards = pick.iter().map(|&i| shards[i]).collect();
+    }
+    // Under `--steady` `v0` is an output, so the (vy0, vz0) axis is not a grid axis: every
+    // shard would solve the same problems and race to write the same files. Refuse rather than
+    // silently collapse them, because the request says the caller expects distinct answers.
+    if opts.steady && shards.len() > 1 {
+        panic!("--steady makes v0 an output -- the schedule's own fixed point -- so (vy0, vz0) \
+                is not a grid axis and all {} shards would write the same files. Pass a single \
+                --vys/--vzs pair; it seeds the fixed-point iteration and little else.",
+               shards.len())
     }
     write_manifest(&dir, &g, opts);
     eprintln!("sweep: {} shards x {} cells, {} passes, trig {}, flight {}, commit {}",

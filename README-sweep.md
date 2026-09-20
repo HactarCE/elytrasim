@@ -177,11 +177,19 @@ questions are about.
 
 **`--vy/--vz` change meaning under it.** They seed the fixed-point iteration rather than naming
 the answer, so the profile's `v0` is whatever the schedule converged to and *that* is what the
-header states. Under `run` the shard directory is still named for the seed, so the directory
-and the header disagree by design: **read `v0` from the header, never from the path.** Resume
-accounts for this -- it matches a file on the horizon and the price and then checks that the
-file's stated `v0` really is the fixed point of its own pitches, rather than comparing
-objectives, which would never match and would re-solve the whole grid on every resume.
+header states.
+
+So `v0` stops being a grid axis. A path names the coordinates that determine the answer, and a
+seed that barely influences it is not one, so `run` writes steady cells under `steady/` instead
+of a `vy.../vz...` shard and takes a single `--vys/--vzs` pair -- more than one is refused
+rather than silently collapsed, since every shard would solve the same problems and race to
+write the same files. Read `v0` from the header, as always.
+
+Resume needs the same care: comparing objectives would never match, because a steady file's
+`v0` is its own fixed point and not the cell's seed, and the whole grid would re-solve on every
+resume while reporting success. It instead matches on horizon, lambda and price and then checks
+that the file's stated `v0` really is the fixed point of its own pitches -- a property of the
+file, so it is checked rather than trusted.
 
 What it is worth, over 13 `runs/atlas/nsweep` cells at `lambda 0`, `mu 1e-4`, `limit 85`,
 scoring each schedule at its own `v0` for one lap. The gain is U-shaped in `n`, not monotone:
