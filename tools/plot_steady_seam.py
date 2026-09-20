@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Does pricing the seam close it? Two regimes, and only one of them is about roughness.
+"""The seam, and the two regimes it falls into.
 
 The seam is the pitch jump from p[n-1] back to p[0] -- a move a steady-state schedule's pilot
-actually has to make, and one the open curvature penalty never charges for. This compares the
-single-cycle seed, the steady-state polish, and the steady-state polish with the curvature term
-wrapped around the seam.
+actually has to make, and one nothing in the objective charges for. Re-solving v0 closes it
+anyway, up to the horizon where the schedule instead ends parked at the pitch limit.
 
 Usage:
     python3 tools/plot_steady_seam.py ROWS_DIR CURVE_DIR [OUT.svg]
@@ -15,7 +14,7 @@ ROWS, CURVES = sys.argv[1], sys.argv[2]
 OUT = sys.argv[3] if len(sys.argv) > 3 else "runs/steady/seam.svg"
 
 BG, FG, DIM, GRID = '#0d1117', '#e6edf3', '#8b949e', '#21262d'
-BASE, STEADY, CYCLIC = '#388bfd', '#db6d28', '#a371f7'
+BASE, STEADY = '#388bfd', '#db6d28'
 
 R = []
 for f in sorted(glob.glob(os.path.join(ROWS, "*.csv"))):
@@ -33,30 +32,29 @@ o = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
      f'font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">',
      f'<rect width="{W}" height="{H}" fill="{BG}"/>',
      f'<text x="16" y="24" fill="{FG}" font-size="15" font-weight="600">'
-     f'pricing the seam: what it closes, and what it cannot</text>',
+     f'the seam: what steady state closes, and what it cannot</text>',
      f'<text x="16" y="44" fill="{DIM}">The seam is |p[n-1] -&gt; p[0]|, the jump a repeated '
      f'schedule asks a hand to make.</text>',
-     f'<text x="16" y="58" fill="{DIM}">runs/atlas/nsweep, lambda 0, mu 1e-4, limit 85. Utility '
-     f'is unchanged throughout: |d dTE| &lt;= 0.016 blocks.</text>',
+     f'<text x="16" y="58" fill="{DIM}">runs/atlas/nsweep, lambda 0, mu 1e-4, limit 85. Nothing '
+     f'here prices the seam; it is measured, not optimized.</text>',
      f'<text x="16" y="76" fill="{DIM}">Steady state closes the seam on its own -- at the fixed '
      f'point the cycle ends in the velocity it began in, so the</text>',
      f'<text x="16" y="90" fill="{DIM}">pitch it wants at tick 0 is near the pitch it wanted at '
-     f'tick n-1. Pricing the seam then has little left to do.</text>',
+     f'tick n-1.</text>',
      f'<text x="16" y="108" fill="{DIM}">Beyond n=376 the schedule instead ends parked at the '
-     f'+85 limit. No curvature price moves that: it is the free</text>',
-     f'<text x="16" y="122" fill="{DIM}">terminal velocity, not roughness. At mu 1e-4 the two '
-     f'seam terms cost ~0.018 blocks, so the optimizer just pays.</text>']
+     f'+85 limit and the seam stays wide. That is the free terminal</text>',
+     f'<text x="16" y="122" fill="{DIM}">velocity, not roughness: nothing after tick n is priced, '
+     f'so the last few ticks cash energy in against the limit.</text>']
 
 lx = 16
-for col, name in ((BASE, 'single-cycle'), (STEADY, 'steady'), (CYCLIC, 'steady + cyclic')):
+for col, name in ((BASE, 'single-cycle'), (STEADY, 'steady')):
     o.append(f'<line x1="{lx}" y1="{TOP-28}" x2="{lx+16}" y2="{TOP-28}" stroke="{col}" stroke-width="2"/>')
     o.append(f'<text x="{lx+22}" y="{TOP-24}" fill="{FG}">{name}</text>')
     lx += 26 + len(name) * 6.2 + 20
 
 ns = [int(r["n"]) for r in R]
 series = [(BASE, [float(r["base_seam"]) for r in R]),
-          (STEADY, [float(r["ss_seam"]) for r in R]),
-          (CYCLIC, [float(r["cyc_seam"]) for r in R])]
+          (STEADY, [float(r["ss_seam"]) for r in R])]
 hi = max(max(v) for _, v in series) * 1.08
 px = lambda n: LAB + PW * (n - ns[0]) / (ns[-1] - ns[0])
 py = lambda v: TOP + PH - PH * v / hi
@@ -98,7 +96,7 @@ for i, target in enumerate(zoom_ns):
             o.append(f'<text x="{x0-5}" y="{zy(v)+3:.1f}" text-anchor="end" fill="{DIM}" font-size="9">{v}</text>')
     o.append(f'<line x1="{x0+ZW/2:.1f}" y1="{ZY+6}" x2="{x0+ZW/2:.1f}" y2="{ZY+6+ZH}" '
              f'stroke="{DIM}" stroke-dasharray="2 3"/>')
-    for tag, col in (("steady", STEADY), ("cyclic", CYCLIC)):
+    for tag, col in (("base", BASE), ("steady", STEADY)):
         p = os.path.join(CURVES, f"{stem}.{tag}.csv")
         if not os.path.exists(p):
             continue
@@ -109,7 +107,8 @@ for i, target in enumerate(zoom_ns):
         o.append(f'<polyline points="{" ".join(f"{zx(j):.1f},{zy(y):.1f}" for j, y in enumerate(seg))}" '
                  f'fill="none" stroke="{col}" stroke-width="1.8"/>')
     o.append(f'<text x="{x0+ZW/2:.0f}" y="{ZY+6+ZH+14}" text-anchor="middle" fill="{DIM}" '
-             f'font-size="9">seam  (ss {float(row["ss_seam"]):.1f}deg  cyc {float(row["cyc_seam"]):.1f}deg)</text>')
+             f'font-size="9">seam  ({float(row["base_seam"]):.0f} &#8594; '
+             f'{float(row["ss_seam"]):.1f} deg)</text>')
 
 o.append('</svg>')
 os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)

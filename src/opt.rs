@@ -500,22 +500,12 @@ pub struct Rough {
     pub flick_at: Option<usize>,
     /// What counts as reaching the flick, in degrees.
     pub flick_pitch: f64,
-    /// Price the curvature *around the seam*, treating the schedule as a loop: the windows at
-    /// the first and last two ticks wrap instead of running off the end.
-    ///
-    /// Off by default, and for a single cycle it should stay off -- there is no seam to cross,
-    /// the schedule is flown once and `p[n-1]` is followed by whatever comes next, not by
-    /// `p[0]`. It is for a *steady-state* schedule, which is flown back to back by definition,
-    /// where `p[n-1] -> p[0]` is a move a hand actually has to make and the open penalty does
-    /// not charge for it. Measured on the corpus: the seam jump is 98.4 deg at n=200 against a
-    /// sharpest interior move of 49.6, so it is not always small.
-    pub cyclic: bool,
 }
 
 impl Default for Rough {
     fn default() -> Self {
         Rough { mu: 0.0, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0,
-                flick_at: None, flick_pitch: -80.0, cyclic: false }
+                flick_at: None, flick_pitch: -80.0 }
     }
 }
 
@@ -523,16 +513,13 @@ impl Default for Rough {
 /// search can hold them while the schedule itself is mid-sweep. `None` off the ends.
 pub type Win5 = [Option<f64>; 5];
 
-/// The window at `t`: indices `t-2 ..= t+2`, `None` where that runs off the schedule -- or
-/// wrapped around the seam, and so never `None`, when `cyclic`.
-pub fn win5(p: &[f64], t: usize, cyclic: bool) -> Win5 {
+/// The window at `t`: indices `t-2 ..= t+2`, `None` where that runs off the schedule.
+pub fn win5(p: &[f64], t: usize) -> Win5 {
     let n = p.len() as isize;
     let t = t as isize;
     std::array::from_fn(|k| {
         let i = t + k as isize - 2;
-        if cyclic && n > 0 { Some(p[i.rem_euclid(n) as usize]) }
-        else if i >= 0 && i < n { Some(p[i as usize]) }
-        else { None }
+        if i >= 0 && i < n { Some(p[i as usize]) } else { None }
     })
 }
 
@@ -545,17 +532,12 @@ impl Rough {
 
     /// The whole schedule's roughness cost, in blocks of `J`.
     pub fn cost(&self, p: &[f64]) -> f64 {
-        let n = p.len();
         let mut c = 0.0;
-        // Cyclic adds exactly the two second differences and the one first difference that
-        // straddle the seam; every interior term is identical either way.
-        let (d2, d1) = if self.cyclic && n >= 3 { (n, n) } else { (n.saturating_sub(2), n.saturating_sub(1)) };
-        let at = |i: usize| p[if self.cyclic { i % n } else { i }];
         if self.mu != 0.0 {
-            for j in 0..d2 { c += self.mu * (at(j) - 2.0 * at(j + 1) + at(j + 2)).abs() }
+            for j in 0..p.len().saturating_sub(2) { c += self.mu * (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() }
         }
         if self.mu_tv != 0.0 {
-            for j in 0..d1 { c += self.mu_tv * (at(j + 1) - at(j)).abs() }
+            for j in 0..p.len().saturating_sub(1) { c += self.mu_tv * (p[j + 1] - p[j]).abs() }
         }
         c
     }
@@ -609,17 +591,14 @@ impl Rough {
         if let Some(flick) = self.flick_at {
             if !self.flick_pitch.is_finite() || flick >= p.len() { v = f64::INFINITY }
         }
-        let n = p.len();
-        let (d2, d1) = if self.cyclic && n >= 3 { (n, n) } else { (n.saturating_sub(2), n.saturating_sub(1)) };
-        let at = |i: usize| p[if self.cyclic { i % n } else { i }];
         if self.cap.is_finite() {
-            for j in 0..d2 {
-                v = v.max((at(j) - 2.0 * at(j + 1) + at(j + 2)).abs() - self.cap)
+            for j in 0..p.len().saturating_sub(2) {
+                v = v.max((p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() - self.cap)
             }
         }
         if self.slew_cap.is_finite() {
-            for j in 0..d1 {
-                v = v.max((at(j + 1) - at(j)).abs() - self.slew_cap)
+            for j in 0..p.len().saturating_sub(1) {
+                v = v.max((p[j + 1] - p[j]).abs() - self.slew_cap)
             }
         }
         v.max(0.0)
@@ -903,7 +882,7 @@ pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, r
     (0..pitches.len())
         .map(|t| {
             let row: Vec<State> = states.iter().map(|st| st[t].clone()).collect();
-            let w = win5(pitches, t, rough.cyclic);
+            let w = win5(pitches, t);
             let pen = |x: f64| rough.local(&w, x);
             let (lo, hi) = rough.feasible(&w, t, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
             let (p, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], pitches[t],
@@ -1041,7 +1020,7 @@ pub fn jacobi_step_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter,
     let at = |alpha: f64| -> Vec<f64> {
         pitches.iter().zip(&d).enumerate()
             .map(|(t, (p, (delta, _)))| {
-                let (lo, hi) = rough.feasible(&win5(pitches, t, rough.cyclic), t, -90.0, 90.0)
+                let (lo, hi) = rough.feasible(&win5(pitches, t), t, -90.0, 90.0)
                     .unwrap_or((*p, *p));
                 f32_inside(p + alpha * delta, lo, hi).unwrap_or(*p)
             })
@@ -1116,7 +1095,7 @@ pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize,
         let at = |alpha: f64| -> Vec<f64> {
             let mut v = cur.clone();
             for t in start..end {
-                let (lo, hi) = rough.feasible(&win5(&cur, t, rough.cyclic), t, -90.0, 90.0)
+                let (lo, hi) = rough.feasible(&win5(&cur, t), t, -90.0, 90.0)
                     .unwrap_or((cur[t], cur[t]));
                 v[t] = f32_inside(cur[t] + alpha * (pitches[t] + d[t].0 - cur[t]), lo, hi)
                     .unwrap_or(cur[t]);
@@ -1139,10 +1118,6 @@ pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize,
     (best_j > base).then(|| (cur, best_j - base))
 }
 
-/// Coordinate ascent over the schedule: sweep `t = 0..n`, replacing each pitch with the best
-/// one given the rest. Non-unimodality in pitch is why the sweep has to be global, and the
-/// corner at pitch 0 -- the forward-to-up conversion is gated on `lean_angle < 0` -- is why it
-/// cannot be replaced by a derivative method.
 /// How still `v0` has to be, summed over a `stall_window` of passes, before a steady-state
 /// polish may call itself converged. L1 in `(v_y, v_z)`.
 ///
@@ -1162,6 +1137,10 @@ pub fn block_step_reg(obj: &Objective, pitches: &[f64], step: f64, block: usize,
 /// two orders and still worth under 1e-6 blocks.
 const STEADY_DRIFT_TOL: f64 = 1e-7;
 
+/// Coordinate ascent over the schedule: sweep `t = 0..n`, replacing each pitch with the best
+/// one given the rest. Non-unimodality in pitch is why the sweep has to be global, and the
+/// corner at pitch 0 -- the forward-to-up conversion is gated on `lean_angle < 0` -- is why it
+/// cannot be replaced by a derivative method.
 pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
     // Project the seed into the admissible set first. A warm start routinely arrives outside it
@@ -1215,7 +1194,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             // The neighbors as they stand right now, so the price this tick pays reflects the
             // ticks already moved in this sweep -- Gauss-Seidel on the regularized objective,
             // not on `J` with a correction bolted on afterwards.
-            let w = win5(&pitches, t, opts.rough.cyclic);
+            let w = win5(&pitches, t);
             let pen = |x: f64| opts.rough.local(&w, x);
             // A tick with no admissible move still has to advance its own prefix: the tick
             // before it may have moved this pass, which makes every state downstream stale, and
@@ -1343,12 +1322,12 @@ impl Profile {
             w("# jitter      0                     # optimized from the exact starting velocity");
         }
         if self.rough.is_on() {
-            w(&format!("# rough       {} {} {} {} {} {}    # mu (per deg/tick^2), mu_tv (per deg/tick), \
-cap, slew_cap, |pitch| limit, cyclic",
+            w(&format!("# rough       {} {} {} {} {}    # mu (per deg/tick^2), mu_tv (per deg/tick), \
+cap, slew_cap, |pitch| limit",
                        self.rough.mu, self.rough.mu_tv, self.rough.cap, self.rough.slew_cap,
-                       self.rough.limit, self.rough.cyclic as u8));
+                       self.rough.limit));
         } else {
-            w("# rough       0 0 inf inf 90 0       # no price on hand movement, no pitch margin");
+            w("# rough       0 0 inf inf 90         # no price on hand movement, no pitch margin");
         }
         if let Some(t) = self.rough.flick_at {
             w(&format!("# flick       {t} {}              # first tick at or below this pitch",
@@ -1447,16 +1426,10 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                                             Err(format!("'rough' field {i} is NaN")) } else { Ok(y) }),
                         }
                     };
-                    // 6th field is `cyclic`, added later; a 5-field header is every profile
-                    // written before the seam was priced and reads back as non-cyclic.
-                    if f.len() > 6 { return Err(format!("'rough' takes at most 6 numbers, got {}", f.len())) }
-                    let cyc = g(5, 0.0)?;
-                    if cyc != 0.0 && cyc != 1.0 {
-                        return Err(format!("'rough' field 5 (cyclic) must be 0 or 1, got {cyc}"))
-                    }
+                    if f.len() > 5 { return Err(format!("'rough' takes at most 5 numbers, got {}", f.len())) }
                     Rough { mu: g(0, 0.0)?, mu_tv: g(1, 0.0)?,
                             cap: g(2, f64::INFINITY)?, slew_cap: g(3, f64::INFINITY)?,
-                            limit: g(4, 90.0)?, cyclic: cyc == 1.0, ..Rough::default() }
+                            limit: g(4, 90.0)?, ..Rough::default() }
                     }
                 };
                 let flick: Vec<String> = text.lines().filter_map(|l| {

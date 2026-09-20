@@ -30,7 +30,7 @@ fn main() {
 
     println!("file,n,lambda,base_dte_v0,base_dte_ss,ctrl_dte_ss,ss_dte_ss,ss_dy,ss_dz,\
               ss_v0y,ss_v0z,base_ssy,base_ssz,passes,dv0,lag1_base,lag1_ss,\
-              cyc_dte_ss,base_seam,ss_seam,cyc_seam,ss_maxd,cyc_maxd,ss_curv,cyc_curv,cyc_passes");
+              base_seam,ss_seam,ss_maxd");
     for f in &files {
         let text = std::fs::read_to_string(f.as_str()).unwrap();
         let pr = Profile::parse(&text).unwrap();
@@ -53,29 +53,20 @@ fn main() {
         let sp = polish(&obj, &pr.pitches, PolishOpts { steady: true, ..opts });
         let (dte, dy, dz) = lap(sp.v0, &sp.pitches);
 
-        // Steady, with the seam priced. Same everything else, so the only difference is whether
-        // the curvature term wraps.
-        let cyc_rough = Rough { cyclic: true, ..pr.rough };
-        let cp = polish(&obj, &pr.pitches, PolishOpts { steady: true, rough: cyc_rough, ..opts });
-        let (cyc_dte, _, _) = lap(cp.v0, &cp.pitches);
-
-        // The seam jump is what the wrap is supposed to close, so measure it directly rather
-        // than inferring it from the cost. Reported next to the sharpest interior move, because
-        // "98 degrees" only means something against what the schedule already does.
+        // The seam is `p[n-1] -> p[0]`, the move a flier would have to make to fly this
+        // schedule again. Nothing in the objective prices it -- the corpus optimizes one cycle
+        // -- so this is a diagnostic, not a term. Reported next to the sharpest interior move,
+        // because "98 degrees" only means something against what the schedule already does.
         let seam = |v: &[f64]| (v[0] - v[v.len() - 1]).abs();
         let maxd = |v: &[f64]| v.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max);
 
         let name = std::path::Path::new(f.as_str()).file_name().unwrap().to_string_lossy();
         println!("{name},{},{},{base_dte_v0:.6},{base_dte_ss:.6},{ctrl_dte_ss:.6},{dte:.6},\
                   {dy:.6},{dz:.6},{:.9},{:.9},{:.9},{:.9},{},{:.3e},{:.4},{:.4},\
-                  {cyc_dte:.6},{:.3},{:.3},{:.3},{:.3},{:.3},{:.2},{:.2},{}",
+                  {:.3},{:.3},{:.3}",
                  obj.n, obj.lambda, sp.v0.y, sp.v0.z, base_ss.y, base_ss.z,
                  sp.passes, sp.dv0, lag1(&pr.pitches), lag1(&sp.pitches),
-                 seam(&pr.pitches), seam(&sp.pitches), seam(&cp.pitches),
-                 maxd(&sp.pitches), maxd(&cp.pitches),
-                 // both curvatures measured cyclically, so the seam is counted for each
-                 cyc_rough.cost(&sp.pitches) / cyc_rough.mu.max(1e-300),
-                 cyc_rough.cost(&cp.pitches) / cyc_rough.mu.max(1e-300), cp.passes);
+                 seam(&pr.pitches), seam(&sp.pitches), maxd(&sp.pitches));
 
         if let Some(d) = &out {
             std::fs::create_dir_all(d).unwrap();
@@ -91,7 +82,6 @@ fn main() {
             };
             dump("base", &pr.pitches, base_ss);
             dump("steady", &sp.pitches, sp.v0);
-            dump("cyclic", &cp.pitches, cp.v0);
         }
     }
 }

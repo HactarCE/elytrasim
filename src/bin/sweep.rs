@@ -40,8 +40,6 @@ impl Args {
     fn num<T: std::str::FromStr>(&self, k: &str, d: T) -> T where T::Err: std::fmt::Debug {
         self.get(k).map_or(d, |v| v.parse().unwrap_or_else(|e| panic!("bad {k}: {e:?}")))
     }
-    /// A bare presence flag, taking no value.
-    fn has(&self, k: &str) -> bool { self.0.iter().any(|a| a == k) }
     fn cell(&self) -> Objective {
         Objective {
             // Zero, not the reference cycle's start: (0.167467, 0.200887) is the velocity
@@ -67,7 +65,6 @@ impl Args {
                 flick_at: self.get("--flick-at").map(|v| v.parse()
                     .unwrap_or_else(|e| panic!("bad --flick-at: {e:?}"))),
                 flick_pitch: self.num("--flick-pitch", -80.0),
-                cyclic: self.has("--cyclic"),
             },
             jitter: Jitter {
                 sigma: self.num("--jitter", 0.0),
