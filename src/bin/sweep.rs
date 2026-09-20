@@ -15,7 +15,7 @@
 //! Cell options: --n, --lambda, --vy, --vz, --passes, --tol, --trig, --flight, --init <file>
 //!   --flick-at <tick> restricts the first tick at or below --flick-pitch <deg> (default -80).
 //!   A seed given with --init or --anchor does NOT supply the route; --trig/--flight still do,
-//!   defaults included. A mismatch is warned about rather than corrected -- see `warn_physics`.
+//!   defaults included, and a seed built under another route is refused. See `require_physics`.
 //!
 //! Roughness options: --mu <per deg/tick^2>, --mu-tv, --cap, --slew-cap, --limit <deg>
 //!   The l1 curvature price, and the current chatter regularizer. Unlike a pass budget it is a
@@ -140,25 +140,28 @@ fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> (Profile, Polished)
     (profile, r)
 }
 
-/// Warn when a seed profile was optimized under different physics than we are about to use.
+/// Refuse a seed profile that was optimized under physics this run is not using.
 ///
 /// A profile states the trig and flight route it was optimized under, and `verify` and the
 /// examples replay under the route the file claims. `polish` and `run` do not adopt it -- the
 /// route stays whatever `--trig`/`--flight` say, defaults included -- so seeding from an
-/// `mth_lut`/`algebraic` profile while the process sits on `libm`/`reference` polishes a
-/// different problem than the seed solved, and nothing downstream can see it: every header
-/// truthfully records the route it was actually run under. The routes differ by about 1 ULP on
-/// 2.6% of inputs, which is enough to move where the optimum sits -- re-polishing one
-/// `runs/atlas` cell under the defaults took 186 passes to a different fixed point where its
-/// own route takes 156.
+/// `mth_lut`/`algebraic` profile while the process sits on `libm`/`reference` solves a different
+/// problem than the seed solved, and nothing downstream can see it: every header truthfully
+/// records the route it was actually run under, so the files come out self-consistent and
+/// quietly wrong about which question they answer. The routes differ by about 1 ULP on 2.6% of
+/// inputs, which is enough to move where the optimum sits -- re-polishing one `runs/atlas` cell
+/// under the defaults took 186 passes to a different fixed point where its own route takes 156.
 ///
-/// So this is only a warning, not a correction: it stays possible to re-polish under another
-/// route deliberately, it just can no longer happen unnoticed.
-fn warn_physics(p: &Profile, what: &str) {
+/// Fatal rather than a warning, and with no override flag. Cross-route seeding has no
+/// legitimate use -- matching the seed is what `--trig`/`--flight` are for -- and the escape
+/// hatch already exists for the rare case that wants it: a headerless pitch list claims no
+/// route and is accepted as-is.
+fn require_physics(p: &Profile, what: &str) {
     if p.trig != trig_mode() || p.flight != flight_mode() {
-        eprintln!("warning: {what} was optimized under trig {} flight {}, but this run uses \
-                   trig {} flight {}. Pass --trig/--flight to match it.",
-                  p.trig, p.flight, trig_mode(), flight_mode());
+        panic!("{what} was optimized under trig {} flight {}, but this run uses trig {} \
+                flight {}. Pass --trig/--flight to match it, or seed from a profile built \
+                under this route.",
+               p.trig, p.flight, trig_mode(), flight_mode());
     }
 }
 
@@ -168,7 +171,7 @@ fn cmd_polish_cell(a: &Args) {
         Some(f) => {
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
             let parsed = Profile::parse(&text);
-            if let Ok(p) = &parsed { warn_physics(p, "--init") }
+            if let Ok(p) = &parsed { require_physics(p, "--init") }
             stretch(&parsed.map(|p| p.pitches).unwrap_or_else(|_| {
                 text.lines().flat_map(|l| l.split('#').next().unwrap_or("").split_whitespace())
                     .map(|s| s.parse().unwrap()).collect()
@@ -484,7 +487,9 @@ fn cmd_run(a: &Args) {
     let anchor: Option<Vec<f64>> = a.get("--anchor").map(|f| {
         let t = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         let parsed = Profile::parse(&t);
-        if let Ok(p) = &parsed { warn_physics(p, "--anchor") }
+        // The anchor propagates to every cell in the shard, so this one is worth stopping for
+        // even more than `--init` is.
+        if let Ok(p) = &parsed { require_physics(p, "--anchor") }
         parsed.map(|p| p.pitches).unwrap_or_else(|_| {
             t.lines().flat_map(|l| l.split('#').next().unwrap_or("").split_whitespace())
              .map(|x| x.parse().unwrap()).collect()

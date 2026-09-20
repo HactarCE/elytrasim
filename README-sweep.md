@@ -130,15 +130,19 @@ but still seeds its neighbors, so a killed job costs at most one cell.
 reference path for nonzero yaw. Profiles and manifests record the route, and resume also
 requires it to match.
 
-**A seed does not carry its route, so check it.** `--init` and `--anchor` take only the pitches;
-the route stays whatever `--trig`/`--flight` say, defaults included. Seeding from an
-`mth_lut`/`algebraic` profile while the process sits on `libm`/`reference` therefore polishes a
-different problem than the seed solved, and nothing downstream can see it -- every header
-truthfully records the route it was actually run under. It is not a rounding detail: re-polishing
-one `runs/atlas` cell under the defaults took 186 passes and landed on a different fixed point
-where its own route takes 156. A mismatch is now warned about on stderr rather than corrected,
-so re-polishing under another route deliberately stays possible; it just cannot happen
-unnoticed. On an Apple arm64 test machine, a representative `dp` transition-table
+**A seed does not carry its route, so a mismatched one is refused.** `--init` and `--anchor`
+take only the pitches; the route stays whatever `--trig`/`--flight` say, defaults included.
+Seeding from an `mth_lut`/`algebraic` profile while the process sits on `libm`/`reference`
+therefore solves a different problem than the seed solved, and nothing downstream can see it --
+every header truthfully records the route it was actually run under, so the files come out
+self-consistent and quietly wrong about which question they answer. It is not a rounding
+detail: re-polishing one `runs/atlas` cell under the defaults took 186 passes and landed on
+fixed point (0.415215, 0.330157) where its own route takes 156 and lands on
+(0.415055, 0.330120).
+
+So it is a hard error, with no override flag: matching the seed is what `--trig`/`--flight` are
+for, and cross-route seeding has no legitimate use. The escape hatch for the rare case that
+wants it already exists -- a headerless pitch list claims no route and is accepted as-is. On an Apple arm64 test machine, a representative `dp` transition-table
 build fell from 0.121 seconds to 0.057 seconds (2.12x); the generated value table and schedule
 were byte-identical.
 
