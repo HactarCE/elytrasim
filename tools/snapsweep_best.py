@@ -17,7 +17,7 @@ import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
-KEEP = ("dJ", "dy", "dz", "structure", "cycles", "lag1", "curv_l1")
+KEEP = ("dJ", "dy", "dz", "structure", "cycles", "lag1", "curv_l1", "v0")
 
 
 def cell_best(d):
@@ -41,7 +41,7 @@ def cell_best(d):
     row = {"cell": os.path.basename(d.rstrip("/")), "profiles": n, "file": best[2]}
     for k in KEEP:
         v = best[1][k]
-        row[k] = v.split()[0] if v else ""
+        row[k] = (v if k == "v0" else v.split()[0]) if v else ""
     return row
 
 
@@ -64,6 +64,15 @@ def main():
             if not r or r["cell"] not in params:
                 continue
             n, lam, vy, vz = params[r["cell"]]
+            # v0 comes from the winning profile's header, not from cells.tsv. For a fixed-v0
+            # grid the two agree exactly and this changes nothing. Under `--steady` they do
+            # not: cells.tsv holds the seed handed to the fixed-point iteration, while the
+            # profile's v0 is the fixed point it actually reached, which is the velocity the
+            # schedule is optimal at and the one `verify` replays from. Reporting the seed
+            # would put a velocity in the table that no row of it was solved at.
+            hv = r.pop("v0", "")
+            if hv:
+                vy, vz = (float(x) for x in hv.split()[:2])
             r.update(n=n, lam=lam, vy=vy, vz=vz)
             rows.append(r)
     cols = ["cell", "n", "lam", "vy", "vz", "profiles", "dJ", "dy", "dz",
