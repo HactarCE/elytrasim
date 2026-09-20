@@ -11,6 +11,10 @@
 # whole sweep. Nothing warns you: the job succeeds, it just takes 45% longer.
 #
 # NODES=n overrides the count, PART=name the partition, ALLOW_BAD=1 proceeds anyway.
+# STEADY=1 is forwarded to the solver (see snapsweep_solve.sh). It is named in --export rather
+# than left to ALL because it changes what the corpus *is*, and a variable that reaches the
+# nodes only by inheritance is one `sbatch --export=NONE` away from a sweep that silently
+# solved the other problem.
 set -u
 SELF=$(cd "$(dirname "$0")" && pwd)
 WORK=${1:?usage: snapsweep_submit.sh <work list> [--wait]}
@@ -38,7 +42,7 @@ N=${NODES:-$(echo "$STATES" | awk '$2 ~ /^(idle|mix|alloc|comp)$/' | wc -l | tr 
 [ "${N:-0}" -ge 1 ] || { echo "no usable nodes in partition $PART" >&2; exit 1; }
 
 JID=$(sbatch --parsable --partition="$PART" --array="0-$((N-1))" \
-        --export=ALL,WORK="$WORK" "$SELF/snapsweep.sbatch") || exit 1
+        --export=ALL,WORK="$WORK",STEADY="${STEADY:-}" "$SELF/snapsweep.sbatch") || exit 1
 echo "job $JID  $N shards  $(wc -l < "$WORK" | tr -d ' ') solves  $(date '+%Y-%m-%d %H:%M:%S %Z')" >&2
 
 if [ "$WAIT" = "--wait" ]; then

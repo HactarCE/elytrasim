@@ -4,6 +4,7 @@
     python3 tools/snapsweep_grid.py --ns 60:300:2 --lams 0:8:0.25 --v0s 0,0.4 > cells.tsv
     python3 tools/snapsweep_grid.py --ns 150,300,450 --lams=-2:2:1 \
         --v0s='-0.2,-0.2;-0.2,0;0.4,0.4' --label v0expand > cells.tsv
+    python3 tools/snapsweep_grid.py --ns 150:350:2 --lams 0 --steady --label nsteady > cells.tsv
 
 Ranges are `lo:hi:step` (inclusive) or a comma list. `--exclude` drops cells already on disk
 elsewhere, so an expansion of an existing corpus does not redo what it already has.
@@ -12,6 +13,12 @@ lambda is a float here: the map work needs resolution finer than 1 near the dy =
 and the cell name has to stay a filesystem-safe unique label, so 4.25 becomes `lamP4p25`.
 Velocity takes the same shape in tenths -- 0.2 is `02`, 0.05 is `00p50` -- which resolves a
 0.001 grid. Finer than that is refused rather than silently collided; see the note in v_tag.
+
+`--steady` drops the velocity tag, because under `sweep polish --steady` v0 is an *output* --
+the schedule's own fixed point -- and the `--vy/--vz` handed to the solver only seed the
+iteration. Naming a directory after that seed would claim a coordinate the files do not have.
+This is the same call `cell_path` makes in src/bin/sweep.rs, where steady cells go under
+`steady/` rather than a `vy.../vz...` shard. Read v0 from each profile's header.
 """
 import argparse
 import sys
@@ -47,7 +54,9 @@ def v_tag(v):
     return f"{s}{int(a):02d}p{round((a - int(a)) * 100):02d}"
 
 
-def tag(n, lam, vy, vz):
+def tag(n, lam, vy, vz, steady=False):
+    if steady:
+        return f"n{n:04d}_{lam_tag(lam)}"
     return f"n{n:04d}_{lam_tag(lam)}_vy{v_tag(vy)}vz{v_tag(vz)}"
 
 
@@ -58,10 +67,29 @@ def main():
     # One ';'-separated string rather than nargs="+": a v0 list starting with a negative
     # velocity ("-0.2,0.0") is read by argparse as an option flag, and `--v0s=...` does not
     # rescue a multi-value argument.
-    ap.add_argument("--v0s", required=True, help='semicolon-separated "vy,vz" pairs')
+    ap.add_argument("--v0s", default=None, help='semicolon-separated "vy,vz" pairs; '
+                    "under --steady a single pair that only seeds the fixed point (default 0,0)")
+    ap.add_argument("--steady", action="store_true",
+                    help="v0 is an output, not a grid axis: drop it from the cell name")
     ap.add_argument("--label", default="grid")
     ap.add_argument("--exclude", default=None, help="a cells.tsv whose cells to skip")
     a = ap.parse_args()
+
+    if a.steady:
+        # More than one pair is refused rather than silently collapsed: every pair would solve
+        # the same problems and race to write the same files, the same reason `sweep run`
+        # panics on a multi-shard steady sweep. It is refused rather than deduplicated because
+        # asking for several v0 under --steady means the caller expects them to differ, and
+        # quietly agreeing would leave that expectation untested. Measured at n=250, lambda 0,
+        # from one flick seed: seeds (0,0), (0.3,0.3), (-0.5,1.5), (2.0,-1.0) all converge to
+        # v0 (0.2996, 0.2308) within 1.3e-5 and J within 3e-4.
+        if a.v0s is None:
+            a.v0s = "0,0"
+        elif len(a.v0s.split(";")) > 1:
+            sys.exit("--steady makes v0 an output -- the schedule's own fixed point -- so it is "
+                     "not a grid axis. Pass a single seed pair, or none for the default 0,0.")
+    elif a.v0s is None:
+        ap.error("--v0s is required (or pass --steady, which makes v0 an output)")
 
     skip = set()
     if a.exclude:
@@ -77,7 +105,7 @@ def main():
         for lam in nums(a.lams, float):
             for v in a.v0s.split(";"):
                 vy, vz = (float(x) for x in v.split(","))
-                t = tag(n, lam, vy, vz)
+                t = tag(n, lam, vy, vz, a.steady)
                 cell = (n, lam, vy, vz)
                 if seen.setdefault(t, cell) != cell:
                     sys.exit(f"{t}: cell name collision, {seen[t]} and {cell} -- the grid is "
