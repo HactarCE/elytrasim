@@ -109,6 +109,10 @@ sweep verify <file>...
 sweep fingerprint
 ```
 
+`--mu <price>` is the l1 curvature price and is the current chatter regularizer; `runs/atlas`
+was built at `--mu 1e-4 --limit 85`. The `--jitter` shown above is the older generation's
+regularizer and current runs set it to 0 -- see the table further up.
+
 A shard is one `(vy0, vz0)` cell, so it is a directory and an independent job. Inside a shard,
 continuation runs breadth-first over the `(n, lambda)` plane from the cell nearest `n = 300`,
 `lambda = 0`; `--anchor` seeds that one cell from a file. This matters: at `v0 = 0` the built-in
@@ -160,6 +164,41 @@ because the synopsis above shows `--lag1-floor 0.2` and the section on degenerac
 it: the guard is the recommendation, it is not what produced this corpus, and a re-run with it
 on would not be comparable. The per-phase manifests record the cells of each phase:
 `manifest_a_n.json`, `manifest_b_lambda.json`, `manifest_c_vel.json`.
+
+## Steady state
+
+`--steady` optimizes the cycle you would fly *back to back* instead of one cycle with the
+terminal velocity free. It re-solves `v0` to the schedule's own fixed point -- the fixed point
+of `v -> (replay the schedule from v).vel` -- after every pass, so at convergence `v_final ==
+v0` identically and no constraint or penalty is needed to make the schedule repeatable.
+
+Off by default. The single-cycle problem is the simpler object and is still the one most
+questions are about.
+
+**`--vy/--vz` change meaning under it.** They seed the fixed-point iteration rather than naming
+the answer, so the profile's `v0` is whatever the schedule converged to and *that* is what the
+header states. Under `run` the shard directory is still named for the seed, so the directory
+and the header disagree by design: **read `v0` from the header, never from the path.** Resume
+accounts for this -- it matches a file on the horizon and the price and then checks that the
+file's stated `v0` really is the fixed point of its own pitches, rather than comparing
+objectives, which would never match and would re-solve the whole grid on every resume.
+
+What it is worth, over 13 `runs/atlas/nsweep` cells at `lambda 0`, `mu 1e-4`, `limit 85`,
+scoring each schedule at its own `v0` for one lap. The gain is U-shaped in `n`, not monotone:
+
+```
+n     150    176    200    226    250    276    300    326    350    376    400    426    450
+gain +0.94  +0.80  +0.64  +0.38  +0.24  +0.13  +0.05  -0.00  -0.00  +0.01  +0.06  +0.18  +0.18
+base  1.47   7.05  11.87  16.21  18.99  20.79  21.54  21.62  21.02  19.73  17.24  14.70  13.51
+```
+
+The minimum sits exactly where single-cycle `dTE` peaks. The schedules differ only in the
+entry, the first 20-30 ticks, and the fixed point flips sign with horizon: `v0y` +0.415 at
+`n = 150`, +0.030 at `n = 326`, -0.352 at `n = 426`. So steady state buys most where the
+single-cycle answer is worst, and nothing where it is already good.
+
+A `--steady` profile closes exactly, which is checkable from the file alone and is the point:
+`examples/repeat` on one reads `sum|dv| 0.0000` on every lap.
 
 ## Portability
 

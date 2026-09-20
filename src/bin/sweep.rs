@@ -15,13 +15,26 @@
 //! Cell options: --n, --lambda, --vy, --vz, --passes, --tol, --trig, --flight, --init <file>
 //!   --flick-at <tick> restricts the first tick at or below --flick-pitch <deg> (default -80).
 //!
+//! Roughness options: --mu <per deg/tick^2>, --mu-tv, --cap, --slew-cap, --limit <deg>
+//!   The l1 curvature price, and the current chatter regularizer. Unlike a pass budget it is a
+//!   *price*, so the polish runs to convergence and the answer is a real optimum that `verify`
+//!   can re-check. `runs/atlas` was built at `--mu 1e-4 --limit 85`.
+//!
+//! Steady state: --steady
+//!   Off by default. Re-solves `v0` to the schedule's own fixed point after every pass, so the
+//!   result is the cycle you would fly back to back rather than one whose terminal velocity is
+//!   free. `--vy/--vz` then *seed* that iteration instead of naming the answer, and the written
+//!   header states the fixed point actually reached -- so under `run` the shard directory is
+//!   named for the seed while the files inside state their own `v0`. Worth between +0.94 blocks
+//!   of TE per lap (n=150) and nothing at all (n~330); see `steady_vel` in `opt.rs`.
+//!
 //! Jitter options: --jitter <sigma>, --draws <k>, --fixed-draws, --seed <s>
 //!   `--jitter` is the standard deviation of the *initial velocity* error, in blocks/tick,
-//!   applied independently to v_y and v_z. It is the regularizer: polished against one exact
-//!   starting state the optimizer converges onto knife edges in the state and chatters between
-//!   0 and 90 degrees; polished against a spread of starting states it cannot, because the
-//!   draws are never on the edge at the same tick. Perturbing the pitches instead does not
-//!   work and was measured -- see `Jitter` in `opt.rs`.
+//!   applied independently to v_y and v_z. It was the regularizer before the curvature price
+//!   and is superseded for that purpose -- it only suppresses chatter while the polish is
+//!   stopped early, and current runs set it to 0. What it is still good for is the question it
+//!   actually measures: whether a schedule works from a starting velocity you do not know
+//!   exactly. Perturbing the pitches instead does not work and was measured -- see `Jitter`.
 
 use elytrasim::opt::*;
 use elytrasim::sim::*;
@@ -40,6 +53,8 @@ impl Args {
     fn num<T: std::str::FromStr>(&self, k: &str, d: T) -> T where T::Err: std::fmt::Debug {
         self.get(k).map_or(d, |v| v.parse().unwrap_or_else(|e| panic!("bad {k}: {e:?}")))
     }
+    /// A bare presence flag, taking no value.
+    fn has(&self, k: &str) -> bool { self.0.iter().any(|a| a == k) }
     fn cell(&self) -> Objective {
         Objective {
             // Zero, not the reference cycle's start: (0.167467, 0.200887) is the velocity
@@ -56,6 +71,10 @@ impl Args {
             tol: self.num("--tol", PolishOpts::default().tol),
             block: self.num("--block", PolishOpts::default().block),
             lag1_floor: self.num("--lag1-floor", PolishOpts::default().lag1_floor),
+            // Off unless asked: the single-cycle problem is the simpler object and is still
+            // the one most questions are about. `--vy/--vz` then seed the fixed-point
+            // iteration rather than naming the answer; see `solve`.
+            steady: self.has("--steady"),
             rough: Rough {
                 mu: self.num("--mu", 0.0),
                 mu_tv: self.num("--mu-tv", 0.0),
@@ -77,6 +96,9 @@ impl Args {
     }
 }
 
+/// Where a cell's file lives. Under `--steady` the `vy/vz` in the path are the shard's *seed*,
+/// not the profile's `v0`: the answer's `v0` is the schedule's own fixed point and is stated in
+/// the header. So read `v0` from the header, never from the directory name.
 fn cell_path(dir: &str, o: &Objective) -> String {
     format!("{dir}/vy{:+.4}_vz{:+.4}/n{:04}_lam{:+.6}.pitches", o.v0.y, o.v0.z, o.n, o.lambda)
 }
@@ -92,8 +114,17 @@ fn write_profile(path: &str, p: &Profile) {
 /// which the file deliberately does not (the file states the objective, not the provenance).
 fn solve(obj: &Objective, init: &[f64], opts: PolishOpts) -> (Profile, Polished) {
     let r = polish(obj, init, opts);
+    // Under `--steady` the polish re-solved `v0` to the schedule's own fixed point, and *that*
+    // is the objective this schedule is a coordinate optimum of. The header has to state it or
+    // `verify` replays from a velocity the schedule was never optimized for and the file's
+    // claim is simply false. The requested `v0` was a seed and does not survive into the file.
+    //
+    // Nothing else changes: at convergence the objective is still determined by the four
+    // numbers in the header, so no `steady` field is needed. How `v0` was arrived at is
+    // provenance, and the file states the objective, not the provenance.
+    let obj = Objective { v0: r.v0, ..*obj };
     let profile = Profile {
-        obj: *obj, trig: trig_mode(), flight: flight_mode(), jitter: opts.jitter, rough: opts.rough,
+        obj, trig: trig_mode(), flight: flight_mode(), jitter: opts.jitter, rough: opts.rough,
         commit: commit_hash().to_string(),
         pitches: r.pitches.clone(), residual: r.residual, passes: r.passes,
     };
@@ -120,7 +151,7 @@ fn cmd_polish_cell(a: &Args) {
     let (p, r) = solve(&obj, &init, a.opts());
     eprintln!("n {:>4}  lambda {:+.4}  v0 ({:.6}, {:.6})  J {:.6}  residual {:.2e}  \
 lag1 {:+.3}  TV {:.0}  curv_l1 {:.0}  curv_max {:.0}  {} passes{}  {:.1}s",
-              obj.n, obj.lambda, obj.v0.y, obj.v0.z, obj.eval(&p.pitches), p.residual,
+              obj.n, obj.lambda, p.obj.v0.y, p.obj.v0.z, p.obj.eval(&p.pitches), p.residual,
               lag1(&p.pitches), total_variation(&p.pitches), curvature_l1(&p.pitches),
               curvature_max(&p.pitches),
               p.passes, if r.stopped_degenerate { " (stopped: degenerate)" } else { "" },
@@ -336,9 +367,21 @@ fn run_shard(dir: &str, g: &Grid, vy: f64, vz: f64, opts: PolishOpts, force: boo
             // The roughness price and the pitch margin are part of the utility function, so a
             // file written under a different one answers a different question and must be
             // resolved, not resumed.
-            .filter(|p| p.obj == obj && p.trig == trig_mode() && p.flight == flight_mode()
+            .filter(|p| p.trig == trig_mode() && p.flight == flight_mode()
                        && p.pitches.len() == obj.n
-                        && p.rough == opts.rough);
+                        && p.rough == opts.rough
+                        && if opts.steady {
+                // A steady file's header `v0` is its own fixed point, not this cell's seed, so
+                // the objectives never compare equal and a plain `==` would silently re-solve
+                // the whole grid on every resume. What makes the file answer *this* cell is
+                // that the horizon and price match and its stated `v0` really is the fixed
+                // point of its own pitches -- which is checkable, so check it rather than
+                // trusting the path it was found at.
+                p.obj.n == obj.n && p.obj.lambda == obj.lambda
+                    && dv_l1(steady_vel(&p.pitches, p.obj.v0), p.obj.v0) < 1e-9
+            } else {
+                p.obj == obj
+            });
         let pitches = match existing {
             Some(p) => { skipped += 1; p.pitches }
             None => {
