@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "runs/steady/nsweep/best.csv"
+SRC = sys.argv[1] if len(sys.argv) > 1 else "runs/steady/nlamsweep/best.csv"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "runs/steady/fig"
 
 BG = "#14171a"

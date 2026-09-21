@@ -37,6 +37,7 @@ josie's todo/notes, don't edit this, tho you can include it in commits
     - obtain optimum, add noise, filter by utility threshold
 - we do a dense .25 stride refit every 4. the stride should be larger.  and we don't know if every 4 is good. we generally can make this faster. how expensive is the dense refit? how often does it choose something else? does it only choose something else at early epochs?
 - gain-efficiency: max gain/num_ticks, for steady state
+- sweep λDPE + (1-λ)DTE (use something other than λ)
 
 ## turning experiments
 
