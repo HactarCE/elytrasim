@@ -72,6 +72,20 @@ pub fn bug_dte_n(s: &State, n: usize) -> f64 {
     argmax(|p| run_n(s, p, n).total_energy() - te, 0.125)
 }
 
+/// SNAP, stopping. Has the forward speed peaked -- would one more tick of the hold fail to
+/// raise `v_z`?
+///
+/// Parameter-free, and a one-tick lookahead: it asks the tick map rather than the closed form,
+/// because the sim's drags are `f32` and the margin at the crossing is only ~5e-4 b/tick. In
+/// exact rationals the hold changes `v_z` by `-0.01 v_z - 0.0891 v_y + 0.001782`, so the rule
+/// fires on the line `v_z >= 0.1782 - 8.91 v_y`, which passes through the pitch-0 steady glide.
+///
+/// It reads as "no pitch can raise `v_z` any further", not merely "pitch 0 cannot": for `p >= 0`
+/// the map depends on pitch only through `lift = cos^2 p`, and `d(v_z')/d(lift)` is positive
+/// whenever `v_y < -0.04`, so pitch 0 is the argmax of `v_z'` over the whole domain there; for
+/// `p < 0` the forward-to-up branch switches on and subtracts from `v_z` outright.
+pub fn vz_peaked(s: &State) -> bool { ticked(s, 0.0).vel.z <= s.vel.z }
+
 /// DIVE. Pitch whose next tick leaves the flight-path angle at `target`.
 ///
 /// gamma(v') is monotone in pitch at dive speeds, but not at low speed, where two branches
@@ -223,6 +237,12 @@ pub struct P {
     pub slew: f64, pub p_push: f64, pub p_flick: f64, pub n_gain: usize, pub dive: Dive,
 }
 
+/// Has the hold finished? A NaN `vy_flick` asks `vz_peaked` instead of the tuned threshold, so
+/// the two stopping rules can be compared with everything else about the policy held fixed.
+fn snap_done(s: &State, par: P) -> bool {
+    if par.vy_flick.is_nan() { vz_peaked(s) } else { s.vel.y >= par.vy_flick }
+}
+
 /// Fly the four bugs, switching on state rather than on the clock, with a pitch rate limit.
 pub fn fly(par: P, ticks: usize) -> (Vec<f64>, Vec<u8>, Vec<State>) { fly_pre(par, ticks, &[]) }
 
@@ -245,7 +265,7 @@ pub fn fly_from(v0: Vec3, par: P, ticks: usize, pre: &[f64]) -> (Vec<f64>, Vec<u
         let was = phase;
         phase = match phase {
             0 if s.vel.length() >= par.s_switch => 1,     // dive  -> snap
-            1 if s.vel.y >= par.vy_flick        => 2,     // snap  -> flick
+            1 if snap_done(&s, par)             => 2,     // snap  -> flick
             2 if last <= par.p_flick + 1e-9     => 3,     // flick -> gain, once the ramp lands
             3 if s.vel.length() <= par.s_exit   => 0,     // gain  -> dive
             p => p,

@@ -34,10 +34,14 @@
 //!   floor    <file> <tag>                fit the dive's first-order gamma decay and its asymptote
 //!   prices   <file> <tag>                shadow prices from the optimum, and the glide they pick
 //!   gprofile <file> <tag>                flight-path angle at ten points through the dive
-//!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick rule
+//!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick
+//!                                        rule; a sweep profile supplies its own v0 and w
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
 //!   rules    <file> <vy0> <vz0> <N>       pointwise rules for an arbitrary initial velocity
-//!   policy   [opt] [leak|floor|hold]     fly the four bugs; NGAIN=<n> sets the gain lookahead
+//!   policy   [opt] [leak|floor|hold] [vzpeak]
+//!                                        fly the four bugs; NGAIN=<n> sets the gain lookahead,
+//!                                        and `vzpeak` swaps the tuned snap->flick threshold for
+//!                                        the parameter-free "forward speed has peaked" rule
 //!
 //! `--trig libm|mth_lut` picks the trig implementation for any subcommand. `mth_lut` is
 //! Minecraft's own 65536-entry sine table; `libm` (the default) is the platform's, which is
@@ -608,12 +612,21 @@ fn cmd_gprofile(path: &str, tag: &str) {
 /// tangency at each of the N ticks is a separate falsifiable prediction, unlike reading `mu` off
 /// the optimum's own pitch, which is stationary by construction. Reported as the gap in degrees
 /// between the optimum's pitch and the argmax of the score.
-fn cmd_adjoint(path: &str, w: f64) {
+fn cmd_adjoint(path: &str, w: Option<f64>) {
+    // A sweep profile states its own starting velocity and price. Replaying it from the
+    // built-in `V0` instead is simply a different flight -- the cycle does not close and every
+    // number below is of something else -- so read the header where there is one, and fall back
+    // to `V0` only for a bare list of pitches.
+    let prof = Profile::parse(&std::fs::read_to_string(path)
+                              .unwrap_or_else(|e| panic!("{path}: {e}"))).ok();
     let ps = read_pitches(path);
-    let st = replay(&ps);
+    let (v0, src) = match &prof { Some(p) => (p.obj.v0, "header"), None => (V0, "built-in V0") };
+    let w = w.or_else(|| prof.as_ref().map(|p| p.obj.w())).unwrap_or(0.0);
+    let st = replay_from(v0, &ps);
     let n = ps.len();
     let close = (st[n].vel - st[0].vel).length();
-    println!("{path}: {n} ticks, |v_N - v_0| = {close:.3e}, w = {w}");
+    println!("{path}: {n} ticks, v0 ({:.6}, {:.6}) from the {src}, |v_N - v_0| = {close:.3e}, w = {w}",
+             v0.y, v0.z);
     if close > 1e-3 { println!("  !! not a closed cycle; the periodic adjoint does not apply") }
     let c = (1.0, w);
 
@@ -1027,7 +1040,7 @@ fn cmd_ksweep() {
 }
 
 
-fn cmd_policy(optimize: bool, dive: Dive) {
+fn cmd_policy(optimize: bool, dive: Dive, vzpeak: bool) {
     let ticks = 1500;
     let ng: usize = std::env::var("NGAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     // the shared constants, as tuned by `policy opt <rule>` for each dive rule in turn
@@ -1043,9 +1056,14 @@ fn cmd_policy(optimize: bool, dive: Dive) {
         Dive::Target => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.177, vy_flick: -0.2685,
                             s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain: ng, dive },
     };
+    // the stopping rule under test: `vzpeak` drops the tuned threshold for `opt::vz_peaked`
+    if vzpeak { par.vy_flick = f64::NAN }
     if optimize {
         // g_star and k exist only for the leaking dive; the others are shared
-        let js: Vec<usize> = if dive == Dive::Leak { (0..8).collect() } else { (2..8).collect() };
+        let mut js: Vec<usize> = if dive == Dive::Leak { (0..8).collect() } else { (2..8).collect() };
+        // there is no threshold to tune when the stopping rule is the parameter-free one
+        if par.vy_flick.is_nan() { js.retain(|&j| j != 3) }
+        let js = js;
         let mut step = [3.0, 0.03, 0.30, 0.10, 0.08, 8.0, 6.0, 12.0];
         for _ in 0..26 {
             for &j in &js {
@@ -1118,7 +1136,8 @@ fn main() {
         Some("cyclecut") => cmd_cyclecut(&a[2]),
         Some("consist") => cmd_consist(&a[2], a[3].parse().unwrap()),
         Some("singular") => cmd_singular(&a[2]),
-        Some("adjoint") => cmd_adjoint(&a[2], a.get(3).map_or(0.0, |s| s.parse().unwrap())),
+        Some("adjoint") => cmd_adjoint(&a[2], a.get(3).filter(|s| *s != "dump")
+                                                   .map(|s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
         Some("rules") => cmd_rules(&a[2], a[3].parse().unwrap(), a[4].parse().unwrap(), n(5)),
         Some("policy") => cmd_policy(a.iter().any(|x| x == "opt"),
@@ -1127,7 +1146,8 @@ fn main() {
                                          Some(x) if x == "hold" => Dive::Hold,
                                          Some(x) if x == "target" => Dive::Target,
                                          _ => Dive::Leak,
-                                     }),
+                                     },
+                                     a.iter().any(|x| x == "vzpeak")),
         _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|rules|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
