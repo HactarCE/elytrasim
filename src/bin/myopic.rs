@@ -7,7 +7,7 @@
 //! |-------|-------|-------------------------------------------------------|
 //! | entry | ~40   | **no rule known** -- pitches hard down, unexplained    |
 //! | dive  | ~150  | hold the flight-path angle exactly; no constants       |
-//! | snap  | ~14   | pitch 0                                               |
+//! | snap  | ~14   | pitch 0, held until one more tick stops raising v_z   |
 //! | flick | ~6    | ramp to about -88 deg; the values do not matter       |
 //! | gain  | ~86   | argmax over pitch of delta TE over ~20 ticks          |
 //!
@@ -16,6 +16,12 @@
 //! the exact hold beats every leaking variant (97.9% of the cycle). `k`, `g_star` and the floor
 //! clamp are all entry corrections, kept here only because they still fly the whole cycle
 //! open-loop. See "The leak was an entry correction" in README-myopic.md.
+//!
+//! The snap's *pitch* was never in doubt; its stopping time was. `vz_peaked` is the myopic
+//! answer and is exact at lambda = 0. The exact answer at every price is a corner switch:
+//! hold 0 while `0.036*DRAG_Z*mu_z >= 0.128*DRAG_Y*mu_y`, the elytra's own forward-to-up
+//! exchange rate of 3.519641 -- parameter-free, but `mu` needs the whole future. `adjoint`
+//! checks it; 92% of the steady corpus lands on the tick, 100% inside one.
 //!
 //! Everything here is measured against `sim`'s physics with yaw pinned to zero, so the whole
 //! problem lives in the (v_y, v_z) plane. See README-myopic.md for the numbers.

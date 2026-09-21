@@ -60,9 +60,143 @@ A naive `argmin |γ' − γ*|` oscillates between them and never builds speed (t
 
 The pitch it sweeps has two separate stories — see "The dive has two pitches" below.
 
-## Phase 2, snap (~14 ticks): pitch 0
+## Phase 2, snap (~14 ticks): pitch 0, held until the forward speed peaks
 
 Literally zero, for about fourteen ticks. One-tick greedy independently says 0 here too.
+
+The pitch was never the open part of this phase — the *stopping time* was. What ends the hold:
+
+**Leave on the first tick at which holding pitch 0 would no longer raise `v_z`.** One tick of
+lookahead, no fitted constant. `opt::vz_peaked` asks the tick map; in exact rationals the hold
+moves `v_z` by `-0.01 v_z - 0.0891 v_y + 0.001782`, so the rule fires on the straight line
+
+    v_z >= 0.1782 - 8.91 v_y
+
+which passes through the pitch-0 steady glide at `(-0.14949, 1.51017)`. Ask the map rather than
+the line: the margin at the crossing is about `5e-4` b/tick and the sim's drags are `f32`.
+
+It reads as *no pitch* can raise `v_z` further, not merely pitch 0: for `p >= 0` the map depends
+on pitch only through `lift = cos^2 p` and `d(v_z')/d(lift) > 0` whenever `v_y < -0.04`, so 0 is
+the argmax there; for `p < 0` the forward-to-up branch switches on and takes `v_z` away outright.
+
+On `REPLAY_PITCHES_300` it is exact: tick 207 is the last tick that still buys forward speed
+(`+5.0e-4`) and the optimum holds it; tick 208 would lose it (`-7.6e-4`) and the optimum flicks.
+
+`tools/glide_phase.py <corpus>...` scores it against the optimum's own departure. At `lambda = 0`
+on the 151 periodic cells of `runs/steady/nlamsweep`: median miss **0 ticks, 98% inside one
+tick**. Competing stopping rules on the same cells, by the same measure:
+
+| rule | median | exact | inside 1 |
+|---|---|---|---|
+| **`v_z` has peaked** | **0** | 28.5% | **98.0%** |
+| glide ratio at its steady max (`gamma <= 5.653`) | +1 | 33.8% | 98.0% |
+| `v_y >= -0.260` (the policy's fitted constant) | 0 | 48.3% | 92.7% |
+| speed has peaked | -1 | 10.6% | 58.9% |
+| 1-tick dTE argmax leaves 0 | +5 | 0% | 0% |
+| 20-tick dTE argmax leaves 0 | -12 | 0% | 0% |
+
+The two dTE rules bracket it, one late and one early, which is the same story as the gain phase's
+lookahead but with a different answer: the lookahead that lands exactly on the departure is
+**10** (median; 10-14 over the 21 of 51 sampled `lambda = 0` cells where some `n` lands exactly at
+all, the rest stepping over it), against ~20 in the gain phase thirty ticks later. One `n` does
+not serve both.
+
+Flying it costs nothing. `myopic policy opt leak vzpeak` swaps the tuned `vy_flick = -0.260` for
+the rule and retunes everything else: **1.38572 b/s, 96.7% of the optimal cycle**, against
+**1.37824 b/s, 96.2%** for the tuned threshold — better, on one fewer tuned scalar.
+
+### The miss is monotone in the price on distance
+
+`v_z has peaked` is exact for a pure climb and biased either way once distance is priced, with
+the sign you would want (`runs/steady/nlamsweep`, 1233 cells). `runs/atlas/mapsweep` shows the
+same monotone walk across its own 5282 cells at quarter-lambda spacing, offset about a tick late
+throughout — it is a free-endpoint corpus at a single `v0`, and its `lambda = 0` median is +1:
+
+| lambda | -2 | -1 | **0** | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| median miss, ticks | +1 | +1 | **0** | -1 | -1 | -2 | -2 | -3 | -4 | -4 |
+| inside one tick | 95% | 97% | **98%** | 79% | 64% | 46% | 35% | 11% | 0% | 0% |
+
+Paid for ground covered, the optimum holds the level glide past the peak of `v_z` and keeps
+collecting distance; charged for it, it leaves early. The threshold in `dv_z` is close to linear
+in `w` — the midpoint of the held/left bracket runs `+1.9e-3` at `lambda = -2` through `0` at
+`lambda = 0` to `-6.1e-3` at `lambda = 7`, a slope of about `-0.0146` per unit `w`. That slope is
+measured, not derived, and nothing here explains it.
+
+**What is not the rule: a threshold on the sink rate.** `v_y` at the departure is the tightest
+single invariant in the corpus (7-15% spread against 22-50% for `v_z`, speed and `gamma`), which
+makes `v_y >= -0.251` look like the answer and is where the policy's fitted `-0.260` came from.
+It is not flat, though: it runs -0.242 at `n = 150` to -0.260 at `n = 350` inside `lambda = 0`
+alone, and moves with the departure `v_z` in the same corpus. The spread is structure, not noise.
+
+## The hold ends at a corner of the physics, and the switch is derivable
+
+The rule above is myopic but only exact at `lambda = 0`. The exact condition, for every price, is
+a corner switch, and the constant in it comes out of the tick map with nothing fitted.
+
+Pitch 0 is a corner (see the glide section below). Approach it from the nose-up side and the only
+term that is linear in pitch is the forward-to-up branch, so the only direction the control can
+move the state in is
+
+    d(v_y')/d(lean) = -0.128 * v_z * DRAG_Y        d(v_z')/d(lean) = +0.036 * v_z * DRAG_Z
+
+`0.128 = 3.2 * 0.04` is the forward-to-up gain; `0.036 = 0.9 * 0.04` is what the turning term
+leaves of the matching `v_z` loss. Both are proportional to `v_z`, so the rate at which a nose-up
+tick trades forward speed for upward speed is a pure constant:
+
+    0.128 * DRAG_Y / (0.036 * DRAG_Z) = (3.2 / 0.9) * (DRAG_Y / DRAG_Z) = 3.519641
+
+Pontryagin's condition at a corner is that the one-sided derivative of `mu . f` does not point out
+of the admissible side. So the optimum holds pitch 0 exactly while
+
+    0.036 * DRAG_Z * mu_z  >=  0.128 * DRAG_Y * mu_y
+
+— **while forward velocity is priced at least 3.5196 times upward velocity**, which is the
+exchange rate the elytra itself offers. The moment the prices cross that rate, taking the trade
+beats banking more forward speed, and the flick starts.
+
+`myopic adjoint <profile> dump` solves `mu` with no free parameters (periodicity closes it) and
+prints it per tick. Across **all 1233 periodic cycles** of `runs/steady/nlamsweep`, `lambda -2..7`
+and `n 150..450`, the tick on which that switching function changes sign against the tick the
+optimum leaves the hold:
+
+| miss, ticks | -1 | **0** | +1 or worse |
+|---|---|---|---|
+| cells | 97 | **1136** | 0 |
+
+**92.1% exact, 100% inside one tick, and never late.** Write the condition as the linear
+inequality rather than the ratio `mu_z/mu_y`: `mu_y` passes through zero a few ticks into the hold
+(upward velocity is worth less than nothing while you are still diving), and the ratio blows up
+there while the inequality stays well behaved.
+
+    python3 tools/glide_phase.py runs/steady/nlamsweep runs/atlas/nsweepv0fine runs/atlas/mapsweep
+
+### Why no myopic rule can be exact here
+
+`mu` needs the whole future, and in this phase there is no continuation-free way to guess it. Take
+the price you would assign if you were going to glide at pitch 0 forever — the fixed point of
+`mu = c + A_0^T mu` with `c = (1, w)`, which is parameter-free and closed-form:
+
+    mu_z = w / (1 - DRAG_Z) = 100 w        mu_y = (1 - 8.91 w) / 0.118 = 8.4746 - 75.508 w
+
+That ratio reaches 3.5196 only at `w = 0.0816`, i.e. `lambda = 1.25`. So the coasting price says
+"flick immediately" for every cycle below that and "never flick" above it: bang-bang, with no
+interior switch anywhere. At `lambda = 0` it says forward speed is worth exactly nothing, which is
+correct for a glide that continues and wrong for one that ends in a zoom. **All of the hold's
+value at `lambda = 0` is in the zoom that has not happened yet**, so a rule that cannot see the
+zoom cannot price the hold. That `v_z has peaked` lands on the right tick anyway is not explained
+by anything here.
+
+Still open:
+
+- A myopic rule that tracks `lambda`. The measured correction is about `-0.48 * lambda` ticks, or
+  a threshold of `-0.0146 w` in `dv_z`; neither constant is derived.
+- The hold's **start**. Nothing is invariant there: over the three corpora `gamma` spreads 13-33%,
+  the glide ratio 15-37%, `v_y` 24-36%, speed and `v_z` 30-50% — against a departure pinned to one
+  tick. The sink
+  rate bottoms out about 3 ticks before the first flat tick — that is where the ramp down from the
+  dive begins, not where the hold does — and the ramp itself takes the other 3. See the `entry`
+  table in `tools/glide_phase.py`.
 
 ## The steady glide against pitch, and the corner at 0
 
@@ -194,7 +328,9 @@ describing the optimum at neither.
 
 `myopic policy opt` wires the four rules together with state-triggered switches, a pitch rate
 limit, and eight tuned scalars. It reaches **1.375 b/s, 96% of the optimal cycle**, in 299 ticks
-against 300, with every phase's energy budget within 0.11.
+against 300, with every phase's energy budget within 0.11. `policy opt leak vzpeak` drops one of
+those scalars for the parameter-free stopping rule and does better still, 1.386 b/s — see the
+snap section.
 
 Reassuringly, the tuner rediscovers the optimum's own switch points without being told them:
 dive→snap at speed 2.40 where the optimum switches at 2.41, snap→flick at `v_y = −0.260` where the
