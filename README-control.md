@@ -592,7 +592,7 @@ cycle twice**. The `n = 600` cell climbs `dy` 40.98 over `dz` 673.6, which is tw
 `n = 300` cell's 19.5 and 337, and `README-sweep.md` already names that regime degenerate --
 "a different regime that wins on J while not being the object under study". The rebuilt cells
 stay in the single-cycle family (`# cycles 1`) and fall away from `n = 300` the way the
-document says they should. So the corpus contains, unlabelled, exactly the tiling degeneracy it
+document says they should. So the corpus contains, unlabeled, exactly the tiling degeneracy it
 warns about.
 
 ### The other axis of the same shard, rebuilt

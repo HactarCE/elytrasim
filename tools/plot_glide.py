@@ -2,7 +2,7 @@
 """Steady glide against pitch, on three metrics, with the critical points marked.
 
 Panels share the pitch axis. Horizontal velocity is `sim`'s z component -- yaw is pinned to
-zero -- but is labelled vx, which is the convention everywhere outside the sim.
+zero -- but is labeled vx, which is the convention everywhere outside the sim.
 
 Velocities are blocks/second, as the CSVs carry them. The glide ratio is a ratio of two
 velocities, so it is dimensionless and unaffected.
@@ -95,7 +95,7 @@ for i, (title, sub, col, ylo, yhi, yt, xlo, xhi, series) in enumerate(P):
     for x in xt:
         o.append(f'<line x1="{px(x):.1f}" y1="{top}" x2="{px(x):.1f}" y2="{top+PH}" stroke="{GRID}"/>')
         o.append(f'<text x="{px(x):.1f}" y="{top+PH+13}" text-anchor="middle" fill="{DIM}" font-size="9">{x:g}</text>')
-    # critical points; labelled once, in the top panel, so the labels cannot collide
+    # critical points; labeled once, in the top panel, so the labels cannot collide
     for cp, lab, anc in CRITS:
         if not (xlo <= cp <= xhi):
             continue

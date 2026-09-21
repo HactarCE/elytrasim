@@ -110,7 +110,7 @@ def fam_kcycle(n, ref):
 
     The corpus calls more than one cycle degenerate and excludes it. That is a statement about
     which question the corpus asks, not about whether these are optima -- so they go in the
-    atlas, labelled.
+    atlas, labeled.
     """
     if not ref:
         return

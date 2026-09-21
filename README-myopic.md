@@ -46,7 +46,7 @@ That was originally written up as "the leak is the whole rule", with a fitted ra
 **That was wrong, and the leak is now gone** — see "The leak was an entry correction" below. The
 dive after its first ~30–60 ticks needs no constant at all.
 
-**The floor is derivable.** The steady glide that maximises forward speed is at pitch `53.35°`,
+**The floor is derivable.** The steady glide that maximizes forward speed is at pitch `53.35°`,
 `v_z = 3.389`, and its flight-path angle is `16.58°` (`myopic eq`). The dive is a slow approach to
 the fastest steady glide.
 
@@ -57,6 +57,8 @@ the optimum sits ~99% of the way toward the hold end.
 **Trap:** at low speed two pitch branches reach a given γ, and only the nose-down one accelerates.
 A naive `argmin |γ' − γ*|` oscillates between them and never builds speed (that scored −3.0 b/s).
 `bug_gamma_to` scans for the last upward crossing and then bisects.
+
+The pitch it sweeps has two separate stories — see "The dive has two pitches" below.
 
 ## Phase 2, snap (~14 ticks): pitch 0
 
@@ -238,7 +240,7 @@ at 22% of the way in, 14.48° at 20%, 16.67° at 20%. Those three numbers were t
 descent of the "peak". `myopic gprofile` prints the shape; `myopic floor` reports the trough and
 says `(no floor)` when it is not interior.
 
-**The rate turnpike is the wrong object.** `myopic eqrate` computes the equilibrium maximising the
+**The rate turnpike is the wrong object.** `myopic eqrate` computes the equilibrium maximizing the
 objective rate `GRAVITY*eq_vy + w*eq_vz`, which is what the cycle's objective integrates. At w = 0
 that reduces to `argmax eq_vy` — the *minimum-sink* glide, pitch **-13.06°**, nose up, γ 9.15°,
 speed 0.445 — and not to `argmax eq_vz` at all. `argmax eq_vz` is the other end of the same family:
@@ -259,9 +261,14 @@ while the actual γ falls to 16.8° and levels — off by 3.7° and moving the w
 
 **What does set it is a ceiling, not an optimum.** `argmax eq_vz` is where `d(eq_vz)/dp = 0`: the
 fastest forward speed any sustained glide can hold, 3.38879 blocks/tick. At w = 0 the dive's whole
-job is to arrive at the snap fast, and a long dive at constant γ converges on the equilibrium for
+job is to arrive at the snap fast, and a long dive at constant γ *heads toward* the equilibrium for
 that γ, so the best γ to hold is the one whose equilibrium is quickest. That derivation never
 invokes a rate, which is why it survives while the turnpike version fails.
+
+**It heads toward it; it does not arrive.** Ten ticks before the snap the dive is at 0.54–0.89 of
+the steady speed for its own pitch, rising with dive length and never reaching 1. The dive is a
+cut-off transient, not a settled glide — see "The dive has two pitches" below, which is also where
+the dive-length dependence of γ* lives.
 
 **And the floor is a badly conditioned readout of it.** eq_vz is very flat on top — γ from 16.0° to
 17.1° is all within 0.05% of the ceiling, and the entire family's floors, 14.7° to 17.4°, sit above
@@ -282,11 +289,115 @@ Still open, but smaller:
   up, so `df/dp` is discontinuous at exactly zero. Not an open question any more, but worth
   knowing — a pitch of exactly 0 is a special point of the physics, not just a round number.
 
+## The dive has two pitches: the ramp's average (~39°) and where it ends (~46.5°)
+
+The dive does not converge to a pitch. It is a **monotone ramp** — roughly 31°→46° with a 3-tick
+spike to ~50° at the very end — so "the dive's pitch" is ambiguous, and its average and its
+endpoint are different numbers with different explanations. Conflating them is easy and was done
+here once already.
+
+`tools/dive_pitch.py <corpus>...` regenerates every table below from a corpus's `best.csv`.
+Numbers here are from `runs/steady/nlamsweep` (1233 cyclic profiles, λ −2..7, n 150–450) and the
+`runs/atlas/*` corpora, as of 2026-09-21 02:05 EDT.
+
+### The average, ~39°, is flat in everything
+
+| T (dive ticks) | 60–99 | 100–139 | 140–179 | 180–219 | 220–259 | 260–299 | 300–339 |
+|---|---|---|---|---|---|---|---|
+| mean pitch over the dive | 39.69 | 38.55 | 38.62 | 38.58 | 40.49 | 39.19 | 39.53 |
+| terminal pitch (at T−10) | 43.57 | 46.68 | 46.81 | 46.74 | 46.53 | 46.68 | 46.51 |
+| the dive's realized glide ratio | 2.275 | 2.799 | 3.075 | 3.395 | 3.586 | 3.859 | 4.057 |
+
+Pooled ramp median **39.54**, 10–90% band 37.54..40.83; on `atlas/nsweepv0fine` (4949 profiles, 49
+starting velocities) it is 39.10, band 38.42..40.42. It does not move with dive length, λ, or v0.
+
+**A parameter-free criterion lands near it.** The dive spends height to buy kinetic energy, and the
+energy is later cashed for distance at the glide ratio, so the distance a dive ultimately buys per
+block of height goes like `eq_v_z · |eq_v|² / (−eq_v_y)` — glide ratio times kinetic energy.
+`argmax` over pitch is **40.668°** (γ 10.21, GR 5.55), against 145 at pitch 0 and 262 at the
+53.37° speed ceiling.
+
+Treat this as suggestive, not established. It is 1.1° above the measured 39.54 and sits at the 90th
+percentile of the distribution, and the criterion is too flat to be tested at that resolution —
+pitches 38°–42.5° are all within 1% of its peak. It picks the right *statistic* and the right
+neighborhood; it does not pin the number.
+
+### The endpoint, ~46.5°, is not a steady-glide critical point at all
+
+| criterion | pitch | γ |
+|---|---|---|
+| max glide ratio | 0.009 | 5.653 |
+| glide ratio × kinetic energy | 40.668 | 10.214 |
+| max forward speed `eq_v_z` | 53.366 | 16.589 |
+| `\|v\|² · eq_v_z` | 55.366 | 18.238 |
+
+Nothing sits at 46.5. Looking for it among the steady glides is the wrong search, because **the
+dive is nowhere near a steady glide when it ends** — at T−10 its speed is 0.71 of the equilibrium
+speed for its own pitch (0.54 at short dive lengths, 0.89 at long).
+
+**What is invariant there is the vertical channel only.** Ranked by 10–90% spread at T−10:
+
+| quantity | median | 10–90% band | rel. spread |
+|---|---|---|---|
+| pitch | 46.538 | 44.158..47.494 | 7.2% |
+| `v_y / eq_v_y(pitch)` | 0.949 | 0.906..0.973 | 7.1% |
+| `v_y` | −0.691 | −0.715..−0.604 | 16.0% |
+| γ | 16.878 | 13.989..20.134 | 36.4% |
+| speed | 2.384 | 1.807..2.880 | 45.0% |
+| `v_z` | 2.284 | 1.697..2.795 | 48.1% |
+
+The top three are one fact, not three. `v_y` is **autonomous** in the tick map — with yaw zero,
+`v_y' = k(L)·(v_y − 0.08 + 0.06L)` contains no `v_z` (see `docs/elytra-tick-algebra.md`) — so `v_y`
+relaxes toward `eq_v_y(pitch)` on its own and is found at 95% of it, and `eq_v_y` is monotone in
+pitch. So "terminal pitch 46.5" and "terminal sink rate 0.69 b/tick" are the same statement, and
+the forward channel is simply unconstrained: `v_z` ranges over 1.7–2.8 at the same pitch.
+
+**Why the endpoint looks constant: two opposing trends cross.** Holding γ heads for the steady
+glide whose flight-path angle is γ, at pitch `p_inf(γ)`. Short dives hold a steep γ*, so they aim
+at a far target and fall short; long dives hold a shallow γ* and nearly arrive.
+
+| T | 100–139 | 140–179 | 180–219 | 220–259 | 260–299 | 300–339 |
+|---|---|---|---|---|---|---|
+| γ* held | 19.11 | 16.64 | 14.38 | 13.41 | 12.47 | 11.79 |
+| `p_inf(γ*)` aimed at | 56.31 | 53.44 | 50.10 | 48.38 | 46.51 | 44.96 |
+| terminal pitch reached | 46.94 | 46.99 | 46.94 | 46.57 | 46.65 | 46.51 |
+| `v/v_eq` at T−10 | 0.618 | 0.695 | 0.768 | 0.827 | 0.860 | 0.888 |
+
+The target falls 11° while the endpoint moves 0.5°. **Caveat: this describes the flatness without
+deriving it.** The two rows are not independent measurements — the "how far it got" reading is
+computed from the same endpoint it is supposed to explain — so this rules out "46.5 is a steady
+glide" but does not establish "46.5 is a coincidence" either. It is the best current account.
+
+### γ* is set by dive length more than by λ
+
+This qualifies the w-dependence tabulated above. Binned by dive length, γ* runs 20.9° (T≈95) down
+to 11.8° (T≈335) with λ spanning −2..7 *inside every bin*. At fixed dive length 140–179, γ* reads
+17.10° in a λ=0-only corpus, 16.76° at λ ∈ −2..2, and 15.73° at λ ∈ −2..8. So **dive length moves
+γ* ~5° over 100–300 ticks; λ moves it ~1° over −2..8.** The w-dependence is real but smaller than
+the length effect it was confounded with, and the README's 16.577° is the value for a ~155-tick
+dive — which is what the reference 300-tick cycle happens to have.
+
+### It generalizes off the periodic corpus
+
+| corpus | endpoint | v0 | n | λ | profiles | terminal pitch, median (10–90%) |
+|---|---|---|---|---|---:|---|
+| `steady/nlamsweep` | periodic | own fixed point | 150–450 | −2..7 | 1233 | **46.54** (44.16..47.49) |
+| `atlas/mapsweep` | free | (0, 0.4) | 86–350 | −2..8 | 5222 | 45.60 (40.95..47.06) |
+| `atlas/nsweepv0fine` | free | 49 different | 150–350 | 0 | 4949 | 46.52 (44.41..47.34) |
+| `atlas/crossproduct` | free | 16 different | 150–450 | −2..2 | 218 | 46.87 (42.40..47.68) |
+| `atlas/mapfine` | free | (0, 0.4) | 120–200 | −2..6 | 6600 | 44.20 (41.70..45.74) |
+
+Periodicity is doing no work. Across 28 starting velocities in `nsweepv0fine` with T ≥ 100 the
+terminal pitch spans **46.59–46.90**, a 0.31° range — insensitive to where the flight starts.
+`mapfine` reads low because its dives are only 36–129 ticks, and short dives end lower everywhere:
+**~46.5 is an asymptote the ramp reaches by T ≈ 100, not a switching threshold.** `hold γ` also
+transfers, at 0.44–1.32° median |error| against 0.41° on the periodic corpus.
+
 ## The exact one-tick rule, and why you cannot fly it
 
 There *is* a myopic metric the optimum follows exactly, in every phase. Over a closed cycle the
 kinetic terms cancel, so the objective is `sum_t c . v_{t+1}` with `c = (GRAVITY, w)`, and
-Pontryagin says the optimal pitch maximises
+Pontryagin says the optimal pitch maximizes
 
     mu_{t+1} . f(v_t, p)
 
