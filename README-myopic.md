@@ -155,19 +155,41 @@ of the admissible side. So the optimum holds pitch 0 exactly while
 exchange rate the elytra itself offers. The moment the prices cross that rate, taking the trade
 beats banking more forward speed, and the flick starts.
 
+### The other end is a corner too, on the other side of it
+
+Entering the hold is the same argument run on the nose-down side. For `p >= 0` the tick map
+depends on pitch *only* through `L = cos^2 p`, which is maximal at `p = 0`, so there is no linear
+term and the question is not a derivative in pitch but the sign of `d(mu.f)/dL` at `L = 1`:
+
+    d(v_y')/dL = DRAG_Y * (0.056 - 0.1 v_y)      d(v_z')/dL = -0.09 * DRAG_Z * (v_y + 0.04)
+
+(both exact against the tick map). So the optimum holds 0 rather than pitching down while
+
+    DRAG_Y * (0.056 - 0.1 v_y) * mu_y  >=  0.09 * DRAG_Z * (v_y + 0.04) * mu_z
+
+Unlike the exit, this one keeps a `v_y` in its coefficients — `v_z` cancels out of the exit
+condition because both of its components carry a factor of `v_z`, and nothing cancels here. That
+is why no single state quantity is constant at the entry: the threshold itself moves with the
+state. Looking for an invariant there was the wrong search.
+
+### Both ends, on the whole steady corpus
+
 `myopic adjoint <profile> dump` solves `mu` with no free parameters (periodicity closes it) and
-prints it per tick. Across **all 1233 periodic cycles** of `runs/steady/nlamsweep`, `lambda -2..7`
-and `n 150..450`, the tick on which that switching function changes sign against the tick the
-optimum leaves the hold:
+prints it per tick. Across **all 1233 periodic cycles** of `runs/steady/nlamsweep`, `lambda -2..7`,
+`n 150..450`, against the ticks the optimum actually enters and leaves the hold:
 
-| miss, ticks | -1 | **0** | +1 or worse |
-|---|---|---|---|
-| cells | 97 | **1136** | 0 |
+| | -1 | **0** | +1 | worse | exact | inside one tick |
+|---|---|---|---|---|---|---|
+| entry switch | 346 | **826** | 61 | 0 | 67.0% | **100%** |
+| exit switch | 97 | **1136** | 0 | 0 | 92.1% | **100%** |
 
-**92.1% exact, 100% inside one tick, and never late.** Write the condition as the linear
-inequality rather than the ratio `mu_z/mu_y`: `mu_y` passes through zero a few ticks into the hold
-(upward velocity is worth less than nothing while you are still diving), and the ratio blows up
-there while the inequality stays well behaved.
+**Inside one tick on every cell, at every price.** The exit is never late; the entry misses both
+ways. Nothing is fitted in either condition — `0.056`, `0.09`, `0.036`, `0.128` and the two drags
+are all read off the tick map.
+
+Write the exit as the linear inequality rather than the ratio `mu_z/mu_y`: `mu_y` passes through
+zero a few ticks into the hold (upward velocity is worth less than nothing while you are still
+diving), and the ratio blows up there while the inequality stays well behaved.
 
     python3 tools/glide_phase.py runs/steady/nlamsweep runs/atlas/nsweepv0fine runs/atlas/mapsweep
 
@@ -189,14 +211,18 @@ by anything here.
 
 Still open:
 
-- A myopic rule that tracks `lambda`. The measured correction is about `-0.48 * lambda` ticks, or
-  a threshold of `-0.0146 w` in `dv_z`; neither constant is derived.
-- The hold's **start**. Nothing is invariant there: over the three corpora `gamma` spreads 13-33%,
-  the glide ratio 15-37%, `v_y` 24-36%, speed and `v_z` 30-50% — against a departure pinned to one
-  tick. The sink
-  rate bottoms out about 3 ticks before the first flat tick — that is where the ramp down from the
-  dive begins, not where the hold does — and the ramp itself takes the other 3. See the `entry`
-  table in `tools/glide_phase.py`.
+- **A myopic rule for the entry.** `vz_peaked` covers the exit; nothing here covers the entry
+  without `mu`. The state spread at the first flat tick is wide — over three corpora `gamma`
+  13-33%, the glide ratio 15-37%, `v_y` 24-36%, speed and `v_z` 30-50% (the `entry` table in
+  `tools/glide_phase.py`) — and the corner condition above says that is what to expect, not a
+  failure to look hard enough.
+- **A myopic rule that tracks `lambda`** at the exit. The measured correction to `vz_peaked` is
+  about `-0.48 * lambda` ticks, or a threshold of `-0.0146 w` in `dv_z`; neither constant is
+  derived.
+- The entry is **not** a gentle ramp, which is what I assumed before measuring it: the largest
+  single step into the hold is 14.98 deg (10-90% 12.40..19.87) against 15.97 deg (10.37..21.76)
+  out of it. Both ends jump. The dive's pitch coming down over the preceding ticks is the dive
+  rule still running, not a transition.
 
 ## The steady glide against pitch, and the corner at 0
 

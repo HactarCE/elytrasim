@@ -1,6 +1,7 @@
 """The glide phase -- the pitch-0 hold -- and the one-tick rule that ends it.
 
     python3 tools/glide_phase.py runs/steady/nlamsweep runs/atlas/nsweepv0fine ...
+    python3 tools/glide_phase.py --switch runs/steady/nlamsweep
 
 Each argument is a directory holding a `best.csv` and an `out/` tree; only rows with
 `structure = cyclic` are used. The hold's *pitch* has been known for a long time (it is zero);
@@ -9,7 +10,12 @@ what this measures is its *stopping time*. Four tables per corpus:
   exit      how many ticks the candidate rule misses the optimum's own departure by
   price     the same miss, split by lambda -- it is monotone in the price on distance
   menu      competing stopping rules, on a stride-sampled subset (the dTE scans are slow)
-  entry     what is invariant where the hold begins, ranked by spread
+  entry     the state where the hold begins, ranked by spread -- nothing is invariant there,
+            and `--switch` is why: the entry's threshold moves with `v_y`
+
+`--switch` is the exact version, and needs a periodic corpus and a built `target/release/myopic`:
+it solves the costate per cycle and checks the two corner conditions below against the ticks the
+optimum actually enters and leaves the hold. Both land inside one tick on every steady cell.
 
 The rule under test is `v_z has peaked`: leave on the first tick at which holding pitch 0 would
 no longer raise forward speed. It takes no fitted constant and looks one tick ahead. In exact
@@ -36,6 +42,54 @@ DRAG_Y, DRAG_Z = 0.9800000190734863, 0.9900000095367432   # the sim's f32 drags,
 GRAVITY = 0.08
 BEST_GLIDE_GAMMA = 5.6533        # flight-path angle of the pitch-0 steady glide (`myopic crit`)
 MENU_SAMPLE = 200                # profiles per corpus for the slow rules
+
+# The two corner conditions. For p >= 0 the map depends on pitch only through L = cos^2 p, which
+# is maximal at 0, so entering the hold is the sign of d(mu.f)/dL at L = 1; for p < 0 the
+# forward-to-up branch switches on linearly, so leaving it is a one-sided derivative in lean and
+# the v_z that multiplies both components cancels. Every constant is read off the tick map.
+def s_in(vy, mu_y, mu_z):
+    """Hold 0 rather than pitch down?"""
+    return DRAG_Y * (0.056 - 0.1 * vy) * mu_y - 0.09 * DRAG_Z * (vy + 0.04) * mu_z
+
+
+def s_out(vy, mu_y, mu_z):
+    """Hold 0 rather than pitch up?  0.128/0.036 = (3.2/0.9) is the forward-to-up exchange rate."""
+    return 0.036 * DRAG_Z * mu_z - 0.128 * DRAG_Y * mu_y
+
+
+def switch_report(root):
+    """Where the two corner conditions flip, against where the optimum actually switches."""
+    import io
+    import subprocess
+    rows = [r for r in csv.DictReader(open(os.path.join(root, "best.csv")))
+            if r["structure"] == "cyclic"]
+    res = []
+    for r in rows:
+        path = os.path.join(root, "out", r["cell"], r["file"])
+        p = load.load(path)
+        bb = hold_bounds(p.pitches)
+        if bb is None:
+            continue
+        start, out = bb
+        txt = subprocess.run(["./target/release/myopic", "adjoint", path, "dump"],
+                             capture_output=True, text=True).stdout
+        if "not a closed cycle" in txt or "singular" in txt:
+            continue          # the periodic adjoint needs a cycle that closes
+        d = {int(x["t"]): x for x in csv.DictReader(io.StringIO(txt[txt.index("t,pitch,vy,vz"):]))}
+        g = lambda t: (float(d[t]["vy"]), float(d[t]["mu_y"]), float(d[t]["mu_z"]))
+        hi = min(len(p.pitches), out + 40)
+        t_in = next((t for t in range(max(1, start - 40), out) if s_in(*g(t)) >= 0), None)
+        t_out = next((t for t in range(start, hi) if s_out(*g(t)) < 0), None)
+        if t_in is None or t_out is None:
+            continue
+        res.append((t_in - start, t_out - out))
+    print(f"\n### {os.path.basename(root.rstrip('/'))}: {len(res)} periodic cycles")
+    print(f"    {'condition':>14} {'median':>8} {'exact':>8} {'inside 1':>9}   distribution")
+    for i, lab in ((0, "entry switch"), (1, "exit switch")):
+        v = [x[i] for x in res]
+        print(f"    {lab:>14} {stat.median(v):>+8.0f} {100 * v.count(0) / len(v):>7.1f}% "
+              f"{100 * sum(1 for x in v if abs(x) <= 1) / len(v):>8.1f}%   "
+              f"{dict(sorted(Counter(v).items()))}")
 
 
 def tick(vy, vz, pitch):
@@ -227,9 +281,14 @@ def report(tag, recs, flats):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    args = [a for a in sys.argv[1:] if a != "--switch"]
+    if not args:
         sys.exit(__doc__)
-    for root in sys.argv[1:]:
+    if "--switch" in sys.argv:
+        for root in args:
+            switch_report(root)
+        sys.exit(0)
+    for root in args:
         recs = harvest(root, menu_sample=MENU_SAMPLE)
         # the flat band is an instrument, not a fact about the schedule: rerun at other widths
         bands = [(f"+-{f:g} deg", harvest(root, flat=f)) for f in (2.0, 5.0, 10.0)]

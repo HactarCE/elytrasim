@@ -17,11 +17,14 @@
 //! clamp are all entry corrections, kept here only because they still fly the whole cycle
 //! open-loop. See "The leak was an entry correction" in README-myopic.md.
 //!
-//! The snap's *pitch* was never in doubt; its stopping time was. `vz_peaked` is the myopic
-//! answer and is exact at lambda = 0. The exact answer at every price is a corner switch:
-//! hold 0 while `0.036*DRAG_Z*mu_z >= 0.128*DRAG_Y*mu_y`, the elytra's own forward-to-up
-//! exchange rate of 3.519641 -- parameter-free, but `mu` needs the whole future. `adjoint`
-//! checks it; 92% of the steady corpus lands on the tick, 100% inside one.
+//! The snap's *pitch* was never in doubt; when to start and stop holding it was. `vz_peaked` is
+//! the myopic answer for the stop and is exact at lambda = 0. The exact answer at both ends and
+//! every price is a pair of corner conditions on the costate, with every constant read off the
+//! tick map: hold 0 rather than pitch up while `0.036*DRAG_Z*mu_z >= 0.128*DRAG_Y*mu_y` (the
+//! elytra's own forward-to-up exchange rate, 3.519641), and rather than pitch down while
+//! `DRAG_Y*(0.056 - 0.1*v_y)*mu_y >= 0.09*DRAG_Z*(v_y + 0.04)*mu_z`. Parameter-free, but `mu`
+//! needs the whole future. `adjoint` solves it and `tools/glide_phase.py --switch` checks both:
+//! inside one tick on every one of the 1233 steady cycles.
 //!
 //! Everything here is measured against `sim`'s physics with yaw pinned to zero, so the whole
 //! problem lives in the (v_y, v_z) plane. See README-myopic.md for the numbers.
