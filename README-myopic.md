@@ -285,6 +285,10 @@ the measured cost of stepping is probably the optimizer over-fitting the tick gr
 
 ## Phase 4, gain (~86 ticks): argmax ΔTE over ~20 ticks, not 1
 
+> The lookahead here is fitted. "The gain phase without a lookahead" below removes it: the
+> stationary pitch has a closed form, the horizon is the apex, and what is left is one scalar
+> handed over by the dive. This section is what the fitted version costs and how far it holds.
+
 Same metric as elytrasim's `argmax_over_pitch_of_delta_energy`, with the lookahead extended.
 Holding pitch constant for `n` ticks and taking the argmax of the total-energy change:
 
@@ -349,6 +353,192 @@ as the climb progresses.
 Note the ΔTE family is not merely imprecise in the **dive** — it is bimodal there, splitting
 between "stay level" (short n) and "give up and zoom now" (long n, around -40 to -52), and
 describing the optimum at neither.
+
+## The gain phase without a lookahead: two clocks and one handoff
+
+`n = 20` is a fitted constant, and "The exact one-tick rule" below says what it stands in for:
+`argmax ΔTE over n` prices the state it lands on with the energy gradient `(v_y, v_z)/g` and
+carries that back along a held-pitch rollout, so `n` is whatever makes that the best stand-in for
+the real `mu`. On the climbing arc the real `mu` can be written down. Once it is, the lookahead goes
+away and one number takes its place — a number the climb cannot derive, because it is what the
+*dive* will pay for what the climb hands over.
+
+`myopic gain <file> [w] [bvp] [dump]` measures everything here;
+`python3 tools/gain_phase.py runs/steady/nlamsweep` runs it across the corpus. The polished family
+is the reference cycle tiled three times, re-polished at each `w`, cut apex-to-apex and re-closed:
+
+    myopic polish tiled900.txt 40 <w> > p900.txt        # tiled900 = REPLAY_PITCHES_300 x3
+    myopic cyclecut p900.txt > cut.txt
+    cargo run --release --example wobble -- cut.txt 0 > cyc.pitches
+    myopic gain cyc.pitches <w> bvp
+
+Pass `w` to `gain` explicitly: a profile header's own `w` is derived from its `lambda`, so a
+hand-written header cannot carry it.
+
+### The pitch, in closed form, with `v_y` absent
+
+Take the arc where the down-to-forward branch is off — `v_y + g(0.75 cos²p − 1) ≥ 0` — and the
+pitch is nose-up. There the tick map is only
+
+    v_y' = DRAG_Y (v_y + g(0.75 cos²p − 1) + 0.128 s v_z)        s = sin|p|
+    v_z' = DRAG_Z v_z (1 − 0.036 s)
+
+so `d(mu . v')/ds = 0` is one line — the price of the up you buy equals the price of the forward
+you spend:
+
+    mu_y (GAIN_UP v_z − GAIN_LIFT s) = GAIN_FWD mu_z v_z
+
+    GAIN_UP = 0.128 DRAG_Y     GAIN_LIFT = 1.5 g DRAG_Y     GAIN_FWD = 0.036 DRAG_Z
+
+and it solves for the pitch outright:
+
+    sin|p| = v_z (GAIN_UP mu_y − GAIN_FWD mu_z) / (GAIN_LIFT mu_y)
+
+**`v_y` does not appear.** Given the prices, the climb's pitch is set by the forward speed and by
+nothing else about where it is. Read backwards it gives the price ratio a pitch implies,
+`mu_z/mu_y = GAIN_RATE − (GAIN_LIFT/GAIN_FWD)·s/v_z`, where `GAIN_RATE = GAIN_UP/GAIN_FWD =
+3.519641` is the elytra's forward-to-up exchange rate — the same constant that ends the pitch-0
+hold.
+
+Against the solved `mu` this reproduces the polished cycle's own pitches to **0.072° RMS, 0.014°
+median** over the 90 interior ticks of its climb, and stays under a quarter degree across a
+polished family spanning `w = −0.125 .. 0.250` (the reference cycle is the `w = 0` column):
+
+| w | −.125 | −.0625 | −.025 | 0 | .025 | .0625 | .125 | .250 |
+|---|---|---|---|---|---|---|---|---|
+| stationary-pitch RMS, ° | 0.009 | 0.164 | 0.044 | 0.072 | 0.251 | 0.032 | 0.052 | 0.163 |
+| `kappa = mu_z(apex)` | 2.77 | 6.11 | 9.41 | 11.53 | 13.82 | 16.93 | 22.27 | 32.22 |
+| `mu_y(apex)` | 6.26 | 3.05 | 0.80 | 0.80 | −0.99 | −0.31 | −1.90 | −5.10 |
+
+### Both prices are clocks, on complementary arcs
+
+The Jacobian is triangular on each arc of the cycle, and in *opposite* directions:
+
+* where the down-to-forward branch is off, `dv_z'/dv_y = 0`, so `mu_y` obeys
+  **`mu_y,t = 1 + DRAG_Y·mu_y,t+1`** — autonomous, with no state and no control in it;
+* where the pitch is not nose-up, `dv_y'/dv_z = 0`, so `mu_z` obeys
+  **`mu_z,t = w + DRAG_Z·mu_z,t+1`** — the same thing one axis over, running through the whole
+  dive and the pitch-0 hold.
+
+Only the flick has neither. Median residual **4.9e-11** and **4.6e-11** over the 1233 periodic
+cells of `runs/steady/nlamsweep`; these are identities of the tick map, not fits.
+
+Solving the first, the price of upward velocity is a **clock**:
+
+    mu_y(t) = mu_inf − (mu_inf − mu_y(apex))·DRAG_Y^(T−t)        mu_inf = 1/(1 − DRAG_Y) = 50
+
+`T` is the apex, where the branch switches. So `mu_y` is just the discounted count of ticks left
+before you stop climbing, and `mu_y(apex)` is small — 0.80 on the reference cycle, and between
++6.3 and −10.6 across the whole corpus against a peak `mu_y` near 42. **That is what makes the
+apex the right horizon:** it is the tick at which upward velocity stops being worth anything, so a
+rule that stops there needs no terminal value for it. Contrast `argmax ΔTE`, whose terminal price
+is the energy gradient `(v_y, v_z)/g` — it agrees with `mu` in *direction* only at the apex, where
+`v_y` and `mu_y` both vanish for unrelated reasons, and even there its forward component is 4.7x
+too small on the reference cycle (2.45 against `kappa` = 11.53). A short `n`
+buys back what the wrong terminal price costs, which is why the implied lookahead is not the time
+remaining and why it has to shorten as the climb proceeds.
+
+### Two consecutive pitches read out the countdown
+
+The two recursions and the closed form are three relations in `mu_y`, `mu_z` and the pitch, so two
+consecutive gain-phase pitches pin the price *level* with nothing else supplied. With `r_t` the
+ratio tick `t`'s pitch implies and
+`K_t = (GAIN_UP·s_{t+1} + DRAG_Z(1 − 0.036 s_{t+1})·r_{t+1})/DRAG_Y`,
+
+    mu_y,t+1 = (w − K_t) / (r_t − K_t)
+
+which is exact (it recovers the solved costate to 3e-6 when fed the solved ratios) and recovers it
+to **0.76% median, 3.2% worst** when fed the optimum's own pitches instead. Inverting the clock
+turns that into ticks-to-apex:
+
+| cycle | median miss, ticks | inside one tick | p10..p90 spread |
+|---|---|---|---|
+| polished optimum | −0.12 | 76% | 2.27 |
+| polished family, `w = −.125 .. .250` | −0.12 .. +0.39 | 75–98% | 0.83–2.36 |
+| `REPLAY_PITCHES_300` | −3.14 | 0% | 1.09 |
+| the four bugs' own limit cycle | +1.51 | 4% | 37.05 |
+
+`mu_y(apex)` is solved from the cycle, not fitted to the countdown, so the median column is a real
+test and not a calibration: `REPLAY_PITCHES_300` reads its own apex three ticks off. The spread
+column is the separate claim that the countdown ticks down at the right *rate*, and it is what the
+policy's limit cycle fails — a median near zero on top of a spread of 37.
+
+### The climb ends on the hold's own corner
+
+Past the point where `mu_z/mu_y` climbs back through `GAIN_RATE = 3.519641`, the stationary `sin|p|`
+goes negative and the pitch clamps at 0. That is the same corner condition, in the same direction,
+that decides the pitch-0 hold's exit (`s_out` in `tools/glide_phase.py`): **hold pitch ≥ 0 rather
+than pitch up while `0.036·DRAG_Z·mu_z ≥ 0.128·DRAG_Y·mu_y`.** The hold and the gain phase are the
+two sides of one switch. It fires **exactly** on the polished cycle and on every member of the
+polished family that returns to pitch 0 at all (6 of 8; the two most distance-averse never do), and
+`+3` and `+4` ticks late on `REPLAY_PITCHES_300` and the policy's limit cycle. On the regularized
+corpus 932 of 1233 cells return to pitch 0, median `−1` tick, 52% inside one tick — the corpus's
+curvature price smooths the last few degrees of nose-up, so the tick the pitch "reaches 0" is soft
+there in a way it is not on a polished cycle.
+
+### Three simpler rules that do not work
+
+All three hold one pitch and pick a horizon from the state, so all three are parameter-free. All
+four numbers below come from one run over rel 214–295 of an earlier 30-pass polish of the same
+cycle, where `argmax ΔTE at n = 20` scores 1.20° and `n = 1` scores 17.4°.
+
+| rule | RMS, ° | what happens |
+|---|---|---|
+| hold a pitch to *its own* apex, maximize `J` there | 10.85 | the horizon it picks runs 87 ticks at the start of the climb down to 3 at the end — the long-`n` end of the ΔTE table |
+| argmax over (pitch, horizon) of `ΔJ/n` | 17.39 | collapses to `n = 1` at almost every tick, so it *is* one-tick greedy: the rate is highest on the first tick and falls from there |
+| argmax over (pitch, horizon) of `ΔJ − ρn`, ρ the cycle's own rate | 9.67 | picks horizons of 80 down to 1; `ΔJ` per tick runs an order of magnitude above ρ for most of the climb, so the time penalty barely bites |
+
+The common failure is the terminal value, not the horizon: holding one pitch to the end of a long
+rollout and then pricing what is left at its kinetic energy gets the price wrong in exactly the
+way the section above measures. What fixes it is optimizing the whole remaining climb, not
+lengthening a held-pitch one.
+
+### The rule, and what it still has to be told
+
+Put together: the gain phase is exactly the climb's own optimal-control problem — **from here,
+choose pitches until the apex, maximizing `Σ(v_y + w·v_z)` plus `mu(apex)·v(apex)`.** No lookahead
+constant; the horizon is where the down-to-forward branch switches on, which the candidate
+trajectory locates itself, just as the hold's stopping rule is located by `v_z` peaking.
+`myopic gain <file> bvp` solves it by forward-backward sweep at every tick of the climb and scores
+the first pitch against the cycle's own:
+
+| terminal price at the apex | RMS, ° | median, ° | max, ° |
+|---|---|---|---|
+| the cycle's own `mu(apex)` | **0.62** | **0.12** | 4.04 |
+| `mu_y(apex)` forced to 0, `kappa` kept | 0.67 | 0.15 | 3.83 |
+| both forced to 0 — "just climb as high as you can" | 2.56 | 1.22 | 11.13 |
+| for comparison, `argmax ΔTE` over 20 ticks | 1.67 | 0.99 | — |
+
+The per-tick error is about 0.1° through the body of the climb and grows at both ends: half a
+degree on the ticks just off the −90° bound, and from −0.9° to −4.0° over the last ten ticks
+before the apex — the same window where the ΔTE family stops disagreeing with itself and where
+the implied lookahead was already meaningless.
+
+So the fitted lookahead is gone and **one number is left: `kappa = mu_z(apex)`,** what the dive will
+pay for a unit of the forward speed the climb hands it. It is not a constant. Over the corpus it
+runs 2.9 to 49 and moves monotonically in both axes, falling with cycle length and rising with the
+price on distance:
+
+`kappa = mu_z(apex)`, median over the `v0` cells of each `(n, lambda)`:
+
+| n \ λ | −2 | −1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 150 | 16.91 | 20.67 | 24.42 | 28.11 | 31.74 | 35.39 | 39.16 | – | – | – |
+| 200 | 13.06 | 17.75 | 21.98 | 26.18 | 30.23 | 34.48 | 38.55 | 42.44 | – | – |
+| 250 | 6.02 | 11.79 | 16.87 | 21.66 | 26.61 | 31.43 | 36.20 | 40.86 | 45.61 | – |
+| 300 | 2.89 | 5.78 | 11.70 | 17.30 | 22.70 | 28.15 | 33.41 | 38.74 | 44.24 | 49.29 |
+| 350 | 2.87 | 4.28 | 7.61 | 13.69 | 19.58 | 25.29 | 31.03 | 36.79 | 42.64 | 48.40 |
+| 400 | 2.87 | 4.22 | 5.74 | 11.05 | 17.33 | 23.28 | 29.26 | 35.31 | 41.17 | 47.45 |
+| 450 | 2.86 | 4.21 | 5.63 | 9.71 | – | 22.15 | 28.33 | 34.52 | 40.67 | 46.90 |
+
+It is not a free parameter either, and the `DRAG_Z` clock says what it is made of:
+`kappa = DRAG_Z^M · mu_z(M)`, where `M` is the tick the pitch first goes nose-up and the corner
+above is exactly what fixes *which* tick that is. On the reference cycle `M = 202`, `mu_z(202)` is
+87.82, and `0.99^202 · 87.82 = 11.532` against a solved `kappa` of 11.532. So everything the climb
+needs from the rest of the cycle arrives as one scalar, and that scalar is the length of the dive
+discounting whatever the hold exits at — which is the useful decomposition even though it is not
+yet a rule you can fly from the state alone. The exit *level* is what remains: it is set across
+the flick, the only arc of the cycle with no clock on it, and the only one still unexplained.
 
 ## Flying only the bugs
 
@@ -667,6 +857,9 @@ right, just the wrong one. Against the true `mu`:
 In the gain phase the TE gradient consistently *overvalues* upward velocity relative to forward,
 which is precisely why one-tick greedy is nose-up of the optimum at every gain tick. Longer
 lookaheads are approximating `mu` better; n ≈ 20 is where the approximation is best on average.
+
+On the gain phase `mu` is not only solvable but writable: see "The gain phase without a
+lookahead", where `mu_y` turns out to be a clock and the stationary pitch a closed form.
 
 ## The leak was an entry correction
 

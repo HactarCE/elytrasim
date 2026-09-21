@@ -1,7 +1,7 @@
 //! Which *myopic* metrics does the globally optimal climb cycle agree with, phase by phase?
 //!
-//! The optimal cycle splits into five phases. Four of them follow a rule that needs only the
-//! current velocity; the entry does not, and is the open problem:
+//! The optimal cycle splits into five phases. Four of them follow a rule with no fitted constant
+//! in it; the entry does not, and is the open problem:
 //!
 //! | phase | ticks | rule                                                  |
 //! |-------|-------|-------------------------------------------------------|
@@ -9,13 +9,20 @@
 //! | dive  | ~150  | hold the flight-path angle exactly; no constants       |
 //! | snap  | ~14   | pitch 0, held until one more tick stops raising v_z   |
 //! | flick | ~6    | ramp to about -88 deg; the values do not matter       |
-//! | gain  | ~86   | argmax over pitch of delta TE over ~20 ticks          |
+//! | gain  | ~86   | climb to the apex; no lookahead, one price handed over |
 //!
 //! The dive was long described as leaking toward ~16.6 deg at a rate `k`. That was an artifact
 //! of asking one rule to cover the entry as well: hand the first ~60 ticks to the optimum and
 //! the exact hold beats every leaking variant (97.9% of the cycle). `k`, `g_star` and the floor
 //! clamp are all entry corrections, kept here only because they still fly the whole cycle
 //! open-loop. See "The leak was an entry correction" in README-myopic.md.
+//!
+//! The gain phase's lookahead is gone too. On the climbing arc the price of upward velocity is a
+//! pure clock at `DRAG_Y` and the stationary pitch has a closed form in `v_z` and the price ratio
+//! alone -- `v_y` does not enter -- so the phase is its own optimal-control problem, from here to
+//! the apex, with no horizon constant. What it cannot derive is `kappa = mu_z(apex)`, what the
+//! dive will pay for the forward speed it is handed; `gain` measures all of it and
+//! `tools/gain_phase.py` runs it over a corpus.
 //!
 //! The snap's *pitch* was never in doubt; when to start and stop holding it was. `vz_peaked` is
 //! the myopic answer for the stop and is exact at lambda = 0. The exact answer at both ends and
@@ -43,6 +50,9 @@
 //!   floor    <file> <tag>                fit the dive's first-order gamma decay and its asymptote
 //!   prices   <file> <tag>                shadow prices from the optimum, and the glide they pick
 //!   gprofile <file> <tag>                flight-path angle at ten points through the dive
+//!   gain     <file> [w] [bvp] [dump]     the climbing arc: the two costate clocks, the closed-form
+//!                                        stationary pitch, the countdown two pitches read out,
+//!                                        and with `bvp` the climb-to-apex rule's own pitches
 //!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick
 //!                                        rule; a sweep profile supplies its own v0 and w
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
@@ -689,6 +699,179 @@ fn cmd_adjoint(path: &str, w: Option<f64>) {
     }
 }
 
+/// The gain phase, in closed form: two clocks, one corner, and one number handed over.
+///
+/// The Jacobian is triangular on each arc of the cycle, in complementary directions:
+///
+///   * where the down-to-forward branch is off (`v_y` high enough), `d v_z'/d v_y = 0`, so
+///     `mu_y` obeys `mu_y,t = 1 + DRAG_Y mu_y,t+1` -- autonomous, state- and control-free. It
+///     is a clock: `mu_y = 50 - (50 - mu_y(apex)) DRAG_Y^(T-t)`, with `50 = 1/(1 - DRAG_Y)`.
+///     The price of upward velocity is the discounted count of ticks left before you stop
+///     climbing.
+///   * where the pitch is not nose-up, `d v_y'/d v_z = 0`, so `mu_z,t = w + DRAG_Z mu_z,t+1` --
+///     the same thing one axis over, running at `DRAG_Z` through the whole dive and hold.
+///
+/// Only the flick has neither. So the gain phase's pitch, which is `gain_pitch(v_z, mu)`, needs
+/// exactly two non-local numbers: the apex (which its own trajectory sets) and `kappa =
+/// mu_z(apex)`, the price the dive will pay for the forward speed it is handed. `gain bvp`
+/// scores the rule that follows -- maximize `sum (v_y + w v_z)` to the apex plus `kappa v_z`
+/// there -- against the cycle's own pitches.
+fn cmd_gain(path: &str, w: Option<f64>, bvp: bool, dump: bool) {
+    let prof = Profile::parse(&std::fs::read_to_string(path)
+                              .unwrap_or_else(|e| panic!("{path}: {e}"))).ok();
+    let ps = read_pitches(path);
+    let v0 = prof.as_ref().map_or(V0, |p| p.obj.v0);
+    let w = w.or_else(|| prof.as_ref().map(|p| p.obj.w())).unwrap_or(0.0);
+    let st = replay_from(v0, &ps);
+    let n = ps.len();
+    let close = (st[n].vel - st[0].vel).length();
+    let Some(mu) = periodic_mu(&st, &ps, w) else {
+        println!("{path}: monodromy singular, mu undetermined"); return };
+    // Work on a doubled index so an arc that straddles the cut is still one run.
+    let at = |t: usize| (t % n, &st[t % n], ps[t % n], mu[t % n + 1]);
+    let off = |t: usize| { let (_, s, p, _) = at(t); dive_branch_off(s.vel, p) };
+    // the apex ends the climbing arc: the last tick with the dive branch off before it turns on
+    // the apex that ends the *longest* branch-off run, so a one-tick dropout mid-climb cannot
+    // cut the arc short
+    let ends: Vec<usize> = (n + 1..=2 * n).filter(|&t| off(t - 1) && !off(t)).collect();
+    if ends.is_empty() {
+        println!("{path}: no apex -- the down-to-forward branch never switches"); return }
+    let run = |t: usize| (1..n).map(|k| t - k).take_while(|&u| off(u - 1)).count();
+    let t_apex = *ends.iter().max_by_key(|&&t| run(t)).unwrap();
+    let t_gain = t_apex - run(t_apex);
+    let (mu_y_t, kappa) = (mu[t_apex % n].0, mu[t_apex % n].1);
+    println!("{path}: {n} ticks, |v_N - v_0| = {close:.2e}, w = {w}");
+    if close > 1e-3 { println!("  !! not a closed cycle; the periodic costate does not apply") }
+    println!("  climbing arc {t_gain}..{t_apex} ({} ticks), apex prices mu = ({mu_y_t:.4}, {kappa:.4})",
+             t_apex - t_gain);
+
+    // the two clocks, as residuals against the recursion they are supposed to satisfy
+    let (mut cy, mut cz) = (vec![], vec![]);
+    for t in 0..n {
+        let (_, s, p, m1) = at(t);
+        let m0 = mu[t];
+        if dive_branch_off(s.vel, p) { cy.push(((m0.0 - (1.0 + DRAG_Y * m1.0)) / m0.0.abs().max(1e-9)).abs()) }
+        if p >= 0.0 { cz.push(((m0.1 - (w + DRAG_Z * m1.1)) / m0.1.abs().max(1e-9)).abs()) }
+    }
+    let med = |mut v: Vec<f64>| -> f64 { if v.is_empty() { return f64::NAN }
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[v.len() / 2] };
+    println!("  clock residuals: mu_y over {:>3} branch-off ticks {:.1e}   mu_z over {:>3} \
+              nose-down ticks {:.1e}", cy.len(), med(cy), cz.len(), med(cz));
+
+    // the closed-form stationary pitch, and the countdown two consecutive pitches read out
+    let interior = |t: usize| { let (_, s, p, _) = at(t);
+        off(t) && p < -1e-9 && p > -89.9 && s.vel.z > 0.0 };
+    let (mut gap, mut miss) = (vec![], vec![]);
+    let mut rows = vec![];
+    for t in t_gain..t_apex {
+        if !interior(t) { continue }
+        let (_, s, p, m1) = at(t);
+        gap.push(gain_pitch(s.vel.z, m1) - p);
+        let (r0, tau_true) = (gain_ratio(s.vel.z, p), (t_apex - t - 1) as f64);
+        let tau = if interior(t + 1) {
+            let (_, _, p1, _) = at(t + 1);
+            let s1 = -p1.to_radians().sin();
+            let k = (GAIN_UP * s1 + DRAG_Z * (1.0 - 0.036 * s1) * gain_ratio(at(t + 1).1.vel.z, p1)) / DRAG_Y;
+            let m = (w - k) / (r0 - k);
+            // mu_y = mu_inf - (mu_inf - mu_y(apex)) DRAG_Y^tau, inverted for tau
+            let mu_inf = 1.0 / (1.0 - DRAG_Y);
+            let tau = ((mu_inf - m) / (mu_inf - mu_y_t)).ln() / DRAG_Y.ln();
+            if tau.is_finite() { miss.push(tau - tau_true) }
+            tau
+        } else { f64::NAN };
+        rows.push((t, p, s.vel.y, s.vel.z, m1.0, m1.1, r0, tau, tau_true));
+    }
+    let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt();
+    println!("  stationary pitch over {} interior ticks: RMS {:.4}deg  median {:.4}",
+             gap.len(), rms(&gap), med(gap.iter().map(|x| x.abs()).collect()));
+    if !miss.is_empty() {
+        let inside: f64 = miss.iter().filter(|x| x.abs() < 1.0).count() as f64 / miss.len() as f64;
+        let mut v = miss.clone();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // the level of the miss is mu_y(apex) and is fed back in above; what the clock claims
+        // is that the miss does not move along the arc, so the spread is the falsifiable part
+        println!("  two-tick countdown to the apex over {} pairs: median miss {:+.2} ticks, \
+                  {:.0}% inside one tick, p10..p90 spread {:.2}",
+                 miss.len(), med(miss.clone()), 100.0 * inside,
+                 v[v.len() * 9 / 10] - v[v.len() / 10]);
+    }
+    // the gain phase ends where the hold ends, on the same corner: mu_z/mu_y = GAIN_RATE
+    let t_corner = (t_gain..t_apex).find(|&t| { let (_, _, _, m) = at(t);
+        m.0 > 0.0 && m.1 / m.0 >= GAIN_RATE });
+    let t_flat = (t_gain..t_apex).find(|&t| at(t).2 > -1e-9);   // the optimizer's zero is not exactly 0
+    match (t_corner, t_flat) {
+        (Some(a), Some(b)) => println!("  nose-up ends at {b}, the corner mu_z/mu_y = {GAIN_RATE:.6} \
+                                        fires at {a} ({:+} ticks)", a as i64 - b as i64),
+        _ => println!("  the gain phase does not return to pitch 0 inside the cycle"),
+    }
+
+    if bvp {
+        for (lab, mt) in [("measured apex prices", (mu_y_t, kappa)),
+                          ("mu_y(apex) forced to 0", (0.0, kappa)),
+                          ("both forced to 0", (0.0, 0.0))] {
+            let err: Vec<f64> = rows.iter().map(|&(t, p, ..)| {
+                gain_bvp(&st[t % n], w, mt, p, 400).0 - p }).collect();
+            if err.is_empty() { continue }
+            println!("  climb-to-apex rule, {lab:<22}: RMS {:.4}deg  median {:.4}  max {:.4}",
+                     rms(&err), med(err.iter().map(|x| x.abs()).collect()),
+                     err.iter().fold(0.0f64, |m, x| m.max(x.abs())));
+        }
+        {
+            let err: Vec<f64> = rows.iter().map(|&(_t, p, ..)| p).collect();
+            if !err.is_empty() {
+            let base: Vec<f64> = rows.iter().map(|&(t, p, ..)| bug_dte_n(&st[t % n], 20) - p).collect();
+            println!("  for comparison, argmax dTE over 20 ticks  : RMS {:.4}deg  median {:.4}",
+                     rms(&base), med(base.iter().map(|x| x.abs()).collect()));
+            }
+        }
+    }
+    if dump {
+        println!("t,pitch,vy,vz,mu_y,mu_z,r,tau_2tick,tau_true,bvp_err,bvp_n,dte20_err");
+        for (t, p, vy, vz, my, mz, r, tau, tt) in rows {
+            let (q, hz) = if bvp { gain_bvp(&st[t % n], w, (mu_y_t, kappa), p, 400) } else { (p, 0) };
+            println!("{t},{p:.4},{vy:.6},{vz:.6},{my:.6},{mz:.6},{r:.6},{tau:.4},{tt},{:.4},{hz},{:.4}",
+                     q - p, if bvp { bug_dte_n(&st[t % n], 20) - p } else { 0.0 });
+        }
+    }
+}
+
+/// The climb's own two-point problem: from `s`, choose pitches until the apex to maximize
+/// `sum (v_y + w v_z)` plus `kappa v_z` at the apex. Forward-backward sweep; returns the first
+/// pitch and the apex it settled on. There is no lookahead constant -- the horizon is the apex,
+/// which the candidate trajectory locates itself. `mu_t` is the apex price vector: the climb
+/// cannot derive it, because it is what the dive will pay for what the climb hands over.
+pub fn gain_bvp(s: &State, w: f64, mu_t: (f64, f64), p_init: f64, cap: usize) -> (f64, usize) {
+    let c = (1.0, w);
+    let mut ps = vec![p_init; cap];
+    let mut n = cap;
+    for _ in 0..80 {
+        let mut st = vec![s.clone()];
+        n = cap;
+        for k in 0..cap {
+            // the arc ends where the down-to-forward branch switches on -- the same event that
+            // bounds `climbing arc`, not the slightly later v_y <= 0
+            if k > 0 && !dive_branch_off(st[k].vel, ps[k]) { n = k; break }
+            st.push(ticked(&st[k], ps[k]));
+        }
+        let mut mu = vec![(0.0, 0.0); n + 1];
+        mu[n] = mu_t;
+        for k in (0..n).rev() {
+            let j = jac(st[k].vel, ps[k]);
+            let am = mt_vec(&j, mu[k + 1]);
+            mu[k] = (c.0 + am.0, c.1 + am.1);
+        }
+        let mut worst: f64 = 0.0;
+        for k in 0..n {
+            let q = argmax(|p| { let f = update_fall_flying_movement(st[k].vel, rot(p));
+                                 mu[k + 1].0 * f.y + mu[k + 1].1 * f.z }, 0.03125);
+            worst = worst.max((q - ps[k]).abs());
+            ps[k] = 0.5 * ps[k] + 0.5 * q;      // damped; the undamped sweep oscillates
+        }
+        if worst < 1e-4 { break }
+    }
+    (ps[0], n)
+}
+
 /// How sharply does the one-tick score pick out the optimum's pitch?
 ///
 /// Pontryagin says the optimum maximizes `mu . f(v, p)` over p every tick. That is exact, but it
@@ -1145,6 +1328,9 @@ fn main() {
         Some("cyclecut") => cmd_cyclecut(&a[2]),
         Some("consist") => cmd_consist(&a[2], a[3].parse().unwrap()),
         Some("singular") => cmd_singular(&a[2]),
+        Some("gain") => cmd_gain(&a[2], a.get(3).filter(|s| !matches!(s.as_str(), "bvp"|"dump"))
+                                      .map(|s| s.parse().unwrap()),
+                                  a.iter().any(|x| x == "bvp"), a.iter().any(|x| x == "dump")),
         Some("adjoint") => cmd_adjoint(&a[2], a.get(3).filter(|s| *s != "dump")
                                                    .map(|s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
@@ -1157,7 +1343,7 @@ fn main() {
                                          _ => Dive::Leak,
                                      },
                                      a.iter().any(|x| x == "vzpeak")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|rules|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|gain|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|rules|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }

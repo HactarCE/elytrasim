@@ -226,6 +226,69 @@ pub fn jac(v: Vec3, p: f64) -> M2 {
      (yb.z - ya.z) / (2.0 * h), (zb.z - za.z) / (2.0 * h)]
 }
 
+/// The periodic costate of a closed cycle: `mu_t = c + A_t^T mu_{t+1}` with `mu_N = mu_0`.
+///
+/// `(I - M) mu_0 = b` leaves no freedom, so the tangency conditions it implies are predictions
+/// rather than fits. `None` when the monodromy makes `I - M` singular and `mu` is undetermined.
+pub fn periodic_mu(st: &[State], ps: &[f64], w: f64) -> Option<Vec<(f64, f64)>> {
+    let (c, n) = ((1.0, w), ps.len());
+    let (mut b, mut m) = ((0.0, 0.0), [1.0, 0.0, 0.0, 1.0]);
+    for t in (0..n).rev() {
+        let a = jac(st[t].vel, ps[t]);
+        let ab = mt_vec(&a, b);
+        b = (c.0 + ab.0, c.1 + ab.1);
+        m = mt_mat(&a, &m);
+    }
+    let d = [1.0 - m[0], -m[1], -m[2], 1.0 - m[3]];
+    let det = d[0] * d[3] - d[1] * d[2];
+    if det.abs() < 1e-12 { return None }
+    let mut mu = vec![(0.0, 0.0); n + 1];
+    mu[n] = ((d[3] * b.0 - d[1] * b.1) / det, (-d[2] * b.0 + d[0] * b.1) / det);
+    for t in (0..n).rev() {
+        let a = jac(st[t].vel, ps[t]);
+        let am = mt_vec(&a, mu[t + 1]);
+        mu[t] = (c.0 + am.0, c.1 + am.1);
+    }
+    Some(mu)
+}
+
+// ------------------------------------------------- the gain arc, in closed form
+
+// The tick map's pitch coefficients on the climbing arc, where `v_y` is high enough that the
+// down-to-forward branch is off and the pitch is nose-up. Everything the gain phase does passes
+// through `s = sin|pitch|`, linearly except for the lift.
+/// The sim's per-tick drags, as `f32` literals widened -- 0.9800000190734863, 0.9900000095367432.
+pub const DRAG_Y: f64 = 0.98_f32 as f64;
+pub const DRAG_Z: f64 = 0.99_f32 as f64;
+pub const GAIN_UP: f64 = 0.128 * DRAG_Y;            // up bought, per unit s per unit v_z
+pub const GAIN_LIFT: f64 = 1.5 * GRAVITY * DRAG_Y;  // lift given up, per unit s
+pub const GAIN_FWD: f64 = 0.036 * DRAG_Z;           // forward spent, per unit s per unit v_z
+/// `GAIN_UP / GAIN_FWD` -- the elytra's forward-to-up exchange rate, 3.519641. The same number
+/// ends the pitch-0 hold; see `vz_peaked` and README-myopic.md.
+pub const GAIN_RATE: f64 = GAIN_UP / GAIN_FWD;
+
+/// Is the down-to-forward branch off? True exactly when the gain arc's algebra applies.
+pub fn dive_branch_off(v: Vec3, p: f64) -> bool {
+    let l = (p.to_radians().cos()).powi(2);
+    v.y + GRAVITY * (0.75 * l - 1.0) >= 0.0
+}
+
+/// GAIN, exact. The interior stationary pitch, from the price vector and `v_z` alone.
+///
+/// On the climbing arc `v_y' = DRAG_Y(v_y + g(0.75cos^2 p - 1) + 0.128 s v_z)` and
+/// `v_z' = DRAG_Z v_z (1 - 0.036 s)`, so `d(mu.v')/ds = 0` reads
+/// `mu_y (GAIN_UP v_z - GAIN_LIFT s) = GAIN_FWD mu_z v_z`: the price of the up you buy equals
+/// the price of the forward you spend. Note what is absent -- `v_y` does not appear.
+pub fn gain_pitch(vz: f64, mu: (f64, f64)) -> f64 {
+    let s = vz * (GAIN_UP * mu.0 - GAIN_FWD * mu.1) / (GAIN_LIFT * mu.0);
+    -s.clamp(0.0, 1.0).asin().to_degrees()
+}
+
+/// The same condition read backwards: the price ratio `mu_z/mu_y` a nose-up pitch implies.
+pub fn gain_ratio(vz: f64, p: f64) -> f64 {
+    (GAIN_UP - GAIN_LIFT * (-p.to_radians().sin()) / vz) / GAIN_FWD
+}
+
 // ---------------------------------------------------------------- the policy
 
 #[derive(Clone, Copy, Debug, PartialEq)]
