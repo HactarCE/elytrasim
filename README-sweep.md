@@ -181,20 +181,33 @@ on would not be comparable. The per-phase manifests record the cells of each pha
 
 ## Steady state
 
-`--steady` makes a schedule *repeatable*. It re-solves `v0` to the schedule's own fixed point --
-the fixed point of `v -> (replay the schedule from v).vel` -- after every pass, so at convergence
-`v_final == v0` identically and no constraint or penalty is needed.
+`--steady` optimizes the cycle you would fly *back to back*. It re-solves `v0` to the schedule's
+own fixed point -- the fixed point of `v -> (replay the schedule from v).vel` -- after every
+pass, so at convergence `v_final == v0` identically and no constraint or penalty is needed to
+make the schedule repeatable.
 
-**It does not change the objective.** `J = TE(s_n) + w*z_n` with `v_n` free is still what gets
-maximized; only `v0` moves, and every steady profile's own header says so. A steady profile is
-therefore an *open-horizon* optimum that happens to close, not the optimum of the repeating
-problem, and its first-order conditions carry the open-horizon terminal price `dJ/dv_n` at the
-cut rather than a periodic one. Why this is worth knowing: solve a periodic costate against one
-of these and it will disagree with the profile's own pitches, by more the more distance is worth.
-The visible symptom is that the pitch jumps at the cut even though the velocity does not -- over
-the 1233 cyclic cells of `runs/steady/nlamsweep`, median `|p[0] - p[n-1]|` runs 7.5 deg at
-`lambda = -2` to 24.9 deg at `lambda = +7`, against a typical per-tick step of 0.28 deg falling
-to 0.03 deg across the same range.
+It does that by moving `v0` and nothing else. The objective stays `J = TE(s_n) + w*z_n` with
+`v_n` free, and the roughness price is not wrapped across the cut either -- pricing the
+`p[n-1] -> p[0]` jump was tried and reverted at `fad211d`, for moving utility by at most 0.016
+blocks. Both are deliberate: a steady profile is a *repeatable open-horizon optimum*, not the
+optimum of the periodic problem, and the two differ wherever the free terminal velocity has
+something to say. Two places it shows up, both worth knowing before measuring against this
+corpus:
+
+* **The seam.** The pitch jump at the cut is a move a repeated schedule asks a hand to make and
+  nothing charges for it. Re-solving `v0` closes it anyway up to about `n = 376`, past which the
+  schedule instead ends parked at the pitch limit and the seam stays wide;
+  `tools/plot_steady_seam.py` draws both regimes, at `lambda = 0` on `runs/atlas/nsweep`. It also
+  widens with the price on distance, which that plot's single lambda cannot show: over the 1233
+  cyclic cells of `runs/steady/nlamsweep`, median `|p[0] - p[n-1]|` runs 7.5 deg at
+  `lambda = -2` to 24.9 deg at `lambda = +7`, against a typical per-tick step of 0.28 deg falling
+  to 0.03 deg across the same range.
+* **The costate.** `myopic adjoint` solves a *periodic* `mu` -- the price vector of the periodic
+  problem, not of the one these cells solve, whose terminal price at the cut is `dJ/dv_n`. It is
+  a good stand-in at `lambda = 0` and a worse one as the price rises: the closed-form stationary
+  pitch reproduces the `n = 300` cell's own climb to 2.4 deg RMS at `lambda = 0` and 8.2 deg at
+  `lambda = 4`. How much of that gap is the periodic/open mismatch and how much is where the cut
+  happens to fall in the climb is not separated anywhere yet.
 
 Off by default. The single-cycle problem is the simpler object and is still the one most
 questions are about.

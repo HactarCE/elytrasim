@@ -53,10 +53,11 @@ def one(args):
     at = lambda r, k: float(r[k])
     bj, bt = best("dj_rms"), best("dte_rms")
     fixed = tab[19] if len(tab) >= 20 else tab[-1]      # the corpus-wide n = 20 stand-in
-    # where the schedule's own cut falls inside the climb. A `--steady` profile is closed in
-    # velocity but optimized with its terminal velocity free, so the ticks either side of the
-    # cut are priced differently and its pitch jumps there; `seam` is the fraction of the climb
-    # that lies before the cut, and `None` when the cut is outside the climb entirely.
+    # where the schedule's own cut falls inside the climb. A `--steady` profile closes in
+    # velocity but its objective is still the open-horizon one, deliberately, so the ticks either
+    # side of the cut are priced differently and its pitch jumps there ("Steady state" in
+    # README-sweep.md); `seam` is the fraction of the climb that lies before the cut, and `None`
+    # when the cut is outside the climb entirely.
     nn = int(row["n"])
     seam = (nn - t0) / (t1 - t0) if t0 < nn <= t1 else None
     ps = [float(x) for l in open(path) for x in l.split("#")[0].split()]
@@ -133,9 +134,9 @@ def report(root, rows):
                 line += (f"{stat.median([r[key] for r in g]):>8.2f}/{len(g):<3}" if g
                          else "        -   ")
             print(line)
-    print("      each cell is `rms/cells`. A `--steady` profile is closed in velocity but "
-          "optimized with its\n      terminal velocity free, so its pitch jumps at the cut; "
-          "the fit degrades with how much of\n      the climb sits on the far side of it.")
+    print("      each cell is `rms/cells`. A `--steady` profile is closed in velocity but by "
+          "design still an\n      open-horizon optimum, so its pitch jumps at the cut; the fit "
+          "degrades with how much of\n      the climb sits on the far side of it.")
 
     flat = sorted((r for r in rows if abs(r["dy"]) < 1.0), key=lambda r: abs(r["dy"]))
     if flat:

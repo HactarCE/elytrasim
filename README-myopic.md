@@ -436,11 +436,11 @@ arrives earlier and harder the more distance is worth — which the corner condi
 `mu_z/mu_y ≥ GAIN_RATE` below already predicts.
 
 **Read the absolute numbers at `λ > 0` with the corpus's own cut in mind.** A `--steady` profile is
-closed in velocity but optimized with its terminal velocity free, so its first-order conditions
-carry the open-horizon terminal price at the cut and its pitch jumps there: median `|p[0] − p[n−1]|`
-runs 7.5° at `λ = −2` to 24.9° at `λ = 7`, against a typical per-tick step of 0.28° falling to
-0.03° over the same range. Where that cut lands inside the climb moves the score a long way. Over
-the 21 cut phases of the one `n = 300, λ = 4` cell, `ΔTE` at its best `n` scores **1.34°** when
+closed in velocity but by design still an open-horizon optimum — see "Steady state" in
+README-sweep.md — so its pitch jumps at the cut, and the jump widens with the price on distance:
+median `|p[0] − p[n−1]|` runs 7.5° at `λ = −2` to 24.9° at `λ = 7`, against a typical per-tick step
+of 0.28° falling to 0.03°. Where that cut lands inside the climb then moves the score a long way.
+Over the 21 cut phases of the one `n = 300, λ = 4` cell, `ΔTE` at its best `n` scores **1.34°** when
 only a tenth of the climb sits past the cut and **5.95°** when nearly half does, monotonically in
 between. The comparison above is unaffected — both rules are scored on the same ticks — but the
 level is not a property of the price alone.

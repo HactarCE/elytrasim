@@ -24,9 +24,11 @@
 //!
 //! Steady state: --steady
 //!   Off by default. Re-solves `v0` to the schedule's own fixed point after every pass, so the
-//!   result is repeatable: at convergence `v_final == v0` identically. It does *not* change the
-//!   objective -- `v_n` is still free, so a steady profile is an open-horizon optimum that
-//!   happens to close, and its terminal price at the cut is `dJ/dv_n`, not a periodic costate.
+//!   result is the cycle you would fly back to back: at convergence `v_final == v0` identically.
+//!   It moves `v0` and nothing else -- `v_n` stays free and the roughness price stays unwrapped,
+//!   both deliberately -- so a steady profile is a repeatable *open-horizon* optimum and its
+//!   terminal price at the cut is `dJ/dv_n`, not a periodic costate. See README-sweep.md for the
+//!   two places that distinction is visible.
 //!   `--vy/--vz` then *seed* that iteration instead of naming the answer, and the written
 //!   header states the fixed point actually reached. `v0` stops being a grid axis, so `run`
 //!   writes these under `steady/` rather than a `vy.../vz...` shard and takes a single
