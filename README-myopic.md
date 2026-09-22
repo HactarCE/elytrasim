@@ -795,8 +795,9 @@ speed for its own pitch (0.54 at short dive lengths, 0.89 at long).
 | speed | 2.384 | 1.807..2.880 | 45.0% |
 | `v_z` | 2.284 | 1.697..2.795 | 48.1% |
 
-The top three are one fact, not three. `v_y` is **autonomous** in the tick map — with yaw zero,
-`v_y' = k(L)·(v_y − 0.08 + 0.06L)` contains no `v_z` (see `docs/elytra-tick-algebra.md`) — so `v_y`
+The top three are one fact, not three. `v_y` is **autonomous** in the tick map — with yaw zero
+*and the nose down*, `v_y' = k(L)·(v_y − 0.08 + 0.06L)` contains no `v_z` (see
+`docs/elytra-tick-algebra.md`; nose-up adds the `0.128 s v_z` pull-up and the autonomy goes) — so `v_y`
 relaxes toward `eq_v_y(pitch)` on its own and is found at 95% of it, and `eq_v_y` is monotone in
 pitch. So "terminal pitch 46.5" and "terminal sink rate 0.69 b/tick" are the same statement, and
 the forward channel is simply unconstrained: `v_z` ranges over 1.7–2.8 at the same pitch.
