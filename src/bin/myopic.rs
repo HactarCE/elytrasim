@@ -56,6 +56,10 @@
 //!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick
 //!                                        rule; a sweep profile supplies its own v0 and w
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
+//!   djn      <file> [nmax] [w=<x>] [limit=<deg>] [dump|wsweep|equiv]
+//!                                        the gain phase's lookahead rule at a price on distance:
+//!                                        argmax `dJ = dTE + w*dz` against argmax `dTE`, both
+//!                                        held `n` ticks, scored on the profile's own climb
 //!   rules    <file> <vy0> <vz0> <N>       pointwise rules for an arbitrary initial velocity
 //!   policy   [opt] [leak|floor|hold] [vzpeak]
 //!                                        fly the four bugs; NGAIN=<n> sets the gain lookahead,
@@ -699,6 +703,175 @@ fn cmd_adjoint(path: &str, w: Option<f64>) {
     }
 }
 
+/// The climbing arc, as `(start, apex)` on a *doubled* tick index so an arc that straddles the
+/// schedule's cut is still one run. The apex is where the down-to-forward branch switches on;
+/// of the ticks that end such a run, take the one ending the longest, so a one-tick dropout
+/// mid-climb cannot cut the arc short. `None` when the branch never switches at all.
+fn climbing_arc(st: &[State], ps: &[f64]) -> Option<(usize, usize)> {
+    let n = ps.len();
+    let off = |t: usize| dive_branch_off(st[t % n].vel, ps[t % n]);
+    let run = |t: usize| (1..n).map(|k| t - k).take_while(|&u| off(u - 1)).count();
+    let t_apex = *(n + 1..=2 * n).filter(|&t| off(t - 1) && !off(t))
+        .collect::<Vec<_>>().iter().max_by_key(|&&t| run(t))?;
+    Some((t_apex - run(t_apex), t_apex))
+}
+
+/// The gain phase's lookahead rule, generalized from `dTE` to the cycle's own objective.
+///
+/// `argmax dTE over n held ticks` is elytrasim's own rule with the horizon stretched, and it
+/// knows nothing about the price on distance: at `w != 0` it is maximizing the wrong thing. The
+/// generalization holds the same pitch for the same `n` ticks and maximizes `dJ = dTE + w*dz`
+/// instead, with the profile's own `w` -- see `bug_dj_n`, which is where the claim that this is
+/// the *right* generalization is argued. Both are scored against the optimum's own pitches over
+/// its climbing arc, at every lookahead `1..=nmax`, so the table says which `n` each rule wants
+/// as well as how well it does there.
+///
+/// Three scoring sets, because which ticks count is a real choice and the answer moves with it:
+/// `arc` is the whole climb, `up` drops the ticks where the optimum is not nose-up (the closed
+/// form does not apply there and neither rule is being asked about them), and `free` further
+/// drops the ticks where the optimum sits on its own `|pitch| <= limit` bound, where any
+/// sufficiently nose-up rule agrees for free. `free` is the honest column.
+fn cmd_djn(path: &str, w_over: Option<f64>, lim_over: Option<f64>, nmax: usize,
+           dump: bool, wsweep: bool, equiv: bool) {
+    let prof = Profile::parse(&std::fs::read_to_string(path)
+                              .unwrap_or_else(|e| panic!("{path}: {e}"))).ok();
+    let ps = read_pitches(path);
+    let v0 = prof.as_ref().map_or(V0, |p| p.obj.v0);
+    let w = w_over.or_else(|| prof.as_ref().map(|p| p.obj.w())).unwrap_or(0.0);
+    let lam = prof.as_ref().map_or(f64::NAN, |p| p.obj.lambda);
+    // A `cyclecut` is a bare list of pitches: it carries neither the price it was polished at
+    // nor the control set, so both can be supplied on the command line.
+    let limit = lim_over.or_else(|| prof.as_ref().map(|p| p.rough.limit)).unwrap_or(90.0);
+    let st = replay_from(v0, &ps);
+    let n = ps.len();
+    let close = (st[n].vel - st[0].vel).length();
+    let Some((t_gain, t_apex)) = climbing_arc(&st, &ps) else {
+        println!("# {path}: no apex -- the down-to-forward branch never switches"); return };
+
+    // which ticks of the arc each set keeps
+    let up = |t: usize| ps[t % n] < -1e-9 && st[t % n].vel.z > 0.0;
+    let free = |t: usize| up(t) && ps[t % n] > -(limit - 0.1);
+    let sets: [(&str, Vec<usize>); 3] = [
+        ("arc", (t_gain..t_apex).collect()),
+        ("up", (t_gain..t_apex).filter(|&t| up(t)).collect()),
+        ("free", (t_gain..t_apex).filter(|&t| free(t)).collect()),
+    ];
+
+    println!("# {path}");
+    println!("# lambda {lam}  w {w:.10}  limit {limit}  ticks {n}  |v_N - v_0| {close:.2e}");
+    println!("# arc {t_gain}..{t_apex} ({} ticks)  up {}  free {}",
+             t_apex - t_gain, sets[1].1.len(), sets[2].1.len());
+    if sets[2].1.is_empty() { println!("# no interior nose-up ticks; nothing to score"); return }
+
+    // one `dj_argmax_all` per tick per rule serves every lookahead
+    let arc: &[usize] = &sets[0].1;
+    let rows: Vec<(usize, f64, Vec<f64>, Vec<f64>)> = arc.par_iter().map(|&t| {
+        let s = &st[t % n];
+        (t, ps[t % n], dj_argmax_all(s, nmax, w, limit), dj_argmax_all(s, nmax, 0.0, limit))
+    }).collect();
+
+    let stat = |e: &mut Vec<f64>| -> (f64, f64, f64) {
+        let rms = (e.iter().map(|x| x * x).sum::<f64>() / e.len() as f64).sqrt();
+        let bias = e.iter().sum::<f64>() / e.len() as f64;
+        let mut a: Vec<f64> = e.iter().map(|x| x.abs()).collect();
+        a.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        (rms, a[a.len() / 2], bias)
+    };
+    if equiv {
+        // Is the price a second horizon knob? The gain phase's pitch depends on the state only
+        // through `v_z` and the price *ratio* (`gain_pitch`), so two rules that trace the same
+        // ratio along the arc give the same pitches whatever their parameters say. For each
+        // lookahead at the profile's own `w`, find the `dTE` lookahead whose pitches match it
+        // best and report what is left over -- if that residual is far below the RMS either
+        // rule scores against the optimum, the two knobs are the same knob.
+        let free_t: Vec<usize> = sets[2].1.clone();
+        let at_w = |wr: f64| -> Vec<Vec<f64>> {
+            free_t.par_iter().map(|&t| dj_argmax_all(&st[t % n], nmax, wr, limit)).collect() };
+        let (dj, dte) = (at_w(w), at_w(0.0));
+        let rms = |a: &[Vec<f64>], i: usize, b: &[Vec<f64>], j: usize| -> f64 {
+            (a.iter().zip(b).map(|(x, y)| (x[i - 1] - y[j - 1]).powi(2)).sum::<f64>()
+             / a.len() as f64).sqrt() };
+        println!("n_dj,best_n_dte,residual_deg,dj_vs_opt_deg");
+        for k in 1..=nmax {
+            let m = (1..=nmax).min_by(|&x, &y|
+                rms(&dj, k, &dte, x).partial_cmp(&rms(&dj, k, &dte, y)).unwrap()).unwrap();
+            let vs_opt = (dj.iter().zip(&free_t)
+                .map(|(v, &t)| (v[k - 1] - ps[t % n]).powi(2)).sum::<f64>()
+                / dj.len() as f64).sqrt();
+            println!("{k},{m},{:.4},{vs_opt:.4}", rms(&dj, k, &dte, m));
+        }
+        return
+    }
+    if wsweep {
+        // Is the profile's own `w` the one the rule wants? Sweep the rule's price over a grid
+        // in lambda units and report, for each, the best lookahead and what it scores. If the
+        // hypothesis is right the minimum sits at the cell's own lambda; if the curve is flat
+        // the rule is not reading the price at all.
+        let free_t: Vec<usize> = sets[2].1.clone();
+        println!("lam_rule,w_rule,best_n,rms,med,bias,rms_at_20");
+        for i in -24..=24 {
+            let lr = 0.5 * i as f64;
+            let wr = w_of_lambda(lr);
+            let picks: Vec<Vec<f64>> = free_t.par_iter()
+                .map(|&t| dj_argmax_all(&st[t % n], nmax, wr, limit)).collect();
+            let score = |k: usize| {
+                let e: Vec<f64> = picks.iter().zip(&free_t)
+                    .map(|(v, &t)| v[k - 1] - ps[t % n]).collect();
+                let rms = (e.iter().map(|x| x * x).sum::<f64>() / e.len() as f64).sqrt();
+                let bias = e.iter().sum::<f64>() / e.len() as f64;
+                let mut a: Vec<f64> = e.iter().map(|x| x.abs()).collect();
+                a.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                (rms, a[a.len() / 2], bias)
+            };
+            let bk = (1..=nmax).min_by(|&x, &y|
+                score(x).0.partial_cmp(&score(y).0).unwrap()).unwrap();
+            let (rms, med, bias) = score(bk);
+            println!("{lr},{wr:.6},{bk},{rms:.4},{med:.4},{bias:+.4},{:.4}",
+                     score(20.min(nmax)).0);
+        }
+        return
+    }
+    // The climb's last ten-odd ticks, where the pitch comes back to 0, are a separate story from
+    // its body: the README's own bvp rule breaks down there too. Split the free set three
+    // quarters / one quarter along the arc so the two cannot be confused.
+    let cut = t_gain + 3 * (t_apex - t_gain) / 4;
+    let early = |t: usize| free(t) && t < cut;
+    let late = |t: usize| free(t) && t >= cut;
+    println!("n,dj_rms,dj_med,dj_bias,dte_rms,dte_med,dte_bias,dj_rms_up,dte_rms_up,\
+              dj_rms_arc,dte_rms_arc,dj_rms_early,dte_rms_early,dj_rms_late,dte_rms_late");
+    for k in 1..=nmax {
+        let err = |pick: &dyn Fn(&(usize, f64, Vec<f64>, Vec<f64>)) -> f64, keep: &dyn Fn(usize) -> bool|
+            rows.iter().filter(|r| keep(r.0)).map(|r| pick(r) - r.1).collect::<Vec<f64>>();
+        let dj = |r: &(usize, f64, Vec<f64>, Vec<f64>)| r.2[k - 1];
+        let dte = |r: &(usize, f64, Vec<f64>, Vec<f64>)| r.3[k - 1];
+        let (a, b, c) = stat(&mut err(&dj, &free));
+        let (d, e, f) = stat(&mut err(&dte, &free));
+        let (g, ..) = stat(&mut err(&dj, &up));
+        let (h, ..) = stat(&mut err(&dte, &up));
+        let (i, ..) = stat(&mut err(&dj, &|_| true));
+        let (j, ..) = stat(&mut err(&dte, &|_| true));
+        let nan = (f64::NAN, f64::NAN, f64::NAN);
+        let (p, ..) = if rows.iter().any(|r| early(r.0)) { stat(&mut err(&dj, &early)) } else { nan };
+        let (q, ..) = if rows.iter().any(|r| early(r.0)) { stat(&mut err(&dte, &early)) } else { nan };
+        let (u, ..) = if rows.iter().any(|r| late(r.0)) { stat(&mut err(&dj, &late)) } else { nan };
+        let (v, ..) = if rows.iter().any(|r| late(r.0)) { stat(&mut err(&dte, &late)) } else { nan };
+        println!("{k},{a:.4},{b:.4},{c:+.4},{d:.4},{e:.4},{f:+.4},{g:.4},{h:.4},{i:.4},{j:.4},\
+                  {p:.4},{q:.4},{u:.4},{v:.4}");
+    }
+    if dump {
+        // per tick: what the optimum flew, and the lookahead at which each rule would have said it
+        println!("# t,rel,pitch,vy,vz,dj_nstar,dte_nstar,dj_err20,dte_err20,free");
+        for (t, p, dj, dte) in &rows {
+            let s = &st[t % n];
+            let nstar = |v: &Vec<f64>| (1..=nmax).min_by(|&a, &b|
+                (v[a - 1] - p).abs().partial_cmp(&(v[b - 1] - p).abs()).unwrap()).unwrap();
+            println!("{t},{},{p:.4},{:.6},{:.6},{},{},{:+.4},{:+.4},{}",
+                     t - t_gain, s.vel.y, s.vel.z, nstar(dj), nstar(dte),
+                     dj[19.min(nmax - 1)] - p, dte[19.min(nmax - 1)] - p, free(*t) as u8);
+        }
+    }
+}
+
 /// The gain phase, in closed form: two clocks, one corner, and one number handed over.
 ///
 /// The Jacobian is triangular on each arc of the cycle, in complementary directions:
@@ -730,15 +903,8 @@ fn cmd_gain(path: &str, w: Option<f64>, bvp: bool, dump: bool) {
     // Work on a doubled index so an arc that straddles the cut is still one run.
     let at = |t: usize| (t % n, &st[t % n], ps[t % n], mu[t % n + 1]);
     let off = |t: usize| { let (_, s, p, _) = at(t); dive_branch_off(s.vel, p) };
-    // the apex ends the climbing arc: the last tick with the dive branch off before it turns on
-    // the apex that ends the *longest* branch-off run, so a one-tick dropout mid-climb cannot
-    // cut the arc short
-    let ends: Vec<usize> = (n + 1..=2 * n).filter(|&t| off(t - 1) && !off(t)).collect();
-    if ends.is_empty() {
-        println!("{path}: no apex -- the down-to-forward branch never switches"); return }
-    let run = |t: usize| (1..n).map(|k| t - k).take_while(|&u| off(u - 1)).count();
-    let t_apex = *ends.iter().max_by_key(|&&t| run(t)).unwrap();
-    let t_gain = t_apex - run(t_apex);
+    let Some((t_gain, t_apex)) = climbing_arc(&st, &ps) else {
+        println!("{path}: no apex -- the down-to-forward branch never switches"); return };
     let (mu_y_t, kappa) = (mu[t_apex % n].0, mu[t_apex % n].1);
     println!("{path}: {n} ticks, |v_N - v_0| = {close:.2e}, w = {w}");
     if close > 1e-3 { println!("  !! not a closed cycle; the periodic costate does not apply") }
@@ -1334,6 +1500,17 @@ fn main() {
         Some("adjoint") => cmd_adjoint(&a[2], a.get(3).filter(|s| *s != "dump")
                                                    .map(|s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
+        // `w=<x>` is a named override rather than a positional: the whole point of the
+        // subcommand is the profile's own `w`, and a bare number there reads as the lookahead.
+        Some("djn") => cmd_djn(&a[2],
+                               a.iter().find_map(|x| x.strip_prefix("w=")).map(|s| s.parse().unwrap()),
+                               a.iter().find_map(|x| x.strip_prefix("limit=")).map(|s| s.parse().unwrap()),
+                               a.get(3).filter(|s| *s != "dump" && *s != "wsweep" && *s != "equiv"
+                                                && !s.starts_with("w=") && !s.starts_with("limit="))
+                                       .map_or(48, |s| s.parse().unwrap()),
+                               a.iter().any(|x| x == "dump"),
+                               a.iter().any(|x| x == "wsweep"),
+                               a.iter().any(|x| x == "equiv")),
         Some("rules") => cmd_rules(&a[2], a[3].parse().unwrap(), a[4].parse().unwrap(), n(5)),
         Some("policy") => cmd_policy(a.iter().any(|x| x == "opt"),
                                      match a.iter().find(|x| ["leak", "floor", "hold", "target"].contains(&x.as_str())) {
@@ -1343,7 +1520,7 @@ fn main() {
                                          _ => Dive::Leak,
                                      },
                                      a.iter().any(|x| x == "vzpeak")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|gain|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|rules|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|gain|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|djn|rules|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }

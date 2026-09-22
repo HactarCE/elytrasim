@@ -354,6 +354,97 @@ Note the ΔTE family is not merely imprecise in the **dive** — it is bimodal t
 between "stay level" (short n) and "give up and zoom now" (long n, around -40 to -52), and
 describing the optimum at neither.
 
+### Pricing the lookahead with `ΔJ` buys a tick or two of horizon and nothing else
+
+`argmax ΔTE` is blind to the price on distance, so the natural way to carry it to `λ ≠ 0` is to
+maximize the cycle's *own* objective over the same held rollout: `ΔJ = ΔTE + w·Δz`. That is the
+right generalization and not merely the obvious one. Expanding `ΔTE = (|v_n|² − |v_0|²)/2g + Σ v_y`,
+
+    ΔJ = Σ_k (v_y + w·v_z)  +  KE(v_n) − KE(v_0)
+
+— the cycle's own running reward accumulated over the rollout, plus a terminal value. So it is the
+climb's own problem truncated at `n`, with the control frozen and the apex price `mu(apex)` replaced
+by the energy gradient `v_n/g`: it fixes the running reward, which `ΔTE` gets wrong the moment
+`w ≠ 0`, and leaves the terminal price wrong, which is what `n` was standing in for all along. At
+`w = 0` the two are the same expression, which is the harness check.
+
+**It does not describe the priced cycles better.** `myopic djn <profile>` scores both rules against
+the optimum's own pitches over the ticks where its climb is nose-up and off its own `|pitch| ≤ 85`
+bound; `python3 tools/dj_phase.py runs/steady/nlamsweep` runs it over all 1233 periodic cells. `n`
+stays tuned for both rules, so the fair comparison is each at its *own* best lookahead:
+
+| λ | -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ΔJ` best n | 18 | 18 | 19 | 19 | 19 | 19 | 19 | 19 | 19 | 18 |
+| `ΔJ` RMS, ° | **1.32** | **1.52** | 1.78 | 1.77 | 2.48 | 3.36 | 4.26 | 4.91 | 6.30 | **8.69** |
+| `ΔTE` best n | 18 | 18 | 19 | 20 | 19 | 20 | 20 | 21 | 21 | 20 |
+| `ΔTE` RMS, ° | 1.73 | 1.68 | 1.78 | **1.63** | **2.32** | **3.23** | **4.19** | **4.85** | **6.29** | 8.72 |
+| cells where `ΔJ` wins | 99% | 97% | — | 10% | 21% | 30% | 40% | 43% | 62% | 71% |
+
+Every entry is a median over that λ's 31–151 cells, so the last row is the one to read: it pairs
+the two rules cell by cell, which the two medians above it do not.
+
+It helps where distance is *charged* for — 0.15 to 0.40°, on 97–99% of cells at `λ < 0` — and costs
+a little where distance is paid for, which is the half the rule was invented for. The 20 cells that
+neither climb nor sink (`|Δy| < 1` block over the whole cycle, all at `λ` 3–6) behave like the rest:
+`ΔTE` is closer on 14 of the 20, by 0.06–0.40°, and `ΔJ` on the other six — all `λ` 5–6 — by
+0.06–0.12°.
+
+**The price and the lookahead turn out to be the same knob**, which is why adding one cannot buy
+anything the other did not already have. `myopic djn <profile> equiv` matches each `ΔJ` lookahead to
+the `ΔTE` lookahead whose pitches are closest and reports what is left over. On `n0400_lamP4`
+(`λ = 4`, `w = 0.261`):
+
+| `ΔJ` at n | 10 | 15 | 20 | 25 | 30 |
+|---|---|---|---|---|---|
+| closest `ΔTE` n | 11 | 16 | 21 | 27 | 33 |
+| residual between the two, ° | 0.70 | 0.62 | 0.54 | 0.57 | 0.58 |
+| `ΔJ`'s own error against the optimum, ° | 10.9 | 6.4 | 3.2 | 5.2 | 7.5 |
+
+**One tick of horizon**, and the leftover is six times smaller than the error the rules are trying
+to explain. At `λ = -2` the shift runs the other way (n → n−1 at n = 20, n−3 at n = 40) and at
+`λ = 3` it is n → n+1 to n+2; the residual is 0.4–0.8° everywhere. So the win at `λ < 0` and the
+loss at `λ > 0` are that half-degree of leftover happening to point the right way, not the price
+term doing its job.
+
+Why they should coincide, as far as this goes: the pitch a linear price picks depends on the state
+only through `v_z` and the *ratio* `mu_z/mu_y` — see the closed form below, where `v_y` does not
+enter — so two rules that trace the same ratio along the arc fly the same pitches whatever their
+parameters are called. Raising `w` and shortening `n` both raise that ratio. A held-`n` rollout is
+not literally a one-tick maximization of `mu.f`, so this is the reading the measurement supports
+rather than a derivation of it; what the measurement establishes on its own is the half-degree.
+
+Run the knob the other way and it says the same thing. `myopic djn <profile> wsweep` re-scores the
+rule at a grid of *its own* `λ`, independent of the cycle's, and reports the best lookahead and RMS
+at each. The best lookahead walks monotonically down as the rule's price goes up — 25 at `λ_rule` =
+−12 to 17 at +12 — and the RMS has a shallow interior minimum that **does not sit at the cycle's own
+price and barely moves with it**: `λ_rule` = −4.5 for a `λ = 0` cell, −5.5 and −6.0 for two `λ = 4`
+cells. A knob that read the price would track it.
+
+**Where the error actually is.** Split the climb three quarters / one quarter along its arc and the
+λ-dependence is almost entirely in the last quarter, where the pitch comes back to 0 — the same
+window the exact climb-to-apex rule degrades in:
+
+| λ | -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ΔTE`, first three quarters, ° | 1.70 | 1.66 | 1.48 | 1.44 | 1.58 | 1.74 | 2.13 | 3.27 | 6.10 | 8.72 |
+| `ΔTE`, last quarter, ° | 1.81 | 1.73 | 2.11 | 2.36 | 4.24 | 6.85 | 8.90 | 13.79 | 17.48 | 23.03 |
+
+Through the body of the climb a twenty-tick lookahead is worth about two degrees at `λ = 4`, against
+1.5° at `λ = 0`. It is the approach to the corner that no fixed horizon survives, and the corner
+arrives earlier and harder the more distance is worth — which the corner condition
+`mu_z/mu_y ≥ GAIN_RATE` below already predicts.
+
+**Read the absolute numbers at `λ > 0` with the corpus's own cut in mind.** A `--steady` profile is
+closed in velocity but optimized with its terminal velocity free, so its first-order conditions
+carry the open-horizon terminal price at the cut and its pitch jumps there: median `|p[0] − p[n−1]|`
+runs 7.5° at `λ = −2` to 24.9° at `λ = 7`, against a typical per-tick step of 0.28° falling to
+0.03° over the same range. Where that cut lands inside the climb moves the score a long way. Over
+the 21 cut phases of the one `n = 300, λ = 4` cell, `ΔTE` at its best `n` scores **1.34°** when
+only a tenth of the climb sits past the cut and **5.95°** when nearly half does, monotonically in
+between. The comparison above is unaffected — both rules are scored on the same ticks — but the
+level is not a property of the price alone.
+
 ## The gain phase without a lookahead: two clocks and one handoff
 
 `n = 20` is a fitted constant, and "The exact one-tick rule" below says what it stands in for:

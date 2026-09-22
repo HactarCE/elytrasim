@@ -47,15 +47,20 @@ pub fn read_pitches(path: &str) -> Vec<f64> {
 
 /// Coarse sweep for the global argmax, then a ternary refine inside the winning cell.
 /// The objective is not unimodal in pitch, so the sweep has to be global.
-pub fn argmax<F: Fn(f64) -> f64>(f: F, step: f64) -> f64 {
-    let (mut bp, mut bs) = (0.0, f64::NEG_INFINITY);
-    let n = (180.0 / step).round() as i64;
+pub fn argmax<F: Fn(f64) -> f64>(f: F, step: f64) -> f64 { argmax_in(f, step, -90.0, 90.0) }
+
+/// `argmax` over `[lo, hi]` instead of the whole pitch domain. A corpus profile was optimized
+/// under a `|pitch| <= limit` control set, so a rule scored against one has to be held to the
+/// same set: outside it the pitches are not worse, they are unavailable.
+pub fn argmax_in<F: Fn(f64) -> f64>(f: F, step: f64, lo: f64, hi: f64) -> f64 {
+    let (mut bp, mut bs) = (0.0_f64.clamp(lo, hi), f64::NEG_INFINITY);
+    let n = ((hi - lo) / step).round() as i64;
     for i in 0..=n {
-        let p = -90.0 + step * i as f64;
+        let p = (lo + step * i as f64).min(hi);
         let v = f(p);
         if v > bs { bs = v; bp = p }
     }
-    let (mut a, mut b) = ((bp - step).max(-90.0), (bp + step).min(90.0));
+    let (mut a, mut b) = ((bp - step).max(lo), (bp + step).min(hi));
     for _ in 0..60 {
         let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
         if f(m1) < f(m2) { a = m1 } else { b = m2 }
@@ -70,6 +75,58 @@ pub fn argmax<F: Fn(f64) -> f64>(f: F, step: f64) -> f64 {
 pub fn bug_dte_n(s: &State, n: usize) -> f64 {
     let te = s.total_energy();
     argmax(|p| run_n(s, p, n).total_energy() - te, 0.125)
+}
+
+/// GAIN, at a price on distance. Pitch maximizing the *objective's* change over `n` ticks held
+/// constant: `dJ = dTE + w*dz`. `w = 0` is exactly `bug_dte_n`.
+///
+/// Why this is the right generalization, and not merely the obvious one. Expand `dJ` over the
+/// rollout: `dTE = (|v_n|^2 - |v_0|^2)/2g + sum v_y`, so `dJ` is
+/// `sum_k (v_y,k + w*v_z,k) + (|v_n|^2 - |v_0|^2)/2g`
+/// -- the cycle's own running reward `(1, w).v` accumulated over the rollout, plus a terminal
+/// value equal to the kinetic energy at the end. So `argmax dJ` is the climb's own optimal-control
+/// problem truncated at `n`, with the control frozen and the apex's price vector `mu(apex)`
+/// replaced by the energy gradient `v_n/g`. `dTE` gets the running reward wrong as soon as
+/// `w != 0`; this gets it exactly right and still gets the terminal price wrong, which is what
+/// `n` is left standing in for.
+pub fn bug_dj_n(s: &State, n: usize, w: f64, limit: f64) -> f64 {
+    let j = |t: &State| t.total_energy() + w * t.pos.z;
+    let j0 = j(s);
+    argmax_in(|p| j(&run_n(s, p, n)) - j0, 0.125, -limit, limit)
+}
+
+/// `bug_dj_n` for every lookahead `1..=nmax` at once.
+///
+/// Holding a pitch for `n` ticks is a prefix of holding it for `n + 1`, so one rollout per grid
+/// pitch scores every horizon; only the refinement inside the winning cell is per-horizon. That
+/// is the difference between minutes and hours over a corpus.
+pub fn dj_argmax_all(s: &State, nmax: usize, w: f64, limit: f64) -> Vec<f64> {
+    let step = 0.125;
+    let j = |t: &State| t.total_energy() + w * t.pos.z;
+    let j0 = j(s);
+    let mut best = vec![(f64::NEG_INFINITY, 0.0_f64); nmax + 1];
+    let steps = (2.0 * limit / step).round() as i64;
+    for i in 0..=steps {
+        let p = (-limit + step * i as f64).min(limit);
+        let trig = PitchTrig::new(p as f32);
+        let mut t = s.clone();
+        for n in 1..=nmax {
+            t = t.ticked_cached(trig);
+            let v = j(&t) - j0;
+            if v > best[n].0 { best[n] = (v, p) }
+        }
+    }
+    (1..=nmax).map(|n| {
+        let (bs, bp) = best[n];
+        let f = |p: f64| j(&run_n(s, p, n)) - j0;
+        let (mut a, mut b) = ((bp - step).max(-limit), (bp + step).min(limit));
+        for _ in 0..40 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if f(m1) < f(m2) { a = m1 } else { b = m2 }
+        }
+        let p = 0.5 * (a + b);
+        if f(p) > bs { p } else { bp }
+    }).collect()
 }
 
 /// SNAP, stopping. Has the forward speed peaked -- would one more tick of the hold fail to
