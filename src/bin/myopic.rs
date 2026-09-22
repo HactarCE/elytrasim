@@ -42,6 +42,9 @@
 //!   eqrate                               steady glide maximizing the objective rate, per w
 //!   glide    [step] [lo] [hi]             steady-glide curves vs pitch, as CSV
 //!   crit                                 the three critical points of the steady glide, both sides
+//!   rising   [frontier|pitch|clock|tradeoff|down|all]
+//!                                        when forward speed can rise at all, and what a rise
+//!                                        costs; see docs/rising.md
 //!   polish   <file> [passes] [w]         coordinate-ascent polish of a schedule; maximizes TE + w*z
 //!   cycle    <file> <off>                per-tick dump: pitch, gamma, and each rule's answer
 //!   score    <file> <off> <lo> <hi>      RMS pitch error of a menu of rules, per phase
@@ -433,6 +436,193 @@ fn cmd_crit() {
     crit("max glide ratio (blocks forward per block fallen)", 0.0, &|v| v.z / -v.y);
     crit("min sink (max vy)", -13.0, &|v| v.y);
     crit("max forward speed (max vx)", 53.0, &|v| v.z);
+}
+
+// ---------------------------------------------------------------- the acceleration frontier
+
+/// Largest horizontal speed at which *some* pitch still raises it, in closed form.
+///
+/// Over all pitches and yaws `h' <= 0.99 h + 0.891 D` with `D = -0.1 L (v_y - 0.08 + 0.06 L)`
+/// and `L = cos^2 p`: the nose-up branch only subtracts, and a yaw off the velocity only
+/// subtracts. Maximizing `D` over `L` in `[0,1]` and solving `h' = h` gives three branches --
+/// pitch 0 saturating the lift below `v_y = -0.04`, an interior lift above it, and no lift at
+/// all once gravity can no longer be beaten. See `docs/rising.md`.
+fn frontier_h(vy: f64) -> f64 {
+    if vy >= 0.08 { 0.0 }
+    else if vy >= -0.04 { 3712.5 * (0.008 - 0.1 * vy).powi(2) }
+    else { 8.91 * (0.02 - vy) }        // = the vz_peaked line, 0.1782 - 8.91 v_y
+}
+
+/// The pitch that maximizes `h'`, in closed form. Never nose-up: every nose-up pitch is beaten
+/// by the nose-down pitch with the same lift, which pays no pull-up.
+fn frontier_pitch(vy: f64) -> f64 {
+    (((0.008 - 0.1 * vy) / 0.012).clamp(0.0, 1.0) as f64).sqrt().acos().to_degrees()
+}
+
+fn dh(vy: f64, vz: f64, p: f64) -> f64 {
+    ticked(&State { pos: Vec3::ZERO, vel: Vec3::new(0.0, vy, vz) }, p).vel.z - vz
+}
+fn best_dh(vy: f64, vz: f64) -> (f64, f64) {
+    let p = argmax(|p| dh(vy, vz, p), 0.05);
+    (dh(vy, vz, p), p)
+}
+
+fn rising_frontier() {
+    println!("# largest v_z at which some pitch still raises v_z, bisected against the sim");
+    println!("{:>9} {:>12} {:>12} {:>10} {:>9} {:>9}",
+             "v_y", "sim", "closed", "rel", "p* sim", "p* cls");
+    for vy in [-1.2, -1.0, -0.6, -0.4, -0.36040, -0.2, -0.14949, -0.1, -0.04,
+               -0.02, 0.0, 0.02, 0.04, 0.06, 0.079, 0.08, 0.2] {
+        if best_dh(vy, 0.0).0 <= 0.0 {
+            println!("{vy:>9.5} {:>12.6} {:>12.6} {:>10} {:>9} {:>9.3}",
+                     0.0, frontier_h(vy), "-", "-", frontier_pitch(vy));
+            continue
+        }
+        let (mut lo, mut hi) = (0.0, 20.0);
+        for _ in 0..80 { let m = 0.5 * (lo + hi); if best_dh(vy, m).0 > 0.0 { lo = m } else { hi = m } }
+        let f = 0.5 * (lo + hi);
+        println!("{vy:>9.5} {f:>12.6} {:>12.6} {:>10.1e} {:>9.3} {:>9.3}",
+                 frontier_h(vy), f / frontier_h(vy) - 1.0, best_dh(vy, f).1, frontier_pitch(vy));
+    }
+}
+
+fn rising_pitch() {
+    println!("# v_y >= 0.08: no pitch can touch h. h'/h over all nose-down pitches, and the");
+    println!("# best nose-up one, at 0.01 deg resolution.");
+    println!("{:>7} {:>7}  {:>15} {:>15} {:>15}", "v_y", "v_z", "max h'/h, p>=0", "min h'/h, p>=0", "max h'/h, p<0");
+    for vy in [0.08, 0.2, 1.0] {
+        for vz in [0.2, 1.0, 3.4] {
+            let r = |p: f64| (dh(vy, vz, p) + vz) / vz;
+            let (mut mx, mut mn, mut up) = (f64::MIN, f64::MAX, f64::MIN);
+            for i in 0..=9000 {
+                mx = mx.max(r(i as f64 * 0.01));
+                mn = mn.min(r(i as f64 * 0.01));
+                up = up.max(r(-(i as f64) * 0.01 - 0.01));
+            }
+            println!("{vy:>7.2} {vz:>7.2}  {mx:>15.12} {mn:>15.12} {up:>15.12}");
+        }
+    }
+    println!("\n# same claim in three dimensions: worst h'/h over 4e6 random (v, pitch, yaw)");
+    println!("# draws with v_y >= 0.08, v_x and v_z in [-4, 4], yaw in [-360, 360]");
+    let (mut worst, mut arg) = (f64::MIN, (0f64, 0f64, 0f64, 0f64, 0f64));
+    let mut x: u64 = 0x9E3779B97F4A7C15;
+    let mut rnd = move || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; (x >> 11) as f64 / (1u64 << 53) as f64 };
+    for _ in 0..4_000_000 {
+        let (vx, vy, vz) = (rnd() * 8.0 - 4.0, 0.08 + rnd() * 4.0, rnd() * 8.0 - 4.0);
+        let (p, y) = (rnd() * 180.0 - 90.0, rnd() * 720.0 - 360.0);
+        let h = (vx * vx + vz * vz).sqrt();
+        if h < 1e-9 { continue }
+        let v = update_fall_flying_movement(Vec3::new(vx, vy, vz), Rot { x: p as f32, y: y as f32 });
+        let r = (v.x * v.x + v.z * v.z).sqrt() / h;
+        if r > worst { worst = r; arg = (vx, vy, vz, p, y) }
+    }
+    println!("worst h'/h {worst:.15} at v ({:.3}, {:.3}, {:.3}) pitch {:.2} yaw {:.2}; \
+              0.99f32 = {:.15}", arg.0, arg.1, arg.2, arg.3, arg.4, 0.99_f32 as f64);
+
+    println!("\n# steepest nose-up pitch that still raises h (blank: none does)");
+    let hs = [0.5f64, 1.0, 1.5, 2.0, 2.5, 3.0, 3.389];
+    println!("{:>7} | {}", "v_y", hs.map(|h| format!("{h:>8.3}")).join(""));
+    for vy in [-0.1, -0.2, -0.3, -0.4, -0.6, -0.8, -1.0, -1.5, -2.0] {
+        let row: Vec<String> = hs.iter().map(|&h| {
+            if dh(vy, h, 0.0) <= 0.0 { return format!("{:>8}", "-") }
+            let (mut lo, mut hi) = (-90.0, 0.0);
+            for _ in 0..60 { let m = 0.5 * (lo + hi); if dh(vy, h, m) > 0.0 { hi = m } else { lo = m } }
+            format!("{:>8.2}", 0.5 * (lo + hi))
+        }).collect();
+        println!("{vy:>7.2} | {}", row.join(""));
+    }
+}
+
+/// Hold `p` until `v_y < 0.08`; the ticks it takes, and the height it buys.
+fn rise_leg(vy0: f64, h0: f64, p: f64) -> (usize, f64, f64) {
+    let mut s = State { pos: Vec3::ZERO, vel: Vec3::new(0.0, vy0, h0) };
+    let te0 = s.total_energy();
+    let mut t = 0;
+    while s.vel.y >= 0.08 && t < 500 { s = ticked(&s, p); t += 1 }
+    (t, s.total_energy() - te0, s.pos.y)
+}
+
+fn rising_clock() {
+    println!("# the rise clock: how long `v_y >= 0.08` lasts, per held pitch. h' = 0.99 h every");
+    println!("# tick of it whatever the pitch, so `0.99^T` is the whole horizontal cost.");
+    println!("{:>8} | {:>23} | {:>23} | {:>23}", "",
+             "pitch 90, no lift", "pitch 45, half lift", "pitch 0, full lift");
+    println!("{:>8} | {:>4} {:>7} {:>6} {:>4} | {:>4} {:>7} {:>6} {:>4} | {:>4} {:>7} {:>6} {:>4}",
+             "v_y0", "T", "0.99^T", "dy", "T<0", "T", "0.99^T", "dy", "T<0", "T", "0.99^T", "dy", "T<0");
+    for vy0 in [0.08, 0.10, 0.15, 0.167467, 0.20, 0.30, 0.40, 0.50, 0.80] {
+        let cells: Vec<String> = [89.9, 45.0, 0.0].iter().map(|&p| {
+            let (t1, _, dy) = rise_leg(vy0, 1.0, p);
+            let mut s = State { pos: Vec3::ZERO, vel: Vec3::new(0.0, vy0, 1.0) };
+            let mut t2 = 0;
+            while s.vel.y >= 0.0 && t2 < 500 {
+                s = ticked(&s, if s.vel.y >= 0.08 { p } else { frontier_pitch(s.vel.y) });
+                t2 += 1;
+            }
+            format!("{t1:>4} {:>7.4} {dy:>6.3} {t2:>4}", 0.99_f64.powi(t1 as i32))
+        }).collect();
+        println!("{vy0:>8.4} | {} | {} | {}", cells[0], cells[1], cells[2]);
+    }
+    println!("\n# zero lift is exactly solvable: v_y(k) = -3.92 + (v_y0 + 3.92) 0.98^k, so");
+    println!("# T = ln((v_y0 + 3.92)/4) / 0.020203, rounded up");
+    for vy0 in [0.10, 0.20, 0.30, 0.50, 0.80] {
+        println!("  v_y0 {vy0:>5.2}  T = {:>6.3} -> {} (sim: {})",
+                 ((vy0 + 3.92) / 4.0f64).ln() / 0.98f64.ln().abs(),
+                 (((vy0 + 3.92) / 4.0f64).ln() / 0.98f64.ln().abs()).ceil(),
+                 rise_leg(vy0, 1.0, 89.9).0);
+    }
+}
+
+fn rising_tradeoff() {
+    println!("# lift while rising buys height and costs ticks. Compared at the end of the rise,");
+    println!("# where both are back at v_y < 0.08: above h*, dumping the lift wins on TE.");
+    println!("{:>7} {:>8} {:>8} {:>10} {:>10} {:>10}",
+             "v_y0", "T(p=90)", "T(p=0)", "extra dy", "h* sim", "h* closed");
+    for vy0 in [0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.80, 1.20] {
+        let (t90, _, y90) = rise_leg(vy0, 1.0, 89.9);
+        let (t0, _, y0) = rise_leg(vy0, 1.0, 0.0);
+        if t90 == t0 {
+            println!("{vy0:>7.2} {t90:>8} {t0:>8} {:>10.3} {:>10} {:>10}", y0 - y90, "-", "-");
+            continue
+        }
+        let (mut lo, mut hi) = (0.05, 12.0);
+        for _ in 0..60 {
+            let m = 0.5 * (lo + hi);
+            if rise_leg(vy0, m, 0.0).1 - rise_leg(vy0, m, 89.9).1 > 0.0 { lo = m } else { hi = m }
+        }
+        let pred = (0.16 * (y0 - y90)
+                    / (0.99f64.powi(2 * t90 as i32) - 0.99f64.powi(2 * t0 as i32))).sqrt();
+        println!("{vy0:>7.2} {t90:>8} {t0:>8} {:>10.3} {:>10.4} {pred:>10.4}",
+                 y0 - y90, 0.5 * (lo + hi));
+    }
+    println!("\n# for scale: pitch-0 steady glide h = {:.5}, fastest steady glide h = {:.5}",
+             equilibrium(0.0).z, equilibrium(ceiling().0).z);
+}
+
+fn rising_down() {
+    println!("# one tick from v = (0, 0.30, 2.00) at pitches approaching straight down, trig {}",
+             trig_mode());
+    println!("{:>10} {:>14} {:>12} {:>14} {:>12}", "pitch", "Mth::cos(p)", "lift", "v_z'/v_z", "v_y'");
+    for p in [0.0f64, 45.0, 80.0, 89.0, 89.9, 89.99, 89.999, 90.0, -89.999, -90.0] {
+        let lean = (p as f32) * (std::f64::consts::PI / 180.0) as f32;
+        let s = State { pos: Vec3::ZERO, vel: Vec3::new(0.0, 0.30, 2.00) };
+        let v = ticked(&s, p).vel;
+        println!("{p:>10.4} {:>14.4e} {:>12.4e} {:>14.9} {:>12.7}",
+                 Mth::cos(lean), (lean as f64).cos().powi(2), v.z / 2.00, v.y);
+    }
+}
+
+fn cmd_rising(part: &str) {
+    println!("# trig = {}, flight = {}\n", trig_mode(), flight_mode());
+    match part {
+        "frontier" => rising_frontier(),
+        "pitch" => rising_pitch(),
+        "clock" => rising_clock(),
+        "tradeoff" => rising_tradeoff(),
+        "down" => rising_down(),
+        "all" => { rising_frontier(); println!(); rising_pitch(); println!();
+                   rising_clock(); println!(); rising_tradeoff(); println!(); rising_down() }
+        _ => eprintln!("rising: want frontier|pitch|clock|tradeoff|down|all"),
+    }
 }
 
 fn cmd_eqrate() {
@@ -1477,6 +1667,7 @@ fn main() {
                                    a.get(3).map_or(-90.0, |s| s.parse().unwrap()),
                                    a.get(4).map_or(90.0, |s| s.parse().unwrap())),
         Some("crit") => cmd_crit(),
+        Some("rising") => cmd_rising(a.get(2).map_or("all", String::as_str)),
         Some("polish") => cmd_polish(&a[2], a.get(3).map_or(40, |s| s.parse().unwrap()),
                                      a.get(4).map_or(0.0, |s| s.parse().unwrap())),
         Some("cycle") => cmd_cycle(&a[2], n(3)),

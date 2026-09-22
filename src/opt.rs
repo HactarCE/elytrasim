@@ -141,6 +141,10 @@ pub fn dj_argmax_all(s: &State, nmax: usize, w: f64, limit: f64) -> Vec<f64> {
 /// the map depends on pitch only through `lift = cos^2 p`, and `d(v_z')/d(lift)` is positive
 /// whenever `v_y < -0.04`, so pitch 0 is the argmax of `v_z'` over the whole domain there; for
 /// `p < 0` the forward-to-up branch switches on and subtracts from `v_z` outright.
+///
+/// Above `v_y = -0.04` that stops being true -- the argmax lift goes interior, the line bends
+/// into a parabola, and above `v_y = 0.08` no pitch raises `v_z` at all. `docs/rising.md` has
+/// the whole frontier; `myopic rising` measures it.
 pub fn vz_peaked(s: &State) -> bool { ticked(s, 0.0).vel.z <= s.vel.z }
 
 /// DIVE. Pitch whose next tick leaves the flight-path angle at `target`.

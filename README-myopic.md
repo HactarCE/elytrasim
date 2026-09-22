@@ -79,6 +79,12 @@ It reads as *no pitch* can raise `v_z` further, not merely pitch 0: for `p >= 0`
 on pitch only through `lift = cos^2 p` and `d(v_z')/d(lift) > 0` whenever `v_y < -0.04`, so 0 is
 the argmax there; for `p < 0` the forward-to-up branch switches on and takes `v_z` away outright.
 
+That line is one branch of a frontier that covers the whole `(v_y, h)` plane, and the other
+branches answer a different question — when forward speed can rise *at all*. Above
+`v_y = -0.04` the argmax pitch leaves 0 and the line bends into a parabola; above
+`v_y = +0.08` nothing works and `h' = 0.99 h` whatever the pitch, which is the exact form of
+"you cannot accelerate forwards while moving up". See `docs/rising.md`.
+
 On `REPLAY_PITCHES_300` it is exact: tick 207 is the last tick that still buys forward speed
 (`+5.0e-4`) and the optimum holds it; tick 208 would lose it (`-7.6e-4`) and the optimum flicks.
 
