@@ -181,10 +181,20 @@ on would not be comparable. The per-phase manifests record the cells of each pha
 
 ## Steady state
 
-`--steady` optimizes the cycle you would fly *back to back* instead of one cycle with the
-terminal velocity free. It re-solves `v0` to the schedule's own fixed point -- the fixed point
-of `v -> (replay the schedule from v).vel` -- after every pass, so at convergence `v_final ==
-v0` identically and no constraint or penalty is needed to make the schedule repeatable.
+`--steady` makes a schedule *repeatable*. It re-solves `v0` to the schedule's own fixed point --
+the fixed point of `v -> (replay the schedule from v).vel` -- after every pass, so at convergence
+`v_final == v0` identically and no constraint or penalty is needed.
+
+**It does not change the objective.** `J = TE(s_n) + w*z_n` with `v_n` free is still what gets
+maximized; only `v0` moves, and every steady profile's own header says so. A steady profile is
+therefore an *open-horizon* optimum that happens to close, not the optimum of the repeating
+problem, and its first-order conditions carry the open-horizon terminal price `dJ/dv_n` at the
+cut rather than a periodic one. Why this is worth knowing: solve a periodic costate against one
+of these and it will disagree with the profile's own pitches, by more the more distance is worth.
+The visible symptom is that the pitch jumps at the cut even though the velocity does not -- over
+the 1233 cyclic cells of `runs/steady/nlamsweep`, median `|p[0] - p[n-1]|` runs 7.5 deg at
+`lambda = -2` to 24.9 deg at `lambda = +7`, against a typical per-tick step of 0.28 deg falling
+to 0.03 deg across the same range.
 
 Off by default. The single-cycle problem is the simpler object and is still the one most
 questions are about.

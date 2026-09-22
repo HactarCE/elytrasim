@@ -24,8 +24,10 @@
 //!
 //! Steady state: --steady
 //!   Off by default. Re-solves `v0` to the schedule's own fixed point after every pass, so the
-//!   result is the cycle you would fly back to back rather than one whose terminal velocity is
-//!   free. `--vy/--vz` then *seed* that iteration instead of naming the answer, and the written
+//!   result is repeatable: at convergence `v_final == v0` identically. It does *not* change the
+//!   objective -- `v_n` is still free, so a steady profile is an open-horizon optimum that
+//!   happens to close, and its terminal price at the cut is `dJ/dv_n`, not a periodic costate.
+//!   `--vy/--vz` then *seed* that iteration instead of naming the answer, and the written
 //!   header states the fixed point actually reached. `v0` stops being a grid axis, so `run`
 //!   writes these under `steady/` rather than a `vy.../vz...` shard and takes a single
 //!   --vys/--vzs pair. Worth between +0.94 blocks of TE per lap (n=150) and nothing at all
