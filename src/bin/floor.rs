@@ -13,6 +13,7 @@
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
 //!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
+//!          [--bubble <margin>,<weight>] [--shrink <r>]
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it
 //!
@@ -344,6 +345,15 @@ fn utility(states: &[State], depth: f64, mode: Exit, ke: f64) -> f64 {
     base + exit_energy(states, depth).map_or(0.0, |e| ke * mode.per_block() * e)
 }
 
+/// The bubble's price on a replay: `weight * (max(0, margin - h) / margin)^2` on every state
+/// before the crossing, in blocks of energy per tick -- the same shape as `Floor`, without its
+/// wall, since a state under the floor ends the flight here. `weight == 0` is off.
+fn bubble_cost(states: &[State], depth: f64, (margin, weight): (f64, f64)) -> f64 {
+    if weight == 0.0 { return 0.0 }
+    states[1..].iter().map(|s| s.pos.y + depth).take_while(|&h| h >= 0.0)
+        .map(|h| weight * ((margin - h).max(0.0) / margin).powi(2)).sum()
+}
+
 /// Coordinate ascent on a first-exit score over a fixed cap. The same sweep as `polish` -- a
 /// global scan of every tick's pitch on a 0.25-degree grid, a ternary refine, the `f32` round,
 /// Gauss-Seidel -- but scored on the whole replay rather than on a terminal state, and every pass
@@ -352,7 +362,7 @@ fn utility(states: &[State], depth: f64, mode: Exit, ke: f64) -> f64 {
 /// they are set to the last live pitch, so the curvature price never sees the seed's leftover
 /// tail.
 fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough, passes: usize,
-          tol: f64, bail: bool, shift: bool) -> (Vec<f64>, f64, usize) {
+          tol: f64, bail: bool, shift: bool, bub: &mut (f64, f64), shrink: f64) -> (Vec<f64>, f64, usize) {
     let rough = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let step = 0.25;
     let lim = rough.limit;
@@ -366,13 +376,18 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
         }
     };
     flatten(&mut p);
-    let total = |p: &[f64]| utility(&obj.replay(p), depth, mode, ke) - rough.cost(p);
-    let mut best = total(&p);
+    let pb = mode.per_block();
+    let total = |p: &[f64], b: (f64, f64)| {
+        let st = obj.replay(p);
+        utility(&st, depth, mode, ke) - pb * bubble_cost(&st, depth, b) - rough.cost(p)
+    };
+    let mut best = total(&p, *bub);
     let mut quiet = 0;
     let mut done = 0;
     for _ in 0..passes {
         done += 1;
         let before = best;
+        let b = *bub;
         for t in 0..p.len() {
             let st = obj.replay(&p);
             // Dead tick: the replay is already under the floor by the state this pitch produces.
@@ -388,7 +403,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                     s = s.ticked_cached(q);
                     v.push(s.clone());
                 }
-                utility(&v, depth, mode, ke) - rough.local(&w, x)
+                utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - rough.local(&w, x)
             };
             let (mut bp, mut bs) = (p[t], score(p[t]));
             let (gp, gs) = cands.par_iter().map(|&x| (x, score(x)))
@@ -425,7 +440,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                         s = s.ticked_cached(PitchTrig::new(x as f32));
                         v.push(s.clone());
                     }
-                    utility(&v, depth, mode, ke) - rough.cost(&q)
+                    utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - rough.cost(&q)
                 };
                 let s0 = score(0.0);
                 let (mut bd, mut bs) = dc.par_iter().map(|&d| (d, score(d)))
@@ -442,7 +457,9 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
             }
         }
         flatten(&mut p);
-        best = total(&p);
+        best = total(&p, b);
+        // The shrinking bubble: an interior-point schedule, one step per pass.
+        *bub = (b.0 * shrink, b.1 * shrink);
         // `bail`: the caller will grow the cap the moment the flight outlasts it, so every pass
         // after that would only be optimizing the value-to-go guess. Hand it back now.
         if bail && obj.replay(&p).iter().all(|s| s.pos.y + depth >= 0.0) { break }
@@ -505,11 +522,20 @@ fn exit_cmd(a: &Args) {
     };
     let passes = a.num("--passes", 100usize);
     let ke = a.num("--ke", 0.0);
+    // `--bubble margin,weight` (blocks, blocks of energy per tick at contact); `--shrink r`
+    // multiplies both by `r` after every pass, across cap doublings.
+    let mut bub = a.get("--bubble").map_or((1.0, 0.0), |v| {
+        let w: Vec<f64> = v.split(',').map(|x| x.parse().unwrap()).collect();
+        (w[0], w[1])
+    });
+    let shrink = a.num("--shrink", 1.0);
+    let bub0 = bub;
     let mut used = Vec::new();
     let (obj, sc) = loop {
         let obj = a.obj(n);
         let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, a.opts().rough, passes,
-                                a.num("--tol", 1e-3), n < nmax, a.0.iter().any(|x| x == "--shift"));
+                                a.num("--tol", 1e-3), n < nmax, a.0.iter().any(|x| x == "--shift"),
+                                &mut bub, shrink);
         used.push(format!("{k}@{n}"));
         p = q;
         let fl = Floor { depth, ..Default::default() };
@@ -520,9 +546,9 @@ fn exit_cmd(a: &Args) {
     let fl = Floor { depth, ..Default::default() };
     let k = fl.survived(&st);
     let verdict = if k >= n { "  SURVIVES the cap: score is a value-to-go guess" } else { "" };
-    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} ke {ke}{seed_note}\n\
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} ke {ke} bubble {},{} shrink {shrink}{seed_note}\n\
                         # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{verdict}\n{}\n",
-                       obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit,
+                       obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit, bub0.0, bub0.1,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),
                        exit_energy(&st, depth).unwrap_or(f64::NAN), used.join(","),
                        fmt_pitches(&p[..(k + 1).min(n)]));
