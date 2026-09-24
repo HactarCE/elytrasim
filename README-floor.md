@@ -190,11 +190,16 @@ why? charged unconverted, `mu = 1e-4` was 14x (endurance) or 10x (range) weaker 
 number in `polish`. Dead ticks are reset to the last live pitch after every pass, so the price
 never sees the seed's leftover tail either.
 
-The conversion did *not* remove the one-tick nose-down spikes above `y0 = 20` (7 in the old
-endurance corpus, 18 after): they are paid for. Flattening one to its neighbors' mean costs
-0.1-3.9 ticks or 0.5-2 blocks, about ten times its l1 price, and at `y0 = 30` two spikes in the
-range optimum are worth 40 blocks each -- without them the flight goes under the floor. Their
-mechanism is not identified. Measured 2026-09-24 15:10 EDT on the stage-1 cluster corpus.
+The conversion did *not* remove the one-tick nose-down spikes above `y0 = 20`, but they are not
+"paid for" either, as this section first claimed. Flattening a spike to its neighbors' mean costs
+0.1-3.9 ticks, but that test removes the nose-down itself. Spreading the same total lift dump
+(`sum sin^2 p`) over nine ticks scores *better* (`y0 = 16` endurance: score 212.016 -> 212.082;
+spreading both lumps and re-ascending, 212.217 with roughness 202 -> 86). Why the ascent makes
+lumps: at pitch >= 0 the up-conversion branch is off and a tick depends on pitch only through
+`cos^2 p`, so near 0 the physics is flat (quadratic in `p`) while the l1 price is linear. A small
+one-tick step from 0 always loses, only a big jump pays, and a per-tick search can never take the
+first step toward a spread-out version. Measured 2026-09-24 17:45 EDT by an independent agent on
+single cells at `y0 = 15, 16`.
 
 ### 6a. Terminal energy, tail shifts, and a growing cap (kept; measured 2026-09-24 17:00 EDT)
 
