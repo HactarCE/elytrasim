@@ -486,3 +486,16 @@ fn flick_header_round_trips_and_malformed_lines_are_errors() {
     assert_eq!(parsed.rough.flick_at, None);
     assert_eq!(parsed.rough.flick_pitch, -80.0);
 }
+
+/// A floor the replay never comes near prices nothing, so a floored polish must reproduce the
+/// unfloored one exactly -- the threading of `Floor` through the search changes no comparison.
+#[test]
+fn a_floor_out_of_reach_changes_nothing() {
+    let o = Objective { v0: Vec3::new(0.0, 0.0, 0.0), n: 40, lambda: 0.0 };
+    let seed = vec![-5.0; o.n];
+    let opts = PolishOpts { max_passes: 3, tol: 0.0, ..Default::default() };
+    let far = Floor { depth: 1e6, ..Default::default() };
+    let (a, b) = (polish(&o, &seed, opts), polish(&o, &seed, PolishOpts { floor: far, ..opts }));
+    assert_eq!(a.pitches, b.pitches);
+    assert_eq!(a.j, b.j);
+}
