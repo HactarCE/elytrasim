@@ -25,7 +25,8 @@ the moment of exit. Physics is `mth_lut` trig and `reference` flight throughout.
   8     77   -14.8  22.609   83.827   83   24.557      80.13   80  26.212    60 18.299   77 21.929
 ```
 
-"Best hold" is the best constant pitch for each column separately (0.1-degree grid), so its `z` is
+The table is the first run (commit 8a19cdd, l1 price in score units); with the price in energy
+units the optimized cells move by at most 0.04. "Best hold" is the best constant pitch for each column separately (0.1-degree grid), so its `z` is
 not flown at its ticks' pitch. `t*` is the interpolated exit tick; see below. Every optimized cell
 was reached from three different starts -- hold -13, hold 0, and a dive-then-pull -- that agree to
 0.003 ticks in `t*` and 0.003 blocks in `z`.
@@ -33,18 +34,42 @@ was reached from three different starts -- hold -13, hold 0, and a dive-then-pul
 What the optimizer buys over the best constant pitch is nothing at `y0 <= 2`, one tick at 3 to 5,
 and six ticks (8%) and 3.6 blocks of range (16%) at `y0 = 8`. The gain grows with height.
 
-**There is no dive.** At these heights no optimum ever pitches nose-down:
+**Below `y0` about 10-14 there is no dive and no climb:** `v_y` never goes positive.
 
 * **Endurance** is one ramp: pitch 0 at the first tick, then nose-up at a near-constant rate --
-  about -0.25 deg/tick at `y0 = 8` -- to about -22 at the exit. You build forward speed level
-  and spend it on lift progressively, and the pitch the ramp ends on is well past min sink (-13).
+  about -0.25 deg/tick at `y0 = 8` -- to about -22 at the exit.
 * **Range** is a hold then a pull: pitch -0.0055 for 36 ticks at `y0 = 8`, then nose-up at
   0.6-1 deg/tick to -23, held to the exit. The hold sits just past the corner at 0, where the
   forward-to-up branch switches on.
 
-So the expected "mini pump" is only its second half, look level then look up. The first half,
-looking *down* to gain speed, does not pay from rest at these heights: from `v0 = 0` the dive's
-speed is bought with height the flight does not have.
+The "look down" half of a mini pump is **pitch 0, not nose-down**. A steep dive keeps *more*
+energy per block fallen -- from rest, 8 blocks down, `TE` is -4.34 at hold 60 against -5.42 at
+hold 0 -- but it stores it as `v_y`, and `v_y` only turns into forward speed through the
+`v_y < 0` conversion, 10% x `cos^2(pitch)` per tick, while still sinking. Pitch 0 is where that
+conversion (and the lift) is largest, so the pull-out from a steep dive costs height a low floor
+does not have. With the `minipump` seed (below), the fitted dive angle is 0 for every
+endurance cell but two (5 degrees at `y0 = 22, 31`), 0-5 degrees for range up to `y0 = 27`, and
+10-15 degrees for range at `y0 = 28..32`. At `y0 = 4` and `8` every dive angle from 0 to 45 lands on the
+same optimum.
+
+**Above that the mini pump appears.** The first climb (`v_y > 0`) shows up at `y0 = 14` for
+endurance and `y0 = 10` for range: hold 0 while sinking, pull hard (about -44) and relax, then glide
+or climb again. Endurance does exactly one climb from 14 to 32; range does two from 18 and three
+from 27. From `v0 = 0`, cluster corpus of 2026-09-24 15:20 EDT (`runs/floor/v2-cluster`):
+
+```
+ y0   endurance t*  first climb   range z*   climbs
+ 10      112.47          -          43.10       1
+ 14      169.11         100         83.97       1
+ 16      211.19         114        111.45       1
+ 20      301.23         141        176.86       2
+ 24      386.12         168        249.65       2
+ 28      462.92         194        347.44       3
+ 32      538.23         208        476.92       3
+```
+
+A cold start from a hold never finds it. At `y0 = 19` the best of hold -13 and a tiled steady
+cycle exits at 239.6 ticks; the `minipump` seed finds 279.0.
 
 Range and endurance separate. At `y0 = 8` the range optimum exits 3.7 ticks earlier than the
 endurance optimum and goes 1.66 blocks further.
@@ -152,7 +177,23 @@ twice, so this never bites. Above it, it does -- see the next section.
 
 A replay that survives the whole cap scores the cap plus a value-to-go for the energy it still
 holds -- `(TE + y0) / 0.0708` ticks at min sink, or `10.10 (TE + y0)` blocks at the best glide
-ratio. Crude, and it only has to rank schedules that all outlive the cap.
+ratio. Crude, so the cap is not allowed to bind: `floor exit` doubles it (from `--n`, up to
+`--nmax 2400`) and re-ascends for as long as the answer survives it, and a file whose header
+says `SURVIVES the cap` holds a guess, not an exit. why? on the first `y0 <= 32` corpus, ten
+cells at `y0 >= 27` (range) and `y0 >= 29` (endurance) survived a fixed 450-tick cap, and their
+scores were the guess.
+
+The l1 curvature price is quoted in blocks of energy, as in `polish`, and converted into the
+score's units: one block of energy is worth `1 / 0.0708 = 14.1` ticks or `10.10` blocks of `z`.
+why? charged unconverted, `mu = 1e-4` was 14x (endurance) or 10x (range) weaker than the same
+number in `polish`. Dead ticks are reset to the last live pitch after every pass, so the price
+never sees the seed's leftover tail either.
+
+The conversion did *not* remove the one-tick nose-down spikes above `y0 = 20` (7 in the old
+endurance corpus, 18 after): they are paid for. Flattening one to its neighbors' mean costs
+0.1-3.9 ticks or 0.5-2 blocks, about ten times its l1 price, and at `y0 = 30` two spikes in the
+range optimum are worth 40 blocks each -- without them the flight goes under the floor. Their
+mechanism is not identified. Measured 2026-09-24 15:10 EDT on the stage-1 cluster corpus.
 
 ### 7. Exact `f32` output (a correctness fix, kept)
 
@@ -167,7 +208,18 @@ It is real higher up. At `y0 = 30`, cap 450: from hold -13 the exit ascent finds
 exits at 395 ticks. Seeded with a steady 150-tick cycle tiled end to end, it survives the cap,
 doing two full pumps that each bottom out at exactly the floor (clearance 0.000). No
 per-tick move gets from a glide to a pump, so **past the heights where pumping pays, the search has
-to be seeded with a cycle.**
+to be seeded with a pump.** The tiled cycle is a poor one: it pumps from the first tick. The
+`minipump` seed -- `d` nose-down for `k` ticks, 0 for 10, -40 while `v_y` rises, then 0, with `k`
+fitted to the best exit (and `d` on a 2.5-degree grid unless given) -- wins every endurance cell
+from `y0 = 14` and most range cells, by up to 16% (`y0 = 19`, 279.0 against 239.7 ticks).
+Range above `y0 = 22` still has several local optima: warming each cell from its neighbors' winners
+beat every cold seed at `y0 = 29, 31, 32`, and the curve is ragged there.
+
+**Running the corpus.** `tools/floor.sbatch` + `tools/floor_job.sh` run a work list of
+`<y0> <time|dist> <name> <init spec>` lines, one array task per node, eight single-threaded solves
+at a time, against a tree rsync'd to `~/elytra-floor` on `cif-cpu`; `tools/floor_pick.py <out>
+--install runs/floor` keeps the best per cell. The v2 corpus was three cold seeds per cell, then
+two rounds of warm starts from the neighbors' winners: 341 solves, 7.8 core-hours, about 25 minutes of wall clock on the rack.
 
 ## Infinite flight
 
@@ -203,23 +255,6 @@ steady-state cycle *under* a floor -- maximize per-lap gain subject to `min y >=
 least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` could do, and which
 `polish` refuses today only because nothing has needed it yet.
 
-### 8. A raised floor (`--raise`, kept as an option)
-
-Optimize against a floor `delta` higher, report against the real one: a margin the schedule keeps
-everywhere, so that a skimming optimum is one a hand can fly. At `y0 = 8`, where the floor is
-touched only at the exit, it is cheap:
-
-```
-delta      endurance t*     range z(t*)
-0          83.83            26.21
-0.1        83.80            26.18
-0.5        83.32            25.66
-1          82.45            24.87
-```
-
-Where the floor is skimmed mid-flight -- the pumps above `y0 = 30` -- a raise of `delta` is exactly
-a floor `delta` higher, so it moves the infinite-flight threshold up by `delta` and nothing subtler.
-
 ## Tricks not tried
 
 * **Lexicographic ranking** (Deb's rules: feasible beats infeasible, then objective, then least
@@ -227,21 +262,24 @@ a floor `delta` higher, so it moves the infinite-flight threshold up by `delta` 
   exit objective replaced the bubble.
 * **Smoothing a touch-and-go** by scoring a soft minimum over the pre-exit clearance alongside
   `t*`, so that a near-touch is ranked before it becomes a crossing.
-* **Velocity jitter** (`Jitter`), which averages the knife edges over starting states. It is the
-  honest version of a raised floor when the uncertainty is in `v0`.
+* **Velocity jitter** (`Jitter`), which averages the knife edges over starting states, for when
+  the uncertainty is in `v0`. A raised floor is not a separate trick: a floor `delta` higher is
+  the same problem as `y0 - delta`.
 
 ## Running it
 
 ```
 floor probe
-floor exit   --y0 8 --mode time|dist [--n 150] [--init hold:-13] [--raise 0.5] [--out <file>]
+floor exit   --y0 8 --mode time|dist [--n 150] [--nmax 2400] [--init hold:-13|minipump] [--out <file>]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]
 floor depth  --file <pitches> [--vy --vz] [--every 50]
 ```
 
-Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repeated), or a file.
+Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repeated), a file, or
+(`exit` only) `minipump[:<d>[,<k>]]`.
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
-as in `runs/atlas`. `runs/floor/` holds the table's schedules (`exit_{time,dist}_y<y0>.pitches`, from hold -13)
+as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`,
+what `tools/plot_floor_profiles.py` draws), `runs/floor/v2-cluster/` every solve behind them,
 and `runs/floor/inf/` the infinite-flight scan.

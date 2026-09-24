@@ -12,13 +12,15 @@
 //!   safety --y0 <h> --n <n> [--init <spec>]   max soft-min clearance: is this horizon feasible?
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
-//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--init <spec>] [--raise <blocks>]
-//!                                  the interpolated first exit
+//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>]
+//!                                  the interpolated first exit; the cap doubles while the
+//!                                  answer survives it
 //!
 //! Common options: --vy, --vz (initial velocity, default 0), --lambda (default 0),
 //!   --margin, --weight, --wall (the floor's price), --mu, --limit, --passes, --tol.
 //! An init spec is `hold:<p>`, `pump:<p_down>,<k>,<p_up>` (p_down for k ticks, then p_up),
-//! `tile:<file>` (a cycle repeated), or a pitch file (last pitch repeated).
+//! `tile:<file>` (a cycle repeated), or a pitch file (last pitch repeated). `exit` also takes
+//! `minipump[:<d>[,<k>]]`, see `minipump`.
 //!
 //! Physics is `mth_lut` trig and `reference` flight, fixed: vanilla's table, and the kernel
 //! that is fastest on arm64 (README-sweep.md).
@@ -266,6 +268,10 @@ fn init_from(p: &[f64], n: usize) -> Vec<f64> {
     v
 }
 
+/// The two steady-glide constants, from `probe`.
+const MIN_SINK: f64 = 0.0708;    // blocks/tick, at pitch -13.0
+const BEST_GLIDE: f64 = 10.10;   // blocks of z per block of height, at pitch 0
+
 /// What a first-exit schedule is scored on. Every variant reads only the replay up to the first
 /// state under the floor, so the schedule's later ticks are dead and the horizon is just a cap.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -274,6 +280,14 @@ enum Exit {
     Time,
     /// `z` at that fractional tick.
     Dist,
+}
+
+impl Exit {
+    /// Score units per block of energy: what one block of `TE` buys at min sink or at the best
+    /// glide ratio. `mu` is quoted in blocks of energy, as in `polish`; charged unconverted in
+    /// ticks or in blocks of `z` it was 14x or 10x weaker than there, and the schedules showed it
+    /// -- one-tick spikes to 75 degrees where the pitch barely matters.
+    fn per_block(self) -> f64 { match self { Exit::Time => 1.0 / MIN_SINK, Exit::Dist => BEST_GLIDE } }
 }
 
 /// Where the replay exits, interpolated: `(t*, z(t*))`, from the first pair of states that
@@ -290,8 +304,6 @@ enum Exit {
 /// that energy spent at min sink (`Time`) or at the best glide ratio (`Dist`), the two steady-glide
 /// constants from `probe`. Crude, but it only has to rank schedules that all survive the cap.
 fn exit_score(states: &[State], depth: f64, mode: Exit) -> f64 {
-    const MIN_SINK: f64 = 0.0708;    // blocks/tick, at pitch -13.0
-    const BEST_GLIDE: f64 = 10.10;   // blocks of z per block of height, at pitch 0
     for k in 1..states.len() {
         let (a, b) = (states[k - 1].pos.y + depth, states[k].pos.y + depth);
         if b < 0.0 {
@@ -313,14 +325,25 @@ fn exit_score(states: &[State], depth: f64, mode: Exit) -> f64 {
 /// Coordinate ascent on a first-exit score over a fixed cap. The same sweep as `polish` -- a
 /// global scan of every tick's pitch on a 0.25-degree grid, a ternary refine, the `f32` round,
 /// Gauss-Seidel -- but scored on the whole replay rather than on a terminal state, and every pass
-/// global. The l1 curvature price is charged as in `polish`. Ticks after the exit are dead and
-/// are left alone, which saves most of the work late in the search.
+/// global. The l1 curvature price is charged as in `polish`, converted to score units by
+/// `Exit::per_block`. Ticks after the exit are dead: they are not searched, and after each pass
+/// they are set to the last live pitch, so the curvature price never sees the seed's leftover
+/// tail.
 fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, rough: Rough, passes: usize)
     -> (Vec<f64>, f64) {
+    let rough = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let step = 0.25;
     let lim = rough.limit;
     let cands: Vec<f64> = (0..=((2.0 * lim / step) as i64)).map(|i| (-lim + step * i as f64).min(lim)).collect();
     let mut p = init.to_vec();
+    let flatten = |p: &mut Vec<f64>| {
+        let st = obj.replay(p);
+        if let Some(k) = (1..st.len()).find(|&k| st[k].pos.y + depth < 0.0) {
+            let last = p[k - 1];
+            p[k..].iter_mut().for_each(|q| *q = last);
+        }
+    };
+    flatten(&mut p);
     let total = |p: &[f64]| exit_score(&obj.replay(p), depth, mode) - rough.cost(p);
     let mut best = total(&p);
     let mut quiet = 0;
@@ -356,29 +379,77 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, rough: Rough, p
             if score(r) > bs { bp = r }
             p[t] = bp as f32 as f64;
         }
+        flatten(&mut p);
         best = total(&p);
         if best - before < 1e-6 { quiet += 1; if quiet >= 3 { break } } else { quiet = 0 }
     }
     (p, best)
 }
 
+/// The minipump seed: `d` degrees nose-down for `k` ticks, pitch 0 for 10, -40 while `v_y` is
+/// still rising, then 0. The dive is the part a per-tick search cannot invent from a hold, since
+/// no single tick of it pays on its own.
+fn minipump(obj: &Objective, d: f64, k: usize) -> Vec<f64> {
+    let mut p = Vec::with_capacity(obj.n);
+    let mut s = State { pos: Vec3::ZERO, vel: obj.v0 };
+    let mut climbing = true;
+    while p.len() < obj.n {
+        let t = p.len();
+        let q = if t < k { d } else if t < k + 10 || !climbing { 0.0 } else { -40.0 };
+        let next = s.ticked_cached(PitchTrig::new(q as f32));
+        if q == -40.0 && next.vel.y < s.vel.y { climbing = false }
+        p.push(q);
+        s = next;
+    }
+    p
+}
+
+/// A minipump seed with the dive's length `k` fitted -- the `k` whose seed scores best -- and,
+/// unless given, the dive angle `d` too, on a 2.5-degree grid.
+fn fit_minipump(obj: &Objective, depth: f64, mode: Exit, spec: &str) -> (Vec<f64>, f64, usize, f64) {
+    let v: Vec<f64> = spec.split(',').filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect();
+    let ds: Vec<f64> = match v.first() { Some(&d) => vec![d], None => (0..=34).map(|i| 2.5 * i as f64).collect() };
+    let ks: Vec<usize> = match v.get(1) { Some(&k) => vec![k as usize], None => (0..obj.n).collect() };
+    ds.par_iter().flat_map(|&d| ks.par_iter().map(move |&k| (d, k)))
+        .map(|(d, k)| { let p = minipump(obj, d, k); let sc = exit_score(&obj.replay(&p), depth, mode); (p, d, k, sc) })
+        .reduce(|| (vec![], 0.0, 0, f64::NEG_INFINITY), |a, b| if b.3 > a.3 { b } else { a })
+}
+
+/// First-exit ascent under a cap that doubles, up to `--nmax`, for as long as the answer
+/// survives it. Why: a survivor is scored on a value-to-go guess rather than an exit, so a cap
+/// that binds decides the answer. Doubling is a heuristic, not a bound -- a pump that gains
+/// energy survives every cap, and says so in the header.
 fn exit_cmd(a: &Args) {
-    let n: usize = a.num("--n", 150);
-    let obj = a.obj(n);
+    let mut n: usize = a.num("--n", 150);
+    let nmax: usize = a.num("--nmax", 2400);
     let depth = a.num("--y0", 4.0);
     let mode = match a.get("--mode").unwrap_or("time") { "time" => Exit::Time, "dist" => Exit::Dist,
                                                          m => panic!("bad --mode {m}") };
     let spec = a.get("--init").unwrap_or("hold:-13");
-    // `--raise` optimizes against a floor that much higher and reports against the real one: a
-    // margin the schedule keeps everywhere, bought with however many ticks it costs.
-    let raise = a.num("--raise", 0.0);
-    let (p, sc) = ascend(&obj, depth - raise, &init(spec, n), mode, a.opts().rough,
-                         a.num("--passes", 100usize));
+    let mut seed_note = String::new();
+    let mut p = match spec.strip_prefix("minipump") {
+        Some(r) => {
+            let (p, d, k, sc) = fit_minipump(&a.obj(n), depth, mode, r.trim_start_matches(':'));
+            seed_note = format!("  minipump d {d} k {k} seed score {sc:.4}");
+            p
+        }
+        None => init(spec, n),
+    };
+    let passes = a.num("--passes", 100usize);
+    let (obj, sc) = loop {
+        let obj = a.obj(n);
+        let (q, sc) = ascend(&obj, depth, &init_from(&p, n), mode, a.opts().rough, passes);
+        p = q;
+        let fl = Floor { depth, ..Default::default() };
+        if fl.survived(&obj.replay(&p)) < n || n >= nmax { break (obj, sc) }
+        n = (2 * n).min(nmax);
+    };
     let st = obj.replay(&p);
     let fl = Floor { depth, ..Default::default() };
     let k = fl.survived(&st);
-    let text = format!("# exit {mode:?} y0 {depth} raise {raise} v0 ({}, {}) cap {n} init {spec} mu {} limit {}\n\
-                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}\n{}\n",
+    let verdict = if k >= n { "  SURVIVES the cap: score is a value-to-go guess" } else { "" };
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {}{seed_note}\n\
+                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}{verdict}\n{}\n",
                        obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),
                        fmt_pitches(&p[..(k + 1).min(n)]));
