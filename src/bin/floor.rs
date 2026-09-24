@@ -12,7 +12,7 @@
 //!   safety --y0 <h> --n <n> [--init <spec>]   max soft-min clearance: is this horizon feasible?
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
-//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>]
+//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>]
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it
 //!
@@ -322,6 +322,28 @@ fn exit_score(states: &[State], depth: f64, mode: Exit) -> f64 {
     }
 }
 
+/// The energy the replay still holds where it crosses the floor, in blocks: `TE + y0` along the
+/// same secant as `t*`, which at `y = -y0` is all kinetic. `None` if it never crosses.
+fn exit_energy(states: &[State], depth: f64) -> Option<f64> {
+    (1..states.len()).find(|&k| states[k].pos.y + depth < 0.0).map(|k| {
+        let (a, b) = (states[k - 1].pos.y + depth, states[k].pos.y + depth);
+        let f = a / (a - b);
+        let (e0, e1) = (states[k - 1].total_energy(), states[k].total_energy());
+        e0 + f * (e1 - e0) + depth
+    })
+}
+
+/// What the ascent maximizes: the exit score plus `ke` times the energy left at the crossing,
+/// converted to score units by `Exit::per_block`. `ke < 0` charges for reaching the floor with
+/// speed to spare -- a schedule that exits fast has flown badly; `ke > 0` is the PE+KE-style
+/// proxy, crediting speed the exit alone does not see. Survivors get nothing extra: their
+/// value-to-go already counts all their energy.
+fn utility(states: &[State], depth: f64, mode: Exit, ke: f64) -> f64 {
+    let base = exit_score(states, depth, mode);
+    if ke == 0.0 { return base }
+    base + exit_energy(states, depth).map_or(0.0, |e| ke * mode.per_block() * e)
+}
+
 /// Coordinate ascent on a first-exit score over a fixed cap. The same sweep as `polish` -- a
 /// global scan of every tick's pitch on a 0.25-degree grid, a ternary refine, the `f32` round,
 /// Gauss-Seidel -- but scored on the whole replay rather than on a terminal state, and every pass
@@ -329,8 +351,8 @@ fn exit_score(states: &[State], depth: f64, mode: Exit) -> f64 {
 /// `Exit::per_block`. Ticks after the exit are dead: they are not searched, and after each pass
 /// they are set to the last live pitch, so the curvature price never sees the seed's leftover
 /// tail.
-fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, rough: Rough, passes: usize)
-    -> (Vec<f64>, f64) {
+fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough, passes: usize,
+          tol: f64) -> (Vec<f64>, f64, usize) {
     let rough = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let step = 0.25;
     let lim = rough.limit;
@@ -344,10 +366,12 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, rough: Rough, p
         }
     };
     flatten(&mut p);
-    let total = |p: &[f64]| exit_score(&obj.replay(p), depth, mode) - rough.cost(p);
+    let total = |p: &[f64]| utility(&obj.replay(p), depth, mode, ke) - rough.cost(p);
     let mut best = total(&p);
     let mut quiet = 0;
+    let mut done = 0;
     for _ in 0..passes {
+        done += 1;
         let before = best;
         for t in 0..p.len() {
             let st = obj.replay(&p);
@@ -364,7 +388,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, rough: Rough, p
                     s = s.ticked_cached(q);
                     v.push(s.clone());
                 }
-                exit_score(&v, depth, mode) - rough.local(&w, x)
+                utility(&v, depth, mode, ke) - rough.local(&w, x)
             };
             let (mut bp, mut bs) = (p[t], score(p[t]));
             let (gp, gs) = cands.par_iter().map(|&x| (x, score(x)))
@@ -381,9 +405,9 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, rough: Rough, p
         }
         flatten(&mut p);
         best = total(&p);
-        if best - before < 1e-6 { quiet += 1; if quiet >= 3 { break } } else { quiet = 0 }
+        if best - before < tol { quiet += 1; if quiet >= 2 { break } } else { quiet = 0 }
     }
-    (p, best)
+    (p, best, done)
 }
 
 /// The minipump seed: `d` degrees nose-down for `k` ticks, pitch 0 for 10, -40 while `v_y` is
@@ -420,8 +444,10 @@ fn fit_minipump(obj: &Objective, depth: f64, mode: Exit, spec: &str) -> (Vec<f64
 /// that binds decides the answer. Doubling is a heuristic, not a bound -- a pump that gains
 /// energy survives every cap, and says so in the header.
 fn exit_cmd(a: &Args) {
-    let mut n: usize = a.num("--n", 150);
-    let nmax: usize = a.num("--nmax", 2400);
+    // Dead ticks cost one replay each, not a search, so a cap far past the exit is nearly free;
+    // what costs is the live flight, quadratically.
+    let mut n: usize = a.num("--n", 1200);
+    let nmax: usize = a.num("--nmax", 4800);
     let depth = a.num("--y0", 4.0);
     let mode = match a.get("--mode").unwrap_or("time") { "time" => Exit::Time, "dist" => Exit::Dist,
                                                          m => panic!("bad --mode {m}") };
@@ -436,9 +462,13 @@ fn exit_cmd(a: &Args) {
         None => init(spec, n),
     };
     let passes = a.num("--passes", 100usize);
+    let ke = a.num("--ke", 0.0);
+    let mut used = Vec::new();
     let (obj, sc) = loop {
         let obj = a.obj(n);
-        let (q, sc) = ascend(&obj, depth, &init_from(&p, n), mode, a.opts().rough, passes);
+        let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, a.opts().rough, passes,
+                                a.num("--tol", 1e-3));
+        used.push(format!("{k}@{n}"));
         p = q;
         let fl = Floor { depth, ..Default::default() };
         if fl.survived(&obj.replay(&p)) < n || n >= nmax { break (obj, sc) }
@@ -448,10 +478,11 @@ fn exit_cmd(a: &Args) {
     let fl = Floor { depth, ..Default::default() };
     let k = fl.survived(&st);
     let verdict = if k >= n { "  SURVIVES the cap: score is a value-to-go guess" } else { "" };
-    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {}{seed_note}\n\
-                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}{verdict}\n{}\n",
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} ke {ke}{seed_note}\n\
+                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{verdict}\n{}\n",
                        obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),
+                       exit_energy(&st, depth).unwrap_or(f64::NAN), used.join(","),
                        fmt_pitches(&p[..(k + 1).min(n)]));
     match a.get("--out") {
         Some(o) => { std::fs::write(o, &text).unwrap(); print!("{}", text.lines().take(2).collect::<Vec<_>>().join("\n") + "\n") }

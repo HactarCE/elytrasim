@@ -177,8 +177,9 @@ twice, so this never bites. Above it, it does -- see the next section.
 
 A replay that survives the whole cap scores the cap plus a value-to-go for the energy it still
 holds -- `(TE + y0) / 0.0708` ticks at min sink, or `10.10 (TE + y0)` blocks at the best glide
-ratio. Crude, so the cap is not allowed to bind: `floor exit` doubles it (from `--n`, up to
-`--nmax 2400`) and re-ascends for as long as the answer survives it, and a file whose header
+ratio. Crude, so the cap is not allowed to bind. It starts at `--n 1200`, far past any exit up
+to `y0 = 32`, which is nearly free: a dead tick costs one replay step, not a search. If the answer
+still survives, `floor exit` doubles the cap (up to `--nmax 4800`) and re-ascends, and a file whose header
 says `SURVIVES the cap` holds a guess, not an exit. why? on the first `y0 <= 32` corpus, ten
 cells at `y0 >= 27` (range) and `y0 >= 29` (endurance) survived a fixed 450-tick cap, and their
 scores were the guess.
@@ -217,7 +218,7 @@ beat every cold seed at `y0 = 29, 31, 32`, and the curve is ragged there.
 
 **Running the corpus.** `tools/floor.sbatch` + `tools/floor_job.sh` run a work list of
 `<y0> <time|dist> <name> <init spec>` lines, one array task per node, eight single-threaded solves
-at a time, against a tree rsync'd to `~/elytra-floor` on `cif-cpu`; `tools/floor_pick.py <out>
+at a time, against the tree rsync'd to `~/elytra-atlas` on `cif-cpu` (the same one `sweep` uses); `tools/floor_pick.py <out>
 --install runs/floor` keeps the best per cell. The v2 corpus was three cold seeds per cell, then
 two rounds of warm starts from the neighbors' winners: 341 solves, 7.8 core-hours, about 25 minutes of wall clock on the rack.
 
@@ -270,7 +271,7 @@ least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` 
 
 ```
 floor probe
-floor exit   --y0 8 --mode time|dist [--n 150] [--nmax 2400] [--init hold:-13|minipump] [--out <file>]
+floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump] [--ke <c>] [--tol 1e-3] [--out <file>]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]
