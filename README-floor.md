@@ -196,6 +196,29 @@ endurance corpus, 18 after): they are paid for. Flattening one to its neighbors'
 range optimum are worth 40 blocks each -- without them the flight goes under the floor. Their
 mechanism is not identified. Measured 2026-09-24 15:10 EDT on the stage-1 cluster corpus.
 
+### 6a. Terminal energy, tail shifts, and a growing cap (kept; measured 2026-09-24 17:00 EDT)
+
+All at `mu = 1e-4`, the price every earlier run used; sums are over the 32 cells `y0 = 1..32`.
+
+* **`--ke c`** adds `c` times the energy left at the crossing (all kinetic there), in score units.
+  `c = +1` wrecks both utilities -- it hoards speed instead of flying (range -24%). `c < 0`,
+  charging for reaching the floor fast, does nothing for endurance (which already lands slow, 0.85
+  blocks of KE) and helps range: `c = -0.3` gave +79 blocks and 6 spikes instead of 15.
+* **Tail shifts (`--shift`).** A per-pitch search crawls under the curvature price: moving one pitch
+  off a straight line pays for three kinks, so a ramp that should start a tick later advances by
+  slivers. At `mu = 1e-3`, `y0 = 16` took 263 passes. A move that shifts every pitch from `t` on
+  changes only two second differences; with it the same cell converges in 48 passes. At
+  `mu = 1e-4`, `y0 = 16`, it found t* 213.1 against 211.0 with a third of the roughness.
+* **A growing cap (`--n 150`).** The ascent returns after the first pass whose flight outlasts the
+  cap, and the doubled cap continues from it -- a continuation in horizon, optimizing the early
+  flight first. With `c = -0.3`: endurance +272 ticks over the fixed 1200 cap.
+
+Together (`--n 150 --shift --ke -0.3`): endurance +327 ticks (+4.2%) with 6 spikes instead of 18,
+range +229 blocks (+4.5%). Range comes out rougher (summed |second difference| 8939 against 6214),
+partly because it finds more pumps -- one more climb at `y0 = 24` and `32`. The cost is 1.7x the
+core time of growing alone; the slowest cell took 840 s on one core. Data: `runs/floor/v3-ke`
+(c sweep), `v4-mu`, `v5-grow`, `v6-shift`.
+
 ### 7. Exact `f32` output (a correctness fix, kept)
 
 An exit optimum skims the floor at zero margin. Written to four decimals, one `y0 = 30` schedule
@@ -271,7 +294,7 @@ least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` 
 
 ```
 floor probe
-floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump] [--ke <c>] [--tol 1e-3] [--out <file>]
+floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump] [--ke <c>] [--shift] [--n 150] [--tol 1e-3] [--out <file>]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]

@@ -12,7 +12,7 @@
 //!   safety --y0 <h> --n <n> [--init <spec>]   max soft-min clearance: is this horizon feasible?
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
-//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>]
+//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it
 //!
@@ -352,7 +352,7 @@ fn utility(states: &[State], depth: f64, mode: Exit, ke: f64) -> f64 {
 /// they are set to the last live pitch, so the curvature price never sees the seed's leftover
 /// tail.
 fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough, passes: usize,
-          tol: f64) -> (Vec<f64>, f64, usize) {
+          tol: f64, bail: bool, shift: bool) -> (Vec<f64>, f64, usize) {
     let rough = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let step = 0.25;
     let lim = rough.limit;
@@ -403,8 +403,49 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
             if score(r) > bs { bp = r }
             p[t] = bp as f32 as f64;
         }
+        // Tail shifts: every pitch from `t` on moves by `d` together. The curvature price is
+        // not separable in the pitches -- moving one pitch off a straight line pays for three
+        // kinks, so a ramp that should start a tick later, or bend, advances by slivers under a
+        // per-pitch search -- but a tail shift changes only the two second differences at `t`.
+        if shift {
+            let dc: Vec<f64> = (-40..=40).map(|i| 0.25 * i as f64).collect();
+            for t in 0..p.len() {
+                let st = obj.replay(&p);
+                if (1..=t).any(|k| st[k].pos.y + depth < 0.0) { break }
+                let moved = |d: f64| -> Vec<f64> {
+                    p.iter().enumerate()
+                        .map(|(s, &x)| if s >= t { (x + d).clamp(-lim, lim) as f32 as f64 } else { x }).collect()
+                };
+                let score = |d: f64| -> f64 {
+                    let q = moved(d);
+                    let mut v = st[..=t].to_vec();
+                    let mut s = st[t].clone();
+                    for &x in &q[t..] {
+                        if s.pos.y + depth < 0.0 { break }
+                        s = s.ticked_cached(PitchTrig::new(x as f32));
+                        v.push(s.clone());
+                    }
+                    utility(&v, depth, mode, ke) - rough.cost(&q)
+                };
+                let s0 = score(0.0);
+                let (mut bd, mut bs) = dc.par_iter().map(|&d| (d, score(d)))
+                    .reduce(|| (0.0, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
+                let (mut a, mut b) = (bd - 0.25, bd + 0.25);
+                for _ in 0..30 {
+                    let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+                    if score(m1) < score(m2) { a = m1 } else { b = m2 }
+                }
+                let r = 0.5 * (a + b);
+                let sr = score(r);
+                if sr > bs { bd = r; bs = sr }
+                if bs > s0 { p = moved(bd) }
+            }
+        }
         flatten(&mut p);
         best = total(&p);
+        // `bail`: the caller will grow the cap the moment the flight outlasts it, so every pass
+        // after that would only be optimizing the value-to-go guess. Hand it back now.
+        if bail && obj.replay(&p).iter().all(|s| s.pos.y + depth >= 0.0) { break }
         if best - before < tol { quiet += 1; if quiet >= 2 { break } } else { quiet = 0 }
     }
     (p, best, done)
@@ -441,7 +482,8 @@ fn fit_minipump(obj: &Objective, depth: f64, mode: Exit, spec: &str) -> (Vec<f64
 
 /// First-exit ascent under a cap that doubles, up to `--nmax`, for as long as the answer
 /// survives it. Why: a survivor is scored on a value-to-go guess rather than an exit, so a cap
-/// that binds decides the answer. Doubling is a heuristic, not a bound -- a pump that gains
+/// that binds decides the answer. The ascent returns after the first pass whose schedule
+/// outlasts the cap, and the doubled one starts from that schedule. Doubling is a heuristic, not a bound -- a pump that gains
 /// energy survives every cap, and says so in the header.
 fn exit_cmd(a: &Args) {
     // Dead ticks cost one replay each, not a search, so a cap far past the exit is nearly free;
@@ -467,7 +509,7 @@ fn exit_cmd(a: &Args) {
     let (obj, sc) = loop {
         let obj = a.obj(n);
         let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, a.opts().rough, passes,
-                                a.num("--tol", 1e-3));
+                                a.num("--tol", 1e-3), n < nmax, a.0.iter().any(|x| x == "--shift"));
         used.push(format!("{k}@{n}"));
         p = q;
         let fl = Floor { depth, ..Default::default() };
