@@ -19,6 +19,9 @@ forward speed the climb hands it. Three tables:
 
 `kappa` is the reason this is not yet a rule you can fly from the state alone: it is not a
 constant. It moves by an order of magnitude across the corpus, monotonically in both axes.
+The rule you *can* fly through the body of the climb needs no price at all -- `gain_law_pitch`
+in `src/opt.rs`, measured by `myopic gainlaw` on horizon-free cycles, never on this corpus,
+whose climbs end at the cut.
 """
 
 import csv

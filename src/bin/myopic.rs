@@ -1,7 +1,8 @@
 //! Which *myopic* metrics does the globally optimal climb cycle agree with, phase by phase?
 //!
-//! The optimal cycle splits into five phases. Four of them follow a rule with no fitted constant
-//! in it; the entry does not, and is the open problem:
+//! The optimal cycle splits into five phases. Three of them follow a rule with no fitted constant
+//! in it and the gain phase's has one measured constant, `K` at w = 0; the entry has no rule, and
+//! is the open problem:
 //!
 //! | phase | ticks | rule                                                  |
 //! |-------|-------|-------------------------------------------------------|
@@ -9,7 +10,7 @@
 //! | dive  | ~150  | hold the flight-path angle exactly; no constants       |
 //! | snap  | ~14   | pitch 0, held until one more tick stops raising v_z   |
 //! | flick | ~6    | ramp to about -88 deg; the values do not matter       |
-//! | gain  | ~86   | climb to the apex; no lookahead, one price handed over |
+//! | gain  | ~86   | s(s + A) = K v_z, s = sin|pitch|; one constant per w   |
 //!
 //! The dive was long described as leaking toward ~16.6 deg at a rate `k`. That was an artifact
 //! of asking one rule to cover the entry as well: hand the first ~60 ticks to the optimum and
@@ -22,7 +23,11 @@
 //! alone -- `v_y` does not enter -- so the phase is its own optimal-control problem, from here to
 //! the apex, with no horizon constant. What it cannot derive is `kappa = mu_z(apex)`, what the
 //! dive will pay for the forward speed it is handed; `gain` measures all of it and
-//! `tools/gain_phase.py` runs it over a corpus.
+//! `tools/gain_phase.py` runs it over a corpus. That climb-to-apex rule is still a search, though.
+//! What you can fly without one is `gain_law_pitch`: through the body of the climb
+//! `sin|p| (sin|p| + A) = K v_z`, `A` read off the tick map and `K` measured
+//! per objective: 0.771 for the climb, 0.670 for the level cycle. The climb's end is a clock to the entry and is not in it.
+//! `gainlaw` measures it; `tools/gainlaw_refs.sh` builds the horizon-free cycles it needs.
 //!
 //! The snap's *pitch* was never in doubt; when to start and stop holding it was. `vz_peaked` is
 //! the myopic answer for the stop and is exact at lambda = 0. The exact answer at both ends and
@@ -56,6 +61,10 @@
 //!   gain     <file> [w] [bvp] [dump]     the climbing arc: the two costate clocks, the closed-form
 //!                                        stationary pitch, the countdown two pitches read out,
 //!                                        and with `bvp` the climb-to-apex rule's own pitches
+//!   gainlaw  <file> [w] [k=<x>] [limit=<deg>] [dump]
+//!                                        the search-free gain law on a closed cycle: the constant
+//!                                        read off the optimum's climb, and the law flown
+//!                                        closed-loop against argmax dTE over 20 ticks
 //!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick
 //!                                        rule; a sweep profile supplies its own v0 and w
 //!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
@@ -1228,6 +1237,99 @@ pub fn gain_bvp(s: &State, w: f64, mu_t: (f64, f64), p_init: f64, cap: usize) ->
     (ps[0], n)
 }
 
+/// The climb flown by `gain_law_pitch` instead of by search, against the cycle's own climb.
+///
+/// The window runs from the tick the optimum comes off its nose-up stop to the tick it starts
+/// pitching down for the entry, or the end of the climbing arc if that comes first. Every rule
+/// flies the window closed-loop from the optimum's own state there, and what it hands the entry
+/// is priced with the periodic costate at the window's end, so the cost is first-order in blocks
+/// of the cycle's own `J` and the accounting is the same for every rule. `phi` is the law read
+/// backwards off the optimum's own pitches; its being flat through the body is the claim.
+///
+/// `k=<x>` flies a `k` of your choosing alongside `gain_law_k(w)`, which is how a marker built for
+/// one objective is scored on another's cycle. `v_c`, where the optimum's pitch first returns to
+/// 0, is the cycle's own number: the row that uses it is an oracle for the end, not a rule.
+fn cmd_gainlaw(path: &str, w: Option<f64>, k_over: Option<f64>, lim_over: Option<f64>, dump: bool) {
+    let prof = Profile::parse(&std::fs::read_to_string(path)
+                              .unwrap_or_else(|e| panic!("{path}: {e}"))).ok();
+    let ps = read_pitches(path);
+    let v0 = prof.as_ref().map_or(V0, |p| p.obj.v0);
+    let w = w.or_else(|| prof.as_ref().map(|p| p.obj.w())).unwrap_or(0.0);
+    let limit = lim_over.or_else(|| prof.as_ref().map(|p| p.rough.limit)).unwrap_or(90.0);
+    let st = replay_from(v0, &ps);
+    let n = ps.len();
+    let Some(mu) = periodic_mu(&st, &ps, w) else {
+        println!("{path}: monodromy singular, mu undetermined"); return };
+    let Some((t_gain, t_apex)) = climbing_arc(&st, &ps) else {
+        println!("{path}: no apex -- the down-to-forward branch never switches"); return };
+    let (p_at, v_at) = (|t: usize| ps[t % n], |t: usize| st[t % n].vel);
+    let t0 = (t_gain..t_apex).rev().find(|&t| p_at(t) <= -limit + 0.01).map_or_else(
+        || (t_gain..t_apex).min_by(|&a, &b| p_at(a).total_cmp(&p_at(b))).unwrap(), |t| t + 1);
+    let te = (t0..t_apex).find(|&t| p_at(t) > 1.0).unwrap_or(t_apex);
+    let v_c = (t0..te).find(|&t| p_at(t) > -0.5).map(|t| v_at(t).z);
+    let k = gain_law_k(w);
+    let c = (1.0, w);
+    let j_opt: f64 = (0..n).map(|t| c.0 * st[t + 1].vel.y + c.1 * st[t + 1].vel.z).sum();
+
+    let body: Vec<f64> = (t0..te).filter(|&t| v_at(t).z > 0.6 && p_at(t) < -0.5)
+        .map(|t| gain_law_phi(v_at(t).z, p_at(t))).collect();
+    let pct = |v: &[f64], q: f64| { let mut v = v.to_vec(); v.sort_by(f64::total_cmp);
+        v[((v.len() - 1) as f64 * q).round() as usize] };
+    println!("{path}: {n} ticks, w = {w}, k = {k:.4} ({GAIN_LAW_K0} {GAIN_LAW_DKDW:+.4} w)");
+    println!("  climb window {t0}..{te} ({} ticks): off the {limit} stop at v_z {:.3}, corner {}",
+             te - t0, v_at(t0).z, v_c.map_or("never".into(), |v| format!("at v_z {v:.3}")));
+    if !body.is_empty() {
+        println!("  phi = s(s + {GAIN_LAW_A:.4})/v_z over the body (v_z > 0.6, {} ticks): median {:.4}  \
+                  p10..p90 {:.4}..{:.4}", body.len(), pct(&body, 0.5), pct(&body, 0.1), pct(&body, 0.9));
+    }
+
+    // fly `rule` over the window from the optimum's own state; the entry prices what it hands over
+    let fly = |rule: &dyn Fn(&State) -> f64| -> (f64, f64) {
+        let mut s = st[t0 % n].clone();
+        let (mut dj, mut e2) = (0.0, 0.0);
+        for t in t0..te {
+            let p = rule(&s).clamp(-limit, limit);
+            e2 += (p - p_at(t)).powi(2);
+            s = ticked(&s, p);
+            if t + 1 < te {
+                let o = v_at(t + 1);
+                dj += c.0 * (s.vel.y - o.y) + c.1 * (s.vel.z - o.z);
+            }
+        }
+        let (m, o) = (mu[te % n], v_at(te));
+        dj += m.0 * (s.vel.y - o.y) + m.1 * (s.vel.z - o.z);
+        (dj, (e2 / (te - t0) as f64).sqrt())
+    };
+    let law = move |kk: f64| move |s: &State| gain_law_pitch(s.vel.z, kk);
+    let mut rows: Vec<(String, Box<dyn Fn(&State) -> f64>)> = vec![
+        (format!("law, k(w) = {k:.4}"), Box::new(law(k))),
+    ];
+    if let Some(vc) = v_c {
+        rows.push((format!("law, k(w), 0 below v_c"),
+                   Box::new(move |s: &State| if s.vel.z < vc { 0.0 } else { gain_law_pitch(s.vel.z, k) })));
+    }
+    if !body.is_empty() {
+        let kb = pct(&body, 0.5);
+        rows.push((format!("law, the body's own k = {kb:.4}"), Box::new(law(kb))));
+    }
+    if let Some(ko) = k_over { rows.push((format!("law, k = {ko:.4}"), Box::new(law(ko)))) }
+    rows.push(("argmax dTE, 20 ticks held".into(), Box::new(move |s: &State| bug_dj_n(s, 20, 0.0, limit))));
+    println!("  flown closed-loop over the window, what it hands the entry priced at mu(entry):");
+    println!("    {:<34} {:>9} {:>13} {:>11}", "rule", "pitch RMS", "cost, blocks", "% of J");
+    for (lab, rule) in &rows {
+        let (dj, rms) = fly(rule.as_ref());
+        println!("    {lab:<34} {rms:>8.2}d {dj:>+13.4} {:>+10.3}%", 100.0 * dj / j_opt);
+    }
+    if dump {
+        println!("t,pitch,vy,vz,phi,law,dte20");
+        for t in t0..te {
+            let s = &st[t % n];
+            println!("{t},{:.4},{:.6},{:.6},{:.5},{:.4},{:.4}", p_at(t), s.vel.y, s.vel.z,
+                     gain_law_phi(s.vel.z, p_at(t)), gain_law_pitch(s.vel.z, k), bug_dj_n(s, 20, 0.0, limit));
+        }
+    }
+}
+
 /// How sharply does the one-tick score pick out the optimum's pitch?
 ///
 /// Pontryagin says the optimum maximizes `mu . f(v, p)` over p every tick. That is exact, but it
@@ -1688,6 +1790,12 @@ fn main() {
         Some("gain") => cmd_gain(&a[2], a.get(3).filter(|s| !matches!(s.as_str(), "bvp"|"dump"))
                                       .map(|s| s.parse().unwrap()),
                                   a.iter().any(|x| x == "bvp"), a.iter().any(|x| x == "dump")),
+        Some("gainlaw") => cmd_gainlaw(&a[2],
+                                       a.get(3).filter(|s| *s != "dump" && !s.contains('='))
+                                               .map(|s| s.parse().unwrap()),
+                                       a.iter().find_map(|x| x.strip_prefix("k=")).map(|s| s.parse().unwrap()),
+                                       a.iter().find_map(|x| x.strip_prefix("limit=")).map(|s| s.parse().unwrap()),
+                                       a.iter().any(|x| x == "dump")),
         Some("adjoint") => cmd_adjoint(&a[2], a.get(3).filter(|s| *s != "dump")
                                                    .map(|s| s.parse().unwrap())),
         Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
@@ -1711,7 +1819,7 @@ fn main() {
                                          _ => Dive::Leak,
                                      },
                                      a.iter().any(|x| x == "vzpeak")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|gain|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|djn|rules|policy> ...\n\
+        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|gain|gainlaw|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|djn|rules|policy> ...\n\
                               see the module docs at the top of src/bin/myopic.rs"),
     }
 }

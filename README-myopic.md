@@ -592,6 +592,11 @@ lengthening a held-pitch one.
 
 ### The rule, and what it still has to be told
 
+> This rule is a search. `bvp` re-solves the climb at every tick with the cycle's own apex prices,
+> so it agrees with the optimum by construction and cannot be flown from the state. "A gain marker
+> without search" below replaces it through the body of the climb with a closed form and one
+> constant per objective.
+
 Put together: the gain phase is exactly the climb's own optimal-control problem — **from here,
 choose pitches until the apex, maximizing `Σ(v_y + w·v_z)` plus `mu(apex)·v(apex)`.** No lookahead
 constant; the horizon is where the down-to-forward branch switches on, which the candidate
@@ -636,6 +641,143 @@ needs from the rest of the cycle arrives as one scalar, and that scalar is the l
 discounting whatever the hold exits at — which is the useful decomposition even though it is not
 yet a rule you can fly from the state alone. The exit *level* is what remains: it is set across
 the flick, the only arc of the cycle with no clock on it, and the only one still unexplained.
+
+## A gain marker without search
+
+Through the body of the climb the optimum's pitch satisfies
+
+    s (s + A) = K v_z          s = sin|pitch|,  A = 2 (1 − DRAG_Z) / GAIN_FWD = 0.5612
+
+with **one constant per objective**, measured on that objective's own optimal cycle:
+
+    K = 0.771   climb, λ = 0 (n256)          K = 0.670   level, λ = 4 (n372)
+
+`gain_law_k(w) = 0.76 − 0.340 w` interpolates between them. Its slope is the far field's
+prediction, `(1 − DRAG_Y) / (0.75 g DRAG_Y)`; how well the cycles confirm it depends on where the
+body is cut (below).
+
+So `pitch = −asin(√(0.0787 + K v_z) − 0.2806)`, `v_z` in blocks per tick. No price vector, no
+horizon, no rollout, and `v_y` does not appear. The first constant is the marker for a pure
+climb; the second is the marker for the level cycle (`λ = 4`, where the optimal cycle's net
+height is zero: the corpus cell `n0372_lamP4` gains 0.04 blocks over 372 ticks, and its
+horizon-free re-polish loses 1.2 while covering 618).
+`gain_law_pitch` in `src/opt.rs` is the formula.
+
+**Where the form comes from.** On the climbing arc `v_z` evolves without `v_y`, and `v_y` enters
+the objective linearly with a constant decay, so `v_y` can reach the pitch only through the clock
+`mu_y` (ticks until the entry). Far from the entry, in continuous time, the costate equations and
+the stationary pitch reduce to `ds/dt = −(K·GAIN_FWD/2)·v_z`: *sin|pitch| falls at a rate
+proportional to forward speed*. That integrates to the form above, with `A` read off the tick map
+— forward drag `1 − DRAG_Z` over the forward speed a nose-up tick spends, `GAIN_FWD`. The same
+reduction predicts how `K` moves with `w`, −0.340 per unit `w`. It does not give `K`'s level: the
+far field alone says 0.599, and the optimum's 0.76 includes the clock, which the far field drops.
+Why the clock only shifts `K` through the body, instead of bending the curve, is not derived
+either. So **the form is exact only in that limit, and holds on the cycles with a shifted `K`;
+both constants are measured.** The data do not pin `A`
+tightly: a free fit of `(K, A)` on the unregularized n256 climb gives 0.61, 0.57, 0.55 and 0.53 as
+the body's lower cutoff moves from `v_z` 0.4 to 1.2. The derived 0.561 lies inside that range.
+
+**Measured on horizon-free cycles.** The steady corpus cannot test this: its climbs end at the
+cut, where the terminal price is `dJ/dv_n` and not the periodic costate. That biases `K` high,
+by up to 0.04 at `λ = 0` and by 0.05–0.10 at `λ = 4`: enough to hide the `λ` dependence
+entirely. `tools/gainlaw_refs.sh` rebuilds a cell horizon-free: tile it three times, re-polish
+under the cell's own physics (`mth_lut`, `mu 1e-4`, limit 85), cut out the middle cycle, and close
+it. `myopic gainlaw` then reads `K` off the optimum's own pitches and flies each rule
+closed-loop through the climb, from the tick the optimum leaves its −85° stop to the tick it
+starts pitching down for the entry. What each rule hands the entry is priced with the cycle's
+periodic costate there. Costs are percent of the cycle's own objective per cycle:
+
+| cycle | λ | body `K`, median | p10..p90 | law, `gain_law_k(w)` | law, 0 below `v_c` | argmax ΔTE, 20 ticks |
+|---|---|---|---|---|---|---|
+| n200 | 0 | 0.800 | 0.770..0.810 | −2.35% | −1.25% | −2.13% |
+| **n256** | **0** | **0.771** | 0.765..0.775 | **−0.49%** | −0.33% | −0.44% |
+| n300 | 0 | 0.760 | 0.754..0.763 | −0.26% | −0.16% | −0.25% |
+| n372 | 0 | 0.749 | 0.736..0.757 | −0.11% | no corner | −0.19% |
+| n450 | 0 | 0.759 | 0.745..0.772 | −0.06% | no corner | −0.19% |
+| n300 | 2 | 0.722 | 0.707..0.725 | −0.34% | −0.16% | −0.27% |
+| n256 | 4 | 0.680 | 0.577..0.713 | −1.21% | −0.32% | −1.26% |
+| n300 | 4 | 0.674 | 0.604..0.696 | −0.63% | −0.19% | −0.70% |
+| **n372** | **4** | **0.670** | 0.635..0.680 | **−0.27%** | −0.12% | −0.36% |
+| n450 | 4 | 0.666 | 0.641..0.671 | −0.19% | −0.09% | −0.28% |
+
+The bold rows are the two objectives' own optimal cycles: n256 is the best climb rate at `λ = 0`,
+and n372 is where the `λ` family crosses `dy = 0` at the best distance rate (32.86 b/s, flat
+within 0.1 b/s over n 350..380). "Body" is `v_z > 0.6`, a cut chosen after looking at `λ = 0`. At `λ = 4` the plateau
+ends earlier, near `v_z ≈ 0.8`, so there the body includes part of the decline. That is why those
+p10s are low: −15% of the median at n256 and −10% at n300. `v_c` is the speed at which the cycle's own pitch
+first returns to 0. That column is an oracle for the end, not a rule.
+
+- **The law ties the searched lookahead** at `λ ≤ 2` on every n ≥ 256 cycle, within 0.1 point,
+  **and beats it at `λ = 4`**, with nothing searched. An independent re-fly of whole cycles to
+  their own limit cycle, with no costate pricing, reproduced the law's column, the body-only split
+  below and the cross-objective pair, all to within 0.01 point. In elytra-vario the lookahead costs 65 µs a tick; the law is
+  one square root.
+- **Nearly all of the law's loss is in the end of the climb.** Flying the law while `v_z > 0.6`
+  and then the optimum's own pitches costs 0.0006–0.065% on every n ≥ 256 cycle.
+- **The objective dependence is real; its size is not the far field's.** At fixed cycle length
+  `K` falls with `w`, but the slope depends on the cut: −0.30 to −0.36 per unit `w` with the body
+  at `v_z > 0.6`, which brackets the far field's −0.340, and −0.24 to −0.33 at `v_z > 0.8` or
+  `> 1.0`, where the `λ = 4` plateau is clean. The bracket came from the cut. Cycle length matters
+  much less once n ≥ 256 (0.749–0.771 at `λ = 0`, 0.666–0.680 at `λ = 4`). Flying the
+  other objective's marker costs: `K = 0.671` on the n256 climb, 2.03% against 0.49%; `K = 0.76`
+  on the n372 level cycle, 0.54% against 0.27%.
+- **It is not a product of the curvature price.** The same two optimal cycles polished without
+  it, under `libm` with limit 90 (`runs/gainlaw/unreg/`), have body `K` 0.773 and 0.669.
+
+**How much ignoring `v_y` costs.** Along any single climb `v_z` falls monotonically, so any one
+climb's pitch is trivially some function of `v_z`. The question is whether it is the *same*
+function across cycles. On the steady corpus at fixed `λ`, excluding the last 25 ticks before the
+cut, binning the climb pitch on `v_z` alone (0.02 b/t bins) over every cycle length leaves 0.9°
+RMS at `λ = 0`, rising to 2.8° at `λ = 4`. That residual bounds everything `v_z` misses, `v_y`
+included. It does not show that `v_y` is irrelevant, only that it is worth at most that much. The
+clock to the entry, which is the one channel `v_y` has into the pitch, is not a function of `v_z`:
+binned the same way, ticks-to-entry leaves 7.8 ticks. The operational answer is the flown cost
+above: through the body, ignoring `v_y` costs under 0.07% of the cycle.
+
+### Removing `K` moves it into the flick
+
+**Hold `K` from the stop instead of looking it up.** The law passes through the point where the
+pitch leaves the −85° stop, so `K = sin 85° (sin 85° + A) / v_z` at that tick, and then hold it.
+That needs no constant. Leaving at the optimum's own tick, it ties the looked-up `K` on all four
+`λ = 4` cycles and on n256 `λ = 0`, within 0.02 point. It loses 0.1–0.2 point on the longer
+`λ = 0` cycles, whose plateau settles a tick after the stop. The catch is the departure tick:
+`v_z` falls about 4.5% a tick on the stop, so leaving one tick early or late moves `K` by that
+much and costs 0.1–1 point. The optimum stays on the stop 3–5 ticks, and nothing about the state
+there is invariant: flight-path angle 14–25°, `v_y` 0.54–1.11. The one condition that holds on
+every cycle is the exact one, the price ratio reaching the stop's boundary (within 2%), and that
+needs the prices.
+
+**Deriving the level is the same problem.** `K`'s excess over the far field's 0.599 − 0.340 `w`
+runs 0.14–0.20 and tracks the climb's length (correlation −0.95 over nine cycles) and the clock
+`mu_y` where the climb leaves the stop (−0.96). That is the time-to-entry term the far field
+drops, as the theory says it should be, but it is not a number the state gives you. So `K`,
+the stop's departure and the entry are one open problem, the same one that sets `kappa`.
+
+### The end of the climb is a clock to the entry
+
+Past the plateau, `K` falls to 0 as the pitch returns to pitch 0 at the corner, and the law
+keeps pitching up. There the stationary pitch is set by the time left, not by the state:
+
+    s = v_z (GAIN_UP − GAIN_FWD r(τ)) / GAIN_LIFT
+    r(τ) = [w (1 − DRAG_Z^τ)/(1 − DRAG_Z) + κ DRAG_Z^τ] / [(1 − DRAG_Y^τ)/(1 − DRAG_Y) + μ_T DRAG_Y^τ]
+
+with `τ` the ticks until the entry and `(μ_T, κ)` the periodic costate there. Fed the true `τ`
+(counted to the tick the pitch-down starts), this matches the optimum to 0.32–0.37° RMS over the
+last 20 ticks and 0.8–1.0° over the last 30, on five cycles at `λ` 0 and 4. The trouble is `τ`: it is
+when the pilot *chooses* to pitch down, which is the entry, and the entry has no rule. The
+objectives differ most here. `λ = 0` leaves the plateau late (`v_z ≈ 0.47`), reaches pitch 0
+at `v_z` 0.232, and starts pitching down one tick later. `λ = 4` leaves early (`v_z ≈ 0.81`),
+reaches pitch 0 at `v_z` 0.320, and holds it four ticks before pitching down, still climbing at
+0.57 b/t. Estimating `τ` from a pitch-0 coast to a fixed entry `v_y` did not work: it blew up on
+n300 `λ = 4`.
+
+What a marker can do today is the oracle column: stop pitching up below the corner speed of the
+cycle you are flying. That recovers a third to three quarters of the end's loss, but 0.232
+and 0.320 are read off those two cycles, not derived.
+
+    tools/gainlaw_refs.sh runs/gainlaw n0256_lamP0 n0372_lamP4     # ~30 s of one core each
+    tools/gainlaw_refs.sh runs/gainlaw table
+    myopic --trig mth_lut --flight algebraic gainlaw runs/gainlaw/n0372_lamP4.cyc 0.2606 limit=85 k=0.76
 
 ## Flying only the bugs
 

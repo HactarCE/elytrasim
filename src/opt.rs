@@ -350,6 +350,44 @@ pub fn gain_ratio(vz: f64, p: f64) -> f64 {
     (GAIN_UP - GAIN_LIFT * (-p.to_radians().sin()) / vz) / GAIN_FWD
 }
 
+// ------------------------------------------- the gain arc without a price: one constant
+
+// Far from the entry the costate recursions reduce, in continuous time, to `ds/dt = -(K GAIN_FWD
+// / 2) v_z` with `s = sin|pitch|`, and that integrates to `s (s + GAIN_LAW_A) = K v_z`. So the
+// climb's body needs no price vector at all, only `K`. See "A gain marker without search" in
+// README-myopic.md.
+
+/// `2 (1 - DRAG_Z) / GAIN_FWD`, 0.5612. Derived. The data only bracket it: free fits give 0.53 to
+/// 0.61 depending on where the body of the climb is cut.
+pub const GAIN_LAW_A: f64 = 2.0 * (1.0 - DRAG_Z) / GAIN_FWD;
+/// `-(1 - DRAG_Y) / (0.75 g DRAG_Y)`, -0.3401: the far field's `dK/dw`, used here as the line
+/// through the two objectives' measured `K` (0.771 at w = 0, 0.670 at w = 0.261). Not confirmed as
+/// a slope: horizon-free cycles at fixed length give -0.30 to -0.36 with the body cut at v_z 0.6,
+/// -0.24 to -0.33 on the clean plateau.
+pub const GAIN_LAW_DKDW: f64 = -(1.0 - DRAG_Y) / (0.75 * GRAVITY * DRAG_Y);
+/// `K` at `w = 0`, measured: 0.749..0.771 over horizon-free cycles of 256..450 ticks. The far-field
+/// theory alone gives 0.599; the difference is the clock to the entry, and is not derived.
+pub const GAIN_LAW_K0: f64 = 0.76;
+
+/// The law's constant at a price on distance.
+pub fn gain_law_k(w: f64) -> f64 { GAIN_LAW_K0 + GAIN_LAW_DKDW * w }
+
+/// GAIN, search-free. The nose-up pitch with `s (s + GAIN_LAW_A) = k v_z`: no price, no horizon,
+/// no rollout, and `v_y` absent. Holds through the body of the climb, not its end -- the pitch
+/// comes back to 0 on a clock to the entry that this does not see.
+pub fn gain_law_pitch(vz: f64, k: f64) -> f64 {
+    let h = 0.5 * GAIN_LAW_A;
+    let s = (h * h + k * vz.max(0.0)).sqrt() - h;
+    -s.clamp(0.0, 1.0).asin().to_degrees()
+}
+
+/// The law read backwards: the `k` a nose-up pitch implies at `v_z`. Flat along the body of an
+/// optimal climb; that flatness is the claim.
+pub fn gain_law_phi(vz: f64, p: f64) -> f64 {
+    let s = (-p.to_radians().sin()).max(0.0);
+    s * (s + GAIN_LAW_A) / vz
+}
+
 // ---------------------------------------------------------------- the policy
 
 #[derive(Clone, Copy, Debug, PartialEq)]
