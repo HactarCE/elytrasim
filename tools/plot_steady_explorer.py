@@ -187,19 +187,28 @@ HTML = r'''<!doctype html>
       const pad=(hi-lo)*fraction; return [lo-pad,hi+pad];
     }
     function fmt(value, digits) { return Math.abs(value)<1e-12 ? "0" : value.toFixed(digits); }
-    function axes(s, xd, yd, xl, yl, xdigits=0, ydigits=2, prepaint=null) {
+    function ticks(d, step) {
+      if(!step) return Array.from({length:5},(_,i)=>d[0]+i*(d[1]-d[0])/4);
+      const values=[], direction=d[0]<=d[1]?1:-1, lo=Math.min(...d), hi=Math.max(...d);
+      for(let v=Math.ceil(lo/step)*step;v<=hi+step*1e-9;v+=step) values.push(+v.toFixed(10));
+      return direction>0?values:values.reverse();
+    }
+    function axes(s, xd, yd, xl, yl, xdigits=0, ydigits=2, prepaint=null, xstep=null, ystep=null) {
       const {ctx,w,h,m}=s;
       const X=x=>m.l+(x-xd[0])/(xd[1]-xd[0])*(w-m.l-m.r);
       const Y=y=>h-m.b-(y-yd[0])/(yd[1]-yd[0])*(h-m.t-m.b);
       if(prepaint) prepaint({X,Y});
       ctx.font="12px system-ui";
-      for(let i=0;i<5;i++){
-        const x=xd[0]+i*(xd[1]-xd[0])/4, px=X(x);
+      for(const x of ticks(xd,xstep)) {
+        const px=X(x);
         ctx.strokeStyle="rgba(185,192,201,.24)";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(px,m.t);ctx.lineTo(px,h-m.b);ctx.stroke();
         ctx.fillStyle=C.dim;ctx.textAlign="center";ctx.fillText(fmt(x,xdigits),px,h-m.b+18);
-        const y=yd[0]+i*(yd[1]-yd[0])/4, py=Y(y);
+      }
+      for(const y of ticks(yd,ystep)) {
+        const py=Y(y);
+        ctx.strokeStyle="rgba(185,192,201,.24)";ctx.lineWidth=1;
         ctx.beginPath();ctx.moveTo(m.l,py);ctx.lineTo(w-m.r,py);ctx.stroke();
-        ctx.textAlign="right";ctx.fillText(fmt(y,ydigits),m.l-7,py+4);
+        ctx.fillStyle=C.dim;ctx.textAlign="right";ctx.fillText(fmt(y,ydigits),m.l-7,py+4);
       }
       ctx.fillStyle=C.fg;ctx.textAlign="center";ctx.fillText(xl,(m.l+w-m.r)/2,h-6);
       ctx.save();ctx.translate(14,(m.t+h-m.b)/2);ctx.rotate(-Math.PI/2);ctx.fillText(yl,0,0);ctx.restore();
@@ -231,20 +240,9 @@ HTML = r'''<!doctype html>
     }
     const REPLAYS = GRID.map(slice => slice.map(row => row && replay(row)));
 
-    // One fixed replay view for every lambda: the field is the constant backdrop, so letting it
-    // rescale per slice would destroy the only thing the panel is for. The box is the union of
-    // the image extent and every trajectory, squared up so the plot area stays isotropic.
-    const VIEW = (() => {
-      let zlo=FIELD_VZ[0], zhi=FIELD_VZ[1], ylo=FIELD_VY[0], yhi=FIELD_VY[1];
-      for(const slice of REPLAYS) for(const v of slice) {
-        if(!v) continue;
-        for(const z of v.vz){ if(z<zlo)zlo=z; if(z>zhi)zhi=z; }
-        for(const y of v.vy){ if(y<ylo)ylo=y; if(y>yhi)yhi=y; }
-      }
-      zlo-=.05; zhi+=.05; ylo-=.05; yhi+=.05;
-      const span=Math.max(zhi-zlo,yhi-ylo), zc=(zlo+zhi)/2, yc=(ylo+yhi)/2;
-      return {x:[zc-span/2,zc+span/2], y:[yc-span/2,yc+span/2]};
-    })();
+    // Fixed velocity view for every lambda. The embedded field image covers its
+    // smaller FIELD_VZ x FIELD_VY source extent inside this wider replay domain.
+    const VIEW = {x:[-.5,3.5], y:[-1.5,3]};
 
     // Per-lambda, because dJ runs from about -38 at lambda -2 to about +1200 at lambda 16 and
     // v0z from 0.17 to 3.1. A shared domain would flatten most slices into a straight line.
@@ -385,15 +383,16 @@ HTML = r'''<!doctype html>
     }
     function plotField(li, ni, tick) {
       const s=setup(root.querySelector("#ss-field"),{l:58,r:14,t:14,b:42}),ctx=s.ctx;ctx.clearRect(0,0,s.w,s.h);
-      const aw=s.w-s.m.l-s.m.r, ah=s.h-s.m.t-s.m.b;
-      if(aw>ah){const d=(aw-ah)/2;s.m.l+=d;s.m.r+=d;}else{const d=(ah-aw)/2;s.m.t+=d;s.m.b+=d;}
       const xd=VIEW.x,yd=VIEW.y;
+      const aw=s.w-s.m.l-s.m.r, ah=s.h-s.m.t-s.m.b, ratio=(xd[1]-xd[0])/(yd[1]-yd[0]);
+      if(aw/ah>ratio){const d=(aw-ah*ratio)/2;s.m.l+=d;s.m.r+=d;}else{const d=(ah-aw/ratio)/2;s.m.t+=d;s.m.b+=d;}
       const sc=axes(s,xd,yd,"vz, blocks/tick","vy, blocks/tick",1,1,q=>{
         if(!(fieldImage.complete&&fieldImage.naturalWidth))return;
         const x0=q.X(FIELD_VZ[0]),x1=q.X(FIELD_VZ[1]),y0=q.Y(FIELD_VY[1]),y1=q.Y(FIELD_VY[0]);
         ctx.drawImage(fieldImage,x0,y0,x1-x0,y1-y0);
         ctx.strokeStyle="rgba(185,192,201,.22)";ctx.lineWidth=1;ctx.strokeRect(x0,y0,x1-x0,y1-y0);
-      });
+      },.5,.5);
+      ctx.save();ctx.beginPath();ctx.rect(s.m.l,s.m.t,s.w-s.m.l-s.m.r,s.h-s.m.t-s.m.b);ctx.clip();
       const slice=GRID[li], replays=REPLAYS[li], selected=slice[ni];
       slice.forEach((row,i)=>{if(!vis(row)||i===ni)return;const v=replays[i];line(ctx,v.vy.map((y,t)=>[sc.X(v.vz[t]),sc.Y(y)]),color(i/(NS.length-1),.24),.8,.9);});
       slice.forEach((row,i)=>{
@@ -404,6 +403,7 @@ HTML = r'''<!doctype html>
       line(ctx,v.vy.map((y,t)=>[sc.X(v.vz[t]),sc.Y(y)]),"#ffffff",2.2);
       ctx.beginPath();ctx.arc(sc.X(selected.vz),sc.Y(selected.vy),5,0,Math.PI*2);ctx.fillStyle=C.bg;ctx.fill();ctx.strokeStyle="#ffffff";ctx.lineWidth=2;ctx.stroke();
       ctx.beginPath();ctx.arc(sc.X(v.vz[tick]),sc.Y(v.vy[tick]),4.5,0,Math.PI*2);ctx.fillStyle=C.tick;ctx.fill();ctx.strokeStyle=C.bg;ctx.lineWidth=1.5;ctx.stroke();
+      ctx.restore();
     }
     // A missing cell only happens on a ragged grid; snap the num_ticks slider to the nearest
     // lambda has, rather than blanking the page.
