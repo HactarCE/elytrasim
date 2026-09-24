@@ -793,6 +793,88 @@ pub fn curvature_max(p: &[f64]) -> f64 {
     (0..p.len().saturating_sub(2)).map(|j| (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs()).fold(0.0, f64::max)
 }
 
+// ---------------------------------------------------------------- the floor
+
+/// A floor `depth` blocks below the start, and a price for coming near it.
+///
+/// The schedule starts at `y = 0` like every other in this crate, so the floor sits at
+/// `y = -depth`; `depth` is the initial height above it. The price is paid once per tick on the
+/// state *after* that tick, `states[1..]`, never on the start:
+///
+/// ```text
+/// h   = y + depth                                    clearance, blocks
+/// pen = weight * (max(0, margin - h) / margin)^2      the bubble: 0 above `margin`, `weight` at h = 0
+///     + wall * max(0, -h)                             under the floor, linear in depth
+/// ```
+///
+/// Why a bubble and a wall, and not a barrier. The coordinate search samples the whole pitch
+/// range at every tick, and most candidates crash; a log barrier scores every one of them
+/// `-inf` and the sweep cannot tell a schedule that crashes at tick 80 from one that crashes at
+/// tick 3. The wall keeps them ranked -- a trajectory that stays under the floor longer, or
+/// deeper, pays more -- and the bubble makes first contact continuous instead of a cliff.
+///
+/// The bubble is conservative on purpose: at a finite `margin` the optimum stands off the floor,
+/// so feasibility is judged by `clearance`, never by the penalty being small.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Floor {
+    /// Initial height above the floor, blocks. `INFINITY` turns the floor off.
+    pub depth: f64,
+    /// Thickness of the bubble, blocks.
+    pub margin: f64,
+    /// Blocks of `J` charged per tick spent *at* the floor; falls quadratically to 0 at `margin`.
+    pub weight: f64,
+    /// Blocks of `J` charged per tick per block under the floor.
+    pub wall: f64,
+}
+
+impl Default for Floor {
+    fn default() -> Self { Floor { depth: f64::INFINITY, margin: 0.5, weight: 1.0, wall: 100.0 } }
+}
+
+impl Floor {
+    pub fn is_on(&self) -> bool { self.depth.is_finite() }
+
+    /// The price of one post-tick state.
+    #[inline]
+    pub fn tick(&self, s: &State) -> f64 {
+        let h = s.pos.y + self.depth;
+        if h >= self.margin { return 0.0 }
+        let b = (self.margin - h) / self.margin;
+        self.weight * b * b + self.wall * (-h).max(0.0)
+    }
+
+    /// The whole replay's price, `states[1..]`. 0 when off.
+    pub fn cost(&self, states: &[State]) -> f64 {
+        if !self.is_on() { return 0.0 }
+        states[1..].iter().map(|s| self.tick(s)).sum()
+    }
+
+    /// The least clearance over `states[1..]`, blocks. Negative means the replay went through
+    /// the floor. This, not `cost`, is what feasibility is judged on.
+    pub fn clearance(&self, states: &[State]) -> f64 {
+        states[1..].iter().map(|s| s.pos.y + self.depth).fold(f64::INFINITY, f64::min)
+    }
+
+    /// Ticks flown before the first state under the floor: the schedule's endurance, capped at
+    /// its own length.
+    pub fn survived(&self, states: &[State]) -> usize {
+        states[1..].iter().position(|s| s.pos.y + self.depth < 0.0).unwrap_or(states.len() - 1)
+    }
+}
+
+/// `J` averaged over the draws, less the floor's price on each draw's replay. With the floor off
+/// this is exactly `eval_jittered`.
+fn eval_floored(obj: &Objective, pitches: &[f64], dv: &[Vec3], floor: &Floor) -> f64 {
+    if !floor.is_on() { return obj.eval_jittered(pitches, dv) }
+    let trig = cache_pitches(pitches);
+    dv.iter().map(|d| {
+        let mut s = State { pos: Vec3::ZERO, vel: obj.v0 + *d };
+        let mut c = 0.0;
+        for &p in &trig { s = ticked_cached(&s, p); c += floor.tick(&s) }
+        obj.j(&s) - c
+    }).sum::<f64>() / dv.len() as f64
+}
+
 // ---------------------------------------------------------------- the optimizer
 
 /// How hard to polish. The defaults are `cmd_polish`'s, which is the schedule every number in
@@ -867,6 +949,8 @@ pub struct PolishOpts {
     /// otherwise the schedule is written out with a header `v0` that is not its own fixed
     /// point, which is the one thing this mode exists to prevent.
     pub steady: bool,
+    /// A floor under the trajectory, priced per tick. Off by default. See `Floor`.
+    pub floor: Floor,
 }
 
 impl Default for PolishOpts {
@@ -883,6 +967,7 @@ impl Default for PolishOpts {
             jitter: Jitter::default(),
             rough: Rough::default(),
             steady: false,
+            floor: Floor::default(),
         }
     }
 }
@@ -958,16 +1043,25 @@ fn f32_strictly_above(x: f64) -> Option<f64> {
 /// optimizes the same regularized objective the polish reports, not `J` alone.
 fn best_pitch_at(obj: &Objective, s: &[State], tail: &[PitchTrig],
                  cur: f64, lo: f64, hi: f64, step: f64, ternary_iters: usize,
-                 pen: &(dyn Fn(f64) -> f64 + Sync)) -> (f64, f64, f64) {
+                 pen: &(dyn Fn(f64) -> f64 + Sync), floor: &Floor) -> (f64, f64, f64) {
     // One prefix state per jitter draw. The draws differ only in where they started, so the
     // tail is the exact schedule flown from each of them -- this is E[J | v0 + dv] under common
     // random numbers, with no per-tick noise to average away.
+    //
+    // The floor's price is charged on the ticks this pitch can move, `t+1..`; the prefix's share
+    // is the same for every candidate, so leaving it out changes no comparison.
     let score = |p: f64| -> f64 {
         let trig = PitchTrig::new(p as f32);
         s.iter().map(|s0| {
             let mut st = ticked_cached(s0, trig);
-            for &q in tail { st = ticked_cached(&st, q) }
-            obj.j(&st)
+            if floor.is_on() {
+                let mut c = floor.tick(&st);
+                for &q in tail { st = ticked_cached(&st, q); c += floor.tick(&st) }
+                obj.j(&st) - c
+            } else {
+                for &q in tail { st = ticked_cached(&st, q) }
+                obj.j(&st)
+            }
         }).sum::<f64>() / s.len() as f64 - pen(p)
     };
     let steps = ((hi - lo) / step).round() as i64;
@@ -1020,6 +1114,12 @@ pub fn residuals(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> Ve
 /// same price or it will report a gain the writer deliberately did not take.
 pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough)
     -> Vec<(f64, f64)> {
+    residuals_floored(obj, pitches, step, jit, rough, Floor::default())
+}
+
+/// `residuals_reg` with the floor's price as well: the certificate of a floored polish.
+pub fn residuals_floored(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough,
+                         floor: Floor) -> Vec<(f64, f64)> {
     let dv = jit.draws_at_0();
     let trig = cache_pitches(pitches);
     let states = jittered_replays(obj, &trig, &dv);
@@ -1030,7 +1130,7 @@ pub fn residuals_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, r
             let pen = |x: f64| rough.local(&w, x);
             let (lo, hi) = rough.feasible(&w, t, -90.0, 90.0).unwrap_or((pitches[t], pitches[t]));
             let (p, j, j_cur) = best_pitch_at(obj, &row, &trig[t + 1..], pitches[t],
-                                              lo, hi, step, 70, &pen);
+                                              lo, hi, step, 70, &pen, &floor);
             (p - pitches[t], j - j_cur)
         })
         .collect()
@@ -1076,8 +1176,14 @@ pub fn certify(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter) -> f64 
 /// when the neighbors are already illegal -- so without this check an infeasible profile scores
 /// a perfect 0.0. See `Rough::violation`.
 pub fn certify_reg(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough) -> f64 {
+    certify_floored(obj, pitches, step, jit, rough, Floor::default())
+}
+
+/// `certify_reg` against the floored objective.
+pub fn certify_floored(obj: &Objective, pitches: &[f64], step: f64, jit: Jitter, rough: Rough,
+                       floor: Floor) -> f64 {
     if rough.violation(pitches) > 0.0 { return f64::INFINITY }
-    residuals_reg(obj, pitches, step, jit, rough).iter().map(|x| x.1).fold(0.0, f64::max)
+    residuals_floored(obj, pitches, step, jit, rough, floor).iter().map(|x| x.1).fold(0.0, f64::max)
 }
 
 /// Is the per-tick correction *smooth in t*?
@@ -1287,6 +1393,10 @@ const STEADY_DRIFT_TOL: f64 = 1e-7;
 /// cannot be replaced by a derivative method.
 pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     assert_eq!(init.len(), obj.n, "schedule length must match the objective's horizon");
+    // Neither line search prices the floor, and a steady cycle has no floor to speak of.
+    assert!(!opts.floor.is_on() || (opts.block == 0 && !opts.steady),
+            "a floored polish supports neither --block nor --steady");
+    let floor = opts.floor;
     // Project the seed into the admissible set first. A warm start routinely arrives outside it
     // -- every relaxed solution parks at +-90 -- and the sweep is a local move, not a repair:
     // where the neighbors are out of bounds `Rough::feasible` has nothing to offer and every
@@ -1310,7 +1420,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             dv = opts.jitter.draws_at(pass as u64);
             states = jittered_replays(&obj, &trig, &dv);
         }
-        let before = obj.eval_jittered(&pitches, &dv) - opts.rough.cost(&pitches);
+        let before = eval_floored(&obj, &pitches, &dv, &floor) - opts.rough.cost(&pitches);
         let prev = pitches.clone();
         let global = pass % opts.global_every == 0;
         // Before each global pass, try moving the whole schedule at once. When the per-tick
@@ -1350,7 +1460,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
                 continue
             };
             let (np, j, j_cur) = best_pitch_at(&obj, &row, &trig[t + 1..], cur,
-                                               lo, hi, step, opts.ternary_iters, &pen);
+                                               lo, hi, step, opts.ternary_iters, &pen, &floor);
             if global { worst_tick = worst_tick.max(j - j_cur) }
             pitches[t] = np;
             trig[t] = PitchTrig::new(np as f32);
@@ -1375,7 +1485,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
             break;
         }
         passes = pass + 1;
-        last_gain = obj.eval_jittered(&pitches, &dv) - opts.rough.cost(&pitches) - before;
+        last_gain = eval_floored(&obj, &pitches, &dv, &floor) - opts.rough.cost(&pitches) - before;
         let _ = worst_tick;
         recent.push_back(last_gain);
         if recent.len() > opts.stall_window { recent.pop_front(); }
@@ -1407,7 +1517,7 @@ pub fn polish(obj: &Objective, init: &[f64], opts: PolishOpts) -> Polished {
     }
 
     let j = obj.eval(&pitches);
-    let residual = certify_reg(&obj, &pitches, opts.global_step, opts.jitter, opts.rough);
+    let residual = certify_floored(&obj, &pitches, opts.global_step, opts.jitter, opts.rough, floor);
     let l1 = lag1(&pitches);
     let rough_cost = opts.rough.cost(&pitches);
     Polished { pitches, j, passes, last_gain, residual, lag1: l1, stopped_degenerate, rough_cost,
