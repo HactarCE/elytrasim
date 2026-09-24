@@ -345,13 +345,25 @@ fn utility(states: &[State], depth: f64, mode: Exit, ke: f64) -> f64 {
     base + exit_energy(states, depth).map_or(0.0, |e| ke * mode.per_block() * e)
 }
 
-/// The bubble's price on a replay: `weight * (max(0, margin - h) / margin)^2` on every state
-/// before the crossing, in blocks of energy per tick -- the same shape as `Floor`, without its
-/// wall, since a state under the floor ends the flight here. `weight == 0` is off.
+/// The bubble's price on a replay: `weight * (max(0, margin - h) / margin)^2` per tick, in
+/// blocks of energy -- the same shape as `Floor`, without its wall, since going under the floor
+/// ends the flight here. `weight == 0` is off.
+///
+/// Continuous in the schedule at both ends. Entering the bubble starts at zero with zero slope.
+/// At the floor, the crossing interval is charged the full-contact price times `f`, the same
+/// fraction of the tick that `t*` uses: charging only the states at or above the floor would
+/// make a state at `h = 0+` pay `weight` and one at `0-` pay nothing, a jump of `weight` every
+/// time the crossing slides past a tick.
 fn bubble_cost(states: &[State], depth: f64, (margin, weight): (f64, f64)) -> f64 {
     if weight == 0.0 { return 0.0 }
-    states[1..].iter().map(|s| s.pos.y + depth).take_while(|&h| h >= 0.0)
-        .map(|h| weight * ((margin - h).max(0.0) / margin).powi(2)).sum()
+    let pen = |h: f64| weight * ((margin - h).max(0.0) / margin).powi(2);
+    let mut c = 0.0;
+    for k in 1..states.len() {
+        let (a, b) = (states[k - 1].pos.y + depth, states[k].pos.y + depth);
+        if b < 0.0 { return c + a / (a - b) * weight }
+        c += pen(b);
+    }
+    c
 }
 
 /// Coordinate ascent on a first-exit score over a fixed cap. The same sweep as `polish` -- a
@@ -649,6 +661,15 @@ mod tests {
 
     fn at(y: &[f64]) -> Vec<State> {
         y.iter().enumerate().map(|(t, &y)| State { pos: Vec3::new(0.0, y, t as f64), vel: Vec3::ZERO }).collect()
+    }
+
+    /// The bubble must not jump as the crossing slides past a tick.
+    #[test]
+    fn bubble_is_continuous_across_a_tick() {
+        let eps = 1e-9;
+        let (a, b) = (at(&[0.0, -0.5, -1.0 + eps, -1.5]), at(&[0.0, -0.5, -1.0 - eps, -1.5]));
+        let (x, y) = (bubble_cost(&a, 1.0, (0.5, 1.0)), bubble_cost(&b, 1.0, (0.5, 1.0)));
+        assert!((x - y).abs() < 1e-6, "{x} {y}");
     }
 
     /// The point of interpolating: as the crossing slides from one tick to the next, `t*` and
