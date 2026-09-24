@@ -304,6 +304,7 @@ floor depth  --file <pitches> [--vy --vz] [--every 50]
 Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repeated), a file, or
 (`exit` only) `minipump[:<d>[,<k>]]`.
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
-as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`,
-what `tools/plot_floor_profiles.py` draws), `runs/floor/v2-cluster/` every solve behind them,
+as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
+`runs/floor/v7-30pass/` the with/without-tail-shift ascents that `tools/plot_floor_profiles.py` draws,
+`runs/floor/v2-cluster/` every solve behind the best schedules,
 and `runs/floor/inf/` the infinite-flight scan.
