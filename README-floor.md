@@ -372,8 +372,8 @@ appends (both `y0 <= 8`, a few seconds each).
   seeded from endurance) loses at every `y0 >= 18`. A second climb needs a dive and a pull-up far
   from a one-climb schedule, which no local method invents; range runs find extra laps and
   endurance runs do not. The cross-seeded results are non-monotone in `y0` (27: 751, 28: 690),
-  so they are lower bounds too, and the infinite-flight threshold below (35-36 blocks) was found
-  from a different seed and may be lower. Measured 2026-09-25 00:30 EDT on the laptop,
+  so they are lower bounds too, and the infinite-flight threshold then quoted (35-36 blocks) was
+  lowered to 29.25 by the K-climb seed (6d, Infinite flight). Measured 2026-09-25 00:30 EDT on the laptop,
   `runs/floor/v11-grad/cross-seed`.
 * **Chatter.** Endurance: fewer flips (3 against 8) and 37% less roughness. Range: not
   uniformly. Most counted flips in every variant are the tops of pull-ups (-52 then -49) and the
@@ -387,6 +387,95 @@ appends (both `y0 <= 8`, a few seconds each).
 
 Data: `runs/floor/v11-grad` (`l2_2`, `grad`, `grad_s2`, `gradtick`), drawn by
 `tools/plot_floor_profiles.py`.
+
+### 6d. A K-climb seed (`--init pumps:<K>`; measured 2026-09-25 18:30 EDT, commit 93aa9da; `--after` in the commit after it)
+
+`pumps:<K>` is a floor-grazing pump flown by events rather than tick counts: from rest, dive at
+`d` nose-down until the clearance is under `lvl`, hold 0 until it is under `pull`, pull at `a`
+while `v_y` rises, then relax linearly in `v_y` to `a2` at the apex. After each climb but the
+last, glide at 0 for `g` ticks and dive again; after the last, hold `end`. The seven parameters
+not given as `key=value` are fitted to the seed's own exit score, a coarse joint grid then
+coordinate passes, in about a second. why events: a lap's timing depends on how fast it
+arrives, so a tick count fitted on one lap or one `y0` is wrong on the next. The laps are copied
+from the best v11 `y0 = 32` range schedule, which does exactly this five times. The fitted
+values barely move above `y0` about 24: `d` 20-27.5, `lvl` about 3, `pull` 0.25-0.3,
+`a` -34 to -38, `a2` 0, `g` 35-90. Below that, `d` falls to 0-5, as with `minipump`.
+
+Two things were needed that the first version lacked:
+
+* **The relax has to be a ramp.** Held at a constant pitch, every seed lap lost about a block at
+  `y0 = 32` (peak energy 29.0, 28.3, 27.2, 25.4), so the fit never used more than six. The
+  optimized climbs relax about linearly to -10 at the apex, and the ramp raised the `K = 6` seed
+  from 1119 to 1362 ticks. The seed's laps still lose energy; the gradient makes them gain.
+* **The cap cannot start below the seed's flight.** Growing from `--n 150` keeps only the
+  seed's first 150 pitches and repeats the last one, which erases every lap after the first. With
+  `pumps`, the ascent starts at the first doubling of `--n` that the seed does not outlast.
+
+**Results.** Laptop, `y0 = 1..32`, both modes, `K = 1..8` (and 10, 12, 16 from `y0 = 20`),
+`--method grad --penalty l2:2 --n 150`, the v11 flags. 590 solves took 41 s of wall clock. The
+table gives the best `K`, then in parentheses the climbs the answer actually flies (a peak more
+than 2 blocks above the dip before it). "v11 best" is the best of `grad`, `grad_s2` and the
+cross-seed (6c). "+laps" is four more rounds, each continuing the best `K` from its last apex
+with 2 more seed laps (`--after`, below), then grad. Below `y0 = 12` every `K` ties v11 to 0.01.
+
+| y0 | K (climbs) | t* | v11 grad | v11 best | vs best | +laps | K (climbs) | z(t*) | v11 grad | v11 best | vs best | +laps |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 12 | 2 (0) | 140.8 | 140.8 | 140.8 | +0.0% | - | 1 (0) | 62.3 | 62.3 | 62.3 | +0.0% | - |
+| 13 | 1 (0) | 154.4 | 154.4 | 154.4 | -0.0% | - | 1 (0) | 73.0 | 73.0 | 73.0 | +0.0% | - |
+| 14 | 2 (1) | 173.3 | 173.3 | 173.4 | -0.1% | - | 2 (1) | 84.6 | 84.6 | 84.6 | +0.0% | - |
+| 15 | 1 (1) | 193.6 | 193.6 | 193.6 | +0.0% | - | 1 (1) | 97.6 | 97.5 | 97.6 | -0.0% | - |
+| 16 | 2 (1) | 215.2 | 215.3 | 215.4 | -0.1% | - | 1 (1) | 111.8 | 111.7 | 111.8 | -0.0% | - |
+| 17 | 1 (1) | 238.3 | 239.2 | 239.2 | -0.4% | - | 1 (1) | 127.4 | 127.3 | 127.7 | -0.3% | - |
+| 18 | 3 (1) | 260.1 | 262.2 | 265.2 | -1.9% | 261.8 | 2 (1) | 145.2 | 145.5 | 145.5 | -0.2% | 145.2 |
+| 19 | 1 (1) | 287.2 | 292.0 | 292.0 | -1.6% | 287.3 | 1 (1) | 160.9 | 164.9 | 165.1 | -2.6% | 160.8 |
+| 20 | 2 (1) | 313.8 | 318.1 | 321.9 | -2.5% | 313.8 | 2 (1) | 180.5 | 186.6 | 186.6 | -3.2% | 180.5 |
+| 21 | 2 (2) | 359.6 | 342.4 | 359.1 | +0.2% | 359.7 | 2 (2) | 209.7 | 209.7 | 211.6 | -0.9% | 209.8 |
+| 22 | 2 (2) | 401.0 | 361.7 | 398.5 | +0.6% | 401.2 | 2 (2) | 238.8 | 239.4 | 239.6 | -0.4% | 240.5 |
+| 23 | 3 (2) | 448.1 | 388.8 | 433.9 | +3.3% | 448.5 | 2 (2) | 275.9 | 269.2 | 270.2 | +2.1% | 276.0 |
+| 24 | 2 (2) | 490.1 | 413.2 | 483.2 | +1.4% | 502.6 | 2 (3) | 316.7 | 303.7 | 305.3 | +3.7% | 317.6 |
+| 25 | 4 (2) | 542.7 | 436.5 | 559.8 | -3.1% | 579.8 | 2 (3) | 369.1 | 360.1 | 360.1 | +2.5% | 369.4 |
+| 26 | 3 (3) | 644.3 | 462.5 | 629.2 | +2.4% | 655.8 | 2 (3) | 422.2 | 419.5 | 419.5 | +0.6% | 428.5 |
+| 27 | 4 (3) | 721.7 | 485.1 | 751.6 | -4.0% | 788.2 | 3 (4) | 489.6 | 474.1 | 474.1 | +3.3% | 521.1 |
+| 28 | 3 (3) | 799.2 | 510.9 | 690.8 | +15.7% | 968.8 | 5 (4) | 610.7 | 473.9 | 473.9 | +28.9% | 610.7 |
+| 29 | 5 (4) | 1022.9 | 536.7 | 900.7 | +13.6% | 1456.1 | 5 (6) | 874.4 | 515.8 | 581.4 | +50.4% | 1018.3 |
+| 30 | 5 (5) | 1302.6 | 562.3 | 1043.1 | +24.9% | unbounded | 6 (5) | 913.3 | 527.8 | 648.9 | +40.7% | unbounded |
+| 31 | 6 (6) | 1685.3 | 579.7 | 832.7 | +102.4% | unbounded | 5 (7) | 1327.7 | 561.7 | 598.2 | +121.9% | unbounded |
+| 32 | 8 (7) | 2645.8 | 605.2 | 1483.8 | +78.3% | unbounded | 10 (9) | 2065.4 | 577.4 | 1055.2 | +95.7% | unbounded |
+
+* **The number of climbs rises with `y0`, and from `y0` about 21 the seed beats every v11
+  run.** Endurance takes 2 climbs from 21, 3 from 26, 4-7 from 29. Range usually takes one more
+  climb than endurance from `y0 = 24` (not at 26 or 30). Endurance gains up to 102% over v11's best, and 337% over
+  plain `grad`, whose one-climb basin is the whole gap. Range gains up to 122% over v11's best.
+* **From `y0` about 29.25 there is no best `K`** (see Infinite flight): every lap gains
+  energy, so more laps is always longer and further. The `y0 >= 30` rows measure how many laps
+  the seed can fly, not an optimum. Continuing a `y0 = 30` flight in laps reached t* 21007 after
+  8 rounds and was still gaining.
+* **`K` is an upper bound, not the answer's lap count.** The climbs flown plateau however large
+  `K` is (at `y0 = 27` endurance, 3 for every `K >= 3`), and many cells tie across `K`. The
+  seed's laps lose energy, so past a few the fitted seed crashes before its `K`-th climb, and
+  endurance grad never adds a lap. Range grad sometimes does: at `y0 = 32` the `K = 10` seed flies
+  8 climbs and its solve flies 9.
+* **It loses at `y0 = 17..20`, by up to 3.2%.** There the optimum has one climb. The proposal,
+  not tested: this seed's single lap pulls at a clearance, near the floor, while `minipump` pulls
+  at a fitted tick after a short dive, and that is a better start. Continuing in laps barely
+  helps (+1.7 ticks at 18). Take the better of the two seeds there.
+* **Continuing in laps (`--after <file>`) is worth up to 42%** below the threshold (`y0 = 29`
+  endurance: 1023 -> 1456, and 1590 from another start). It keeps a solved schedule to its last
+  apex and fits `K` fresh seed laps after it, so each round starts from laps the gradient has
+  already made to gain.
+* **Grad did not stall at the floor.** Every dip stands 5e-4 to 2e-3 blocks off it, as the
+  graze stages intend (6c). No run reached the 2000-iteration limit (the most was 1672 at one
+  cap). The slowest continuation, 37 climbs over 21000 ticks, took 73 s.
+
+Why endurance grad does not add laps where range grad does (6c): not tested. The proposal is that
+a range glide runs at pitch about 0 and 1.4 blocks/tick, where the up-conversion (proportional to
+speed) makes a small pull pay at once. An endurance glide runs near min sink, -13 to -22 and
+about 0.36 blocks/tick, where it pays almost nothing, and a new lap first needs a dive that costs
+time.
+
+Data: `runs/floor/v13-pumps` (`out/` the K table, `cont-k/` its continuations, `inf/` and `cont/`
+the infinite-flight scan, `v1-constant-relax/` the first seed; `summary.py`, `final.py`,
+`infsum.py` and `budget.py` print the tables below from them).
 
 ### 7. Exact `f32` output (a correctness fix, kept)
 
@@ -416,11 +505,66 @@ two rounds of warm starts from the neighbors' winners: 341 solves, 7.8 core-hour
 
 ## Infinite flight
 
-From rest, flight becomes infinite at a height between **35 and 36 blocks** -- as found, not
-proved. Measured with `floor exit --mode time --n 600`, seeded with the steady 150-tick `lambda = 0`
-cycle tiled four times (`runs/steady/nlamsweep/out/n0150_lamP0/tight_t0100.pitches`). A 600-tick
-cap cannot tell a sustained flight from a slow death on its own -- surviving it is not the test --
-so the test is whether total energy rises lap over lap once the first dive is done:
+From rest, flight is sustained from **`y0 = 29.25`**. At 29.0 no run sustained it: 8 runs from
+the `pumps` seed (two starts, two step sizes, 2 or 4 laps per round) all died after 8-9 climbs.
+That brackets the threshold in (29.0, 29.25] **as found, not proved**: a better lap or a better
+first dive could lower it. Measured 2026-09-25 18:30 EDT on the laptop, commit 93aa9da plus
+`--after`, `runs/floor/v13-pumps/{inf,cont}`.
+
+The test is the one below: total energy rising lap over lap once the first dive is done.
+Surviving a cap is not the test. Each flight is endurance (`--mode time --method grad`) seeded
+with `pumps:<K>`, then continued in laps. Each round keeps the solved schedule to its last apex,
+flies 2 or 4 more seed laps from there (`--after`), and re-solves the whole flight, for 6-8 rounds
+with the cap allowed to reach 38400. At 29.25 and above this grows until stopped: 28-39 climbs and
+9600-22800 ticks, peak energy climbing into the hundreds. At 29.0 and below, no round adds a lap
+that survives. Energy above the floor (`TE + y0`, blocks) at each peak and dip, `floor laps`:
+
+```
+ y0     t*       peak energy, lap by lap (the best run at each y0)
+ 28.5   1109     25.6 24.8 23.3 21.4 17.4 11.6 3.3
+ 29.0   1590     26.6 26.4 25.8 25.9 24.8 23.2 20.3 15.8 8.7
+ 29.25  13528    27.0 27.2 27.3 28.2 29.1 30.8 33.4 38.3 45.5 56.3 ..  (28 climbs)
+ 29.5   19618    27.4 27.9 28.6 30.3 32.7 36.7 42.2 51.8 63.0 78.1 ..  (36 climbs, 322 at the last)
+```
+
+**What sets it: an unstable fixed point of the lap map, plus the first dive's extra loss.** Split
+each lap at the tick the pull starts, about 0.4-0.5 blocks above the floor. The dip then bottoms
+out 5e-4 to 2e-3 blocks off it (the graze margin).
+
+```
+ lap from peak E   dive loss   climb gain   net     speed at the dip   (y0 = 29.5, then 29.0)
+     27.43          -12.44       12.90      +0.46       1.462
+     28.59          -12.86       14.50      +1.64       1.485
+     32.72          -14.76       18.68      +3.92       1.630
+     42.17          -19.16       28.74      +9.59       1.808
+     26.41          -11.91       11.30      -0.61       1.427
+     24.80          -11.48        9.90      -1.58       1.391
+     23.21          -10.82        7.92      -2.90       1.323
+ first dive, from rest at y0 = 29.25:  -14.64, then a normal lap from 26.98
+```
+
+* **The dive loses a near-constant fraction of the peak energy,** 45-48% from `E = 23` to `63`,
+  mostly to drag on the way down.
+* **The climb's gain grows faster than that with the speed at the dip.** It is 1.7 blocks at 1.10
+  blocks/tick (`y0 = 20`), 9.9 at 1.39, 12.4 at 1.45, 18.7 at 1.63 and 35.9 at 1.98. The energy is
+  made by the pull: nose-up, the kernel moves `cu = 0.04 |v_z| sin(-pitch)` per tick from `v_z`
+  into `v_y` at 3.2 to 1 (`fall_flying_partials`). That creates energy once `v_y` is large, and it
+  scales with the horizontal speed the dive delivered.
+* So the net per lap crosses zero at a **peak energy of about 27 blocks** (+0.14 at 26.98,
+  -0.16 at 26.57). It is unstable: above it the gain grows every lap (+15 by `E = 63`), and below
+  it the loss does, which is why 29.0 dies in eight laps instead of hovering.
+* **The first dive from rest costs about 2.3 blocks more than a later lap from the same energy**
+  (-14.6 from 29.25 against -12.3 from 27.0), and it reaches the same speed at the dip, 1.46. The
+  threshold is therefore about 27 + 2.3. Why the first dive loses more was not isolated.
+* **The floor enters through the dip.** Every lap's pull starts 0.4-0.5 blocks above the floor
+  and bottoms out on it, so a lap's whole dive is its peak's height above the floor, and the dip
+  speed is what that height buys. With no floor the free first dive from rest goes 42.75 blocks
+  deep (below), so every floor in this range clips it.
+
+**The earlier claim, 35-36 blocks, was an upper bound and is superseded.** It came from one steady
+150-tick `lambda = 0` cycle tiled four times (`runs/steady/nlamsweep/out/n0150_lamP0/tight_t0100.pitches`),
+`floor exit --mode time --n 600`, coordinate ascent. With the same test, total energy at
+`t = 150, 300, 450, 600`, that run found:
 
 ```
  y0    TE at t = 150    300      450      600     first dive bottoms at
@@ -434,19 +578,19 @@ so the test is whether total energy rises lap over lap once the first dive is do
  50         -3.55      -0.56     2.35     6.00    -42.75, free   sustained
 ```
 
-Below 36 every lap loses; from 36 every lap gains. From 44 up the floor never binds and the answer
-stops depending on `y0` -- the free first dive from rest goes 42.75 blocks deep -- so between 36
-and 42.75 the floor is clipping the first dive, and the clipped dive still leaves enough speed to
-climb. For comparison, the shallowest break-even steady cycle in `runs/steady/nlamsweep` (1233
-cyclic cells, `dy >= 0`) dives 33.4 blocks below its own start; that sweep starts at `n = 150`, so
-a shorter cycle may dive less.
+From 44 up the floor never binds and the answer stops depending on `y0`. The seed was one
+150-tick cycle, and the shallowest break-even steady cycle in `runs/steady/nlamsweep` (1233
+cyclic cells, `dy >= 0`, `n >= 150`) dives 33.4 blocks below its own start. A per-tick search
+cannot restructure such a cycle into a shorter lap (see the collapse above). The `pumps` laps last 155-195 ticks, peak about 27 blocks above the floor,
+and graze it at every dip.
 
-Why this is an upper bound on the threshold and not the threshold. The search is seeded with one
-cycle, and a per-tick search cannot reach a structurally different one (see the collapse above).
-A shallower cycle, or a different first dive, could lower it. The honest measurement is a
-steady-state cycle *under* a floor -- maximize per-lap gain subject to `min y >= -D` and find the
-least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` could do, and which
-`polish` refuses today only because nothing has needed it yet.
+**A steady cycle under a floor** is still the honest measurement: maximize per-lap gain subject
+to `min y >= -D`, and find the least `D` at which it is `>= 0`. That would measure the fixed
+point (about 27 blocks of peak energy) directly, without a first dive. It is not easy today:
+`polish` asserts that a floored polish takes neither `--steady` nor `--block` (`src/opt.rs`,
+"a floored polish supports neither"), because neither line search prices the floor. A cheaper
+check is to repeat one lap from these runs as a `tile:` seed with `--vy/--vz` set to its peak
+velocity.
 
 ## Tricks not tried
 
@@ -463,19 +607,20 @@ least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` 
 
 ```
 floor probe
-floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump] [--ke <c>] [--shift] [--n 150] [--tol 1e-3] [--out <file>]
+floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump|pumps:<K>] [--after <file>] [--ke <c>] [--shift] [--n 150] [--tol 1e-3] [--out <file>]
              [--method tick|grad|grad+tick] [--iters 2000] [--max-step 5] [--graze 1e-2,3e-3,1e-3]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]
 floor depth  --file <pitches> [--vy --vz] [--every 50]
+floor laps   --file <pitches> --y0 <h>
 ```
 
 Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repeated), a file, or
-(`exit` only) `minipump[:<d>[,<k>]]`.
+(`exit` only) `minipump[:<d>[,<k>]]` and `pumps:<K>[,d=..,lvl=..,pull=..,a=..,a2=..,g=..,end=..]` (6d).
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
 `runs/floor/v7-30pass/` the with/without-tail-shift ascents, `v8-bubble/` and `v9-bubble-cont/` the floor-bubble ones and
-`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v11,
+`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent, `v13-pumps/` the K-climb seed and the infinite-flight scan with it; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v11,
 `runs/floor/v2-cluster/` every solve behind the best schedules,
-and `runs/floor/inf/` the infinite-flight scan.
+and `runs/floor/inf/` the first infinite-flight scan (tiled cycle, superseded).
