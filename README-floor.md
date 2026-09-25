@@ -388,6 +388,80 @@ appends (both `y0 <= 8`, a few seconds each).
 Data: `runs/floor/v11-grad` (`l2_2`, `grad`, `grad_s2`, `gradtick`), drawn by
 `tools/plot_floor_profiles.py`.
 
+### 6d. The smooth bubble in place of the graze (measured 2026-09-25 18:28 EDT on the laptop)
+
+`--method grad` now takes `--bubble <margin>,<weight>` (`bubble_cost` in `src/bin/floor.rs`, differentiated
+exactly in `utility_grad`: each state inside the bubble is seeded on its height, and the crossing
+term `f * weight` through the same `df/dh` as `t*`), and `--graze off` turns the dip projection
+and its rejection rule off. `--shrink r --anneal k` gives at least `k + 1` stall stages, with margin
+and weight both times `r` at each; like the graze, the stages restart at every cap. The
+finite-difference test covers the bubble in both modes, with and without `--ke`, and for a
+survivor: worst relative error 4.3e-5, with the bubble 0.7 to 1.2 of the gradient at the checked ticks.
+
+All runs: minipump seed, `--n 150`, `--penalty l2:2`, `y0 = 1..32`, code as committed with this section. Deltas
+are against the graze baseline (`grad`, graze `0.01,0.003,0.001`: it reproduces 6c's cluster sums
+to 3 ticks in endurance). *Parked* counts cells, over all `y0`, whose lowest pre-exit dip ends within
+1e-4 blocks of the floor, which is how an ascent stalls early here (see 6c). *Wobble* counts
+turning points of the live pitch with a swing over 5 degrees on both sides, pull-up bottoms under
+-20 excluded; unlike chatter it sees multi-tick wobbles. Every file replays to within 5e-5 of its
+header.
+
+| variant | end Δ y0<18 | range Δ y0<18 | end Δ 18+ | range Δ 18+ | Σ\|d2\|/tick end, range | chatter | wobble | min dip y0<18 | parked | wall |
+|---|---|---|---|---|---|---|---|---|---|---|
+| graze (baseline) | 1808.30 | 765.84 | 6554 | 5551 | 0.14, 0.39 | 4, 20 | 49, 132 | 6e-4, 7e-4 | 0, 0 | 14 s |
+| graze off, no bubble | -21.1 | -36.5 | -1928 | -2709 | 0.45, 0.66 | 26, 17 | 26, 14 | 8e-6, 8e-6 | 20, 22 | 0.5 s |
+| bubble 0.05, 1e-3 | -14.2 | -37.3 | -844 | -2454 | 0.34, 0.54 | 32, 23 | 76, 26 | 1e-6, 4e-6 | 20, 21 | 1 s |
+| bubble 0.05, 1e-2 | -1.4 | -0.9 | +28 | -1135 | 0.18, 0.62 | 7, 71 | 51, 196 | 1e-4, 9e-3 | 9, 13 | 2 s |
+| bubble 0.05, 1e-1 | -349.1 | -77.8 | -2183 | -2405 | 0.14, 0.57 | 0, 7 | 24, 64 | 0.19, 0.045 | 0, 0 | 5 s |
+| bubble 0.01, 1e-3 | -10.2 | -24.6 | -894 | -2376 | 0.35, 0.54 | 31, 27 | 72, 35 | 3e-8, 4e-8 | 20, 21 | 1 s |
+| bubble 0.01, 1e-2 | -0.0 | -1.5 | +0 | -240 | 0.18, 0.48 | 9, 34 | 52, 165 | 6e-3, 8e-3 | 0, 5 | 4 s |
+| bubble 0.01, 3e-2 | -0.4 | -26.2 | +62 | -458 | 0.18, 0.64 | 3, 40 | 55, 196 | 9e-3, 9e-3 | 0, 0 | 3 s |
+| bubble 0.01, 1e-1 | -357.1 | -83.2 | -2694 | -2416 | 0.35, 0.67 | 5, 44 | 47, 90 | 0.11, 0.010 | 0, 0 | 4 s |
+| bubble 0.003, 3e-3 | -0.8 | -1.1 | -32 | -948 | 0.19, 0.47 | 10, 43 | 58, 145 | 2e-3, 2e-3 | 0, 0 | 2 s |
+| bubble 0.003, 1e-2 | -0.7 | -1.9 | +76 | -649 | 0.24, 0.56 | 14, 71 | 71, 187 | 3e-3, 3e-3 | 0, 0 | 2 s |
+| **bubble 0.01, 1e-2, `--shrink 0.3 --anneal 2`** | **+0.3** | **+0.1** | +3 | -233 | 0.15, 0.46 | 6, 26 | 50, 164 | 5e-4, 6e-4 | 0, 2 | 4 s |
+| bubble 0.05, 1e-1, `--shrink 0.3 --anneal 3` | -2.5 | -13.6 | -730 | -9 | 0.19, 0.68 | 7, 49 | 53, 190 | 9e-4, 1e-3 | 0, 0 | 16 s |
+| bubble 0.01, 1e-2 + graze | -0.5 | -1.4 | -5 | +608 | 0.14, 0.40 | 4, 24 | 49, 166 | 7e-3, 7e-3 | 0, 0 | 28 s |
+
+Wall is the sum of the headers' `wall` over 64 solves (seed fit excluded); the whole grid of 896
+solves took about a minute at `-P 4`; every shrink run reached its last stage.
+
+* **A bubble has two jobs, and its weight is squeezed between them.** It must be steep enough at
+  contact to hold a dip: its slope there is `2 weight / margin` blocks of energy per block of
+  height, and at 0.04 and 0.2 (weight 1e-3) dips park exactly as with no bubble at all, while at
+  2 (0.01, 1e-2) they stand at 6-8e-3. And it must not tax the exit: the crossing term costs
+  `weight * per_block` per unit of `f`, which `t*` values at 1 and `z(t*)` at the exit's `v_z`
+  (0.33-0.40 blocks per tick here). At weight 1e-1 that is 1.41 against 1 in endurance, so flying
+  on past the exit tick *lowers* the score: at `y0 = 1` the ascent's first gradient is already 0
+  and every flight from `y0 = 4` ends early (`y0 = 8`: 66-67 against 84 ticks). At 3e-2 in range it
+  is 0.30 against 0.40: the graze optimum scores higher *under the 3e-2 objective* than what the
+  ascent found (`y0 = 12`: 61.79 against 59.50), so the loss there is a stall in a worse local
+  maximum, not a moved optimum. Rule: keep `weight * per_block` well under the exit's value per
+  tick -- in practice weight <= 1e-2 -- and pick the margin so `2 weight / margin` is about 2 or more.
+  why? below that slope the utility's pull on a dip beats the bubble, and above that weight the
+  exit tax cancels most of the reason to fly on.
+* **A fixed bubble's stand-off is a small bias.** Holding dips at 7e-3 instead of the graze's 9e-4
+  costs 0.05-0.33 blocks per range cell at `y0 = 11..17`, and the crossing tax costs up to 0.06
+  blocks below 11 where there are no dips. Endurance does not feel either (-0.02 ticks in total).
+* **Shrinking both by one factor removes it.** `r` times margin and weight keeps `2 weight /
+  margin`, the holding strength, fixed while the stand-off and the exit tax shrink by `r`: two
+  stages at 0.3 end at (9e-4, 9e-4), with dips at 5-6e-4 as the graze leaves them, and tie or beat
+  the graze below `y0 = 18` in both modes. Starting the same schedule from a too-strong bubble
+  (0.05, 1e-1) does not recover: the first stage has already shortened the flights.
+* **Chatter and wobble below `y0 = 18` are unchanged** (endurance chatter 2 against 3, wobble 8
+  against 9; range 3 against 2, 6 against 7); range Σ|d2| per tick rises from 0.12 to 0.16-0.19
+  there with no extra turning points. The large full-range differences in the table are the
+  high-`y0` basins (6c): more laps, more wobble. No bubble and no graze is the rough one (0.43-0.47
+  per tick below 18): its ascents stall with a dip parked on the floor and a gradient still
+  0.03-0.3, before the price has smoothed anything.
+* **The bubble is about half the wall time of the graze** (4 s against 14 s): no extra backward
+  sweep per dip and no projection. Bubble and graze together cost the most (28 s) and buy
+  nothing below 18.
+
+Recommended when a dip mechanism is needed: `--graze off --bubble 0.01,1e-2 --shrink 0.3 --anneal 2`.
+The default is still the graze, unchanged. Data: `runs/floor/v12-bubble-grad` (`out/`, solver
+stop lines in `logs/`, `analyze.py` for the table), drawn by `tools/plot_floor_profiles.py`.
+
 ### 7. Exact `f32` output (a correctness fix, kept)
 
 An exit optimum skims the floor at zero margin. Written to four decimals, one `y0 = 30` schedule
@@ -465,6 +539,7 @@ least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` 
 floor probe
 floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump] [--ke <c>] [--shift] [--n 150] [--tol 1e-3] [--out <file>]
              [--method tick|grad|grad+tick] [--iters 2000] [--max-step 5] [--graze 1e-2,3e-3,1e-3]
+             [--bubble <margin>,<weight> [--shrink <r>] [--anneal <k>]] [--graze off]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]
@@ -476,6 +551,6 @@ Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repea
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
 `runs/floor/v7-30pass/` the with/without-tail-shift ascents, `v8-bubble/` and `v9-bubble-cont/` the floor-bubble ones and
-`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v11,
+`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent, `v12-bubble-grad/` the gradient with a bubble; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v12,
 `runs/floor/v2-cluster/` every solve behind the best schedules,
 and `runs/floor/inf/` the infinite-flight scan.

@@ -15,7 +15,8 @@
 //!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
 //!          [--bubble <margin>,<weight>] [--shrink <r>] [--penalty l1|l2:<d>|huber:<d>]
 //!          [--moves tick,box:<k>:..,ramp,shift] [--method tick|grad|grad+tick]
-//!          [--iters <n>] [--mem <m>] [--max-step <deg>] [--c1 <c>] [--graze <blocks>,..]
+//!          [--iters <n>] [--mem <m>] [--max-step <deg>] [--c1 <c>] [--graze <blocks>,..|off]
+//!          [--anneal <k>]
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it. `--method grad` is `ascend_grad`,
 //!                                  gradient ascent on the exit score; the default is `ascend`
@@ -546,8 +547,8 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
     (p, best, done)
 }
 
-/// `utility` and its gradient in every pitch, from one replay and one backward sweep
-/// (`elytrasim::adjoint`).
+/// `utility` less the bubble (`bubble_cost`, in score units), and its gradient in every pitch,
+/// from one replay and one backward sweep (`elytrasim::adjoint`).
 ///
 /// At an exit the seeds sit on the two states that straddle the floor: `t* = (k-1) + f` with
 /// `f = a / (a - b)`, `a = h[k-1]`, `b = h[k]`, so `dt*/da = -b/(a-b)^2` and `dt*/db = a/(a-b)^2`;
@@ -557,15 +558,34 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
 /// continuous. A touch-and-go (an earlier dip about to go under) is invisible to it; see
 /// `ascend_grad` for how that is handled. A survivor is seeded on its last state with the
 /// value-to-go's `d/d TE`.
-fn utility_grad(obj: &Objective, depth: f64, mode: Exit, ke: f64, p: &[f64]) -> ExitGrad {
+///
+/// The bubble is seeded on each priced state's height, `-2 weight (margin - h) / margin^2` per
+/// state inside it, and its crossing term `f * weight` through the same `df/da`, `df/db` as `t*`.
+fn utility_grad(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), p: &[f64]) -> ExitGrad {
     use elytrasim::adjoint::{backprop_costates, te_cot};
     let st = obj.replay(p);
-    let u = utility(&st, depth, mode, ke);
+    let pb = mode.per_block();
+    let u = utility(&st, depth, mode, ke) - pb * bubble_cost(&st, depth, bub);
     let k = live_end(&st, depth);
     let mut seeds: Vec<(usize, [f64; 4])> = Vec::new();
     let scaled = |c: [f64; 4], w: f64| c.map(|x| x * w);
     let y = [1.0, 0.0, 0.0, 0.0];
-    if st[k].pos.y + depth < 0.0 {
+    let crossed = st[k].pos.y + depth < 0.0;
+    let (margin, weight) = bub;
+    if weight != 0.0 {
+        // The states `bubble_cost` prices: `1 .. k-1` before a crossing, `1 ..= k` for a survivor.
+        for j in 1..if crossed { k } else { k + 1 } {
+            let h = st[j].pos.y + depth;
+            if h < margin { seeds.push((j, scaled(y, pb * 2.0 * weight * (margin - h) / (margin * margin)))) }
+        }
+        if crossed {
+            let (a, b) = (st[k - 1].pos.y + depth, st[k].pos.y + depth);
+            let d = a - b;
+            seeds.push((k - 1, scaled(y, -pb * weight * (-b / (d * d)))));
+            seeds.push((k, scaled(y, -pb * weight * (a / (d * d)))));
+        }
+    }
+    if crossed {
         let (a, b) = (st[k - 1].pos.y + depth, st[k].pos.y + depth);
         let d = a - b;
         let f = a / d;
@@ -616,14 +636,15 @@ fn flat_tail(p: &mut [f64], k: usize) {
 }
 
 /// What the gradient ascent maximizes, on a schedule as it would be kept: flattened from its own
-/// exit, then `utility - price`, exactly `ascend`'s `total` without a bubble. Returns the
-/// flattened schedule, its score and its lowest pre-exit dip (`pre_exit_min`).
-fn grad_total(obj: &Objective, depth: f64, mode: Exit, ke: f64, pen: &Rough, q: &[f64]) -> (Vec<f64>, f64, f64) {
+/// exit, then `utility - bubble - price`, exactly `ascend`'s `total`. Returns the flattened
+/// schedule, its score and its lowest pre-exit dip (`pre_exit_min`).
+fn grad_total(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), pen: &Rough, q: &[f64])
+              -> (Vec<f64>, f64, f64) {
     let st = obj.replay(q);
     let k = live_end(&st, depth);
     let mut q = q.to_vec();
     flat_tail(&mut q, k);
-    let sc = utility(&st, depth, mode, ke) - pen.cost(&q);
+    let sc = utility(&st, depth, mode, ke) - mode.per_block() * bubble_cost(&st, depth, bub) - pen.cost(&q);
     (q, sc, pre_exit_min(&st, k, depth))
 }
 
@@ -646,8 +667,8 @@ fn fold_tail(g: &mut [f64], k: usize) {
 /// equal. The price's gradient is smooth for `l2`/`huber` and a subgradient for `l1`.
 struct Slopes { f: f64, up: Vec<f64>, down: Vec<f64>, eg: ExitGrad }
 
-fn slopes(obj: &Objective, depth: f64, mode: Exit, ke: f64, pen: &Rough, p: &[f64]) -> Slopes {
-    let eg = utility_grad(obj, depth, mode, ke, p);
+fn slopes(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), pen: &Rough, p: &[f64]) -> Slopes {
+    let eg = utility_grad(obj, depth, mode, ke, bub, p);
     let mut gp = vec![0.0; p.len()];
     pen.grad(p, &mut gp);
     let mut up: Vec<f64> = eg.g.iter().zip(&gp).map(|(a, b)| a - b).collect();
@@ -713,9 +734,32 @@ struct GradOpts {
     /// Armijo's sufficient-increase constant.
     c1: f64,
     /// The clearance, blocks, every pre-exit dip is steered to keep (see `ascend_grad`), one
-    /// stage per entry: when the ascent stalls at one it moves on to the next.
+    /// stage per entry: when the ascent stalls at one it moves on to the next. Empty is off
+    /// (`--graze off`): no projection and no rejection rule, so only the bubble, if any, keeps
+    /// dips off the floor.
     margins: Vec<f64>,
+    /// The bubble, `(margin, weight)` as in `bubble_cost`; weight 0 is off.
+    bub: (f64, f64),
+    /// The bubble's margin and weight are multiplied by this at every stage after the first.
+    shrink: f64,
+    /// Stages at least (`--anneal` + 1): a stall ends one, and the next starts from its answer
+    /// with the graze margin's next entry (or its last) and the bubble shrunk once more.
+    stages: usize,
 }
+
+impl GradOpts {
+    fn stages(&self) -> usize { self.margins.len().max(self.stages).max(1) }
+    /// The graze margin at stage `i`, or `None` when the graze is off.
+    fn margin(&self, i: usize) -> Option<f64> { self.margins.get(i).or(self.margins.last()).copied() }
+    fn bubble(&self, i: usize) -> (f64, f64) {
+        let r = self.shrink.powi(i as i32);
+        (self.bub.0 * r, self.bub.1 * r)
+    }
+}
+
+/// Why `ascend_grad` stopped, for the log.
+#[derive(Clone, Copy, Debug)]
+enum GradStop { Iters, Survives, ZeroGradient, NotAscent, LineSearch }
 
 /// Gradient ascent on the same first-exit score as `ascend`: projected L-BFGS with a
 /// backtracking (Armijo) line search on the true objective, `grad_total`, the pitch box
@@ -741,9 +785,15 @@ struct GradOpts {
 ///   them. `slopes` reports both one-sided derivatives there and `steepest` picks the side that
 ///   climbs.
 ///
-/// Returns the schedule, its score and the number of gradients taken.
+/// A smooth alternative to the first item is the bubble (`bubble_cost`, differentiated in
+/// `utility_grad`): a price that rises as a dip nears the floor, so the score itself, not a
+/// constraint, holds the dip where the bubble's slope balances the utility's. `GradOpts` can run
+/// either, both, or neither.
+///
+/// Returns the schedule, its score (at the last stage's bubble), the number of gradients taken
+/// and the last stage's bubble.
 fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough,
-               o: &GradOpts, bail: bool) -> (Vec<f64>, f64, usize) {
+               o: &GradOpts, bail: bool) -> (Vec<f64>, f64, usize, (f64, f64)) {
     use elytrasim::adjoint::backprop_costates;
     let pen = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let lim = rough.limit;
@@ -752,16 +802,28 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let mut p = init.to_vec();
     clamp(&mut p);
-    p = grad_total(obj, depth, mode, ke, &pen, &p).0;
-    let mut s = slopes(obj, depth, mode, ke, &pen, &p);
+    let mut stage = 0;
+    let mut bub = o.bubble(0);
+    p = grad_total(obj, depth, mode, ke, bub, &pen, &p).0;
+    let mut s = slopes(obj, depth, mode, ke, bub, &pen, &p);
     let mut g = steepest(&s);
     let mut hist: std::collections::VecDeque<(Vec<f64>, Vec<f64>, f64)> = Default::default();
     let mut used = 0;
     let mut fails = 0;
-    let mut stage = 0;
-    // A stall ends the stage; the last stage's stall ends the ascent.
-    macro_rules! stall { () => {{
-        if stage + 1 < o.margins.len() { stage += 1; hist.clear(); fails = 0; continue } else { break }
+    let mut stop = GradStop::Iters;
+    // A stall ends the stage; the last stage's stall ends the ascent. A new stage whose bubble
+    // differs has a different objective, so its slopes are taken afresh.
+    macro_rules! stall { ($why:expr) => {{
+        stop = $why;
+        if stage + 1 < o.stages() {
+            stage += 1; hist.clear(); fails = 0;
+            if o.bubble(stage) != bub {
+                bub = o.bubble(stage);
+                s = slopes(obj, depth, mode, ke, bub, &pen, &p);
+                g = steepest(&s);
+            }
+            continue
+        } else { break }
     }} }
     while used < o.iters {
         used += 1;
@@ -778,7 +840,7 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
             for (i, (sv, y, rho)) in hist.iter().enumerate() { let b = rho * dot(y, &d); for j in 0..n { d[j] += sv[j] * (alpha[i] - b) } }
         } else {
             let m = gb.iter().fold(0.0f64, |a, x| a.max(x.abs()));
-            if m == 0.0 { stall!() }
+            if m == 0.0 { stall!(GradStop::ZeroGradient) }
             d.iter_mut().for_each(|x| *x /= m);                 // a first step of at most one degree
         }
         for i in 0..n { if (p[i] >= lim && d[i] > 0.0) || (p[i] <= -lim && d[i] < 0.0) { d[i] = 0.0 } }
@@ -788,7 +850,8 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
         let (st, k) = (&s.eg.st, s.eg.k);
         let h = |j: usize| st[j].pos.y + depth;
         let last = if st[k].pos.y + depth < 0.0 { k.saturating_sub(1) } else { k + 1 };
-        let cons: Vec<(Vec<f64>, f64)> = (1..last.min(st.len() - 1))
+        let graze = o.margin(stage);
+        let cons: Vec<(Vec<f64>, f64)> = if graze.is_none() { vec![] } else { (1..last.min(st.len() - 1))
             .filter(|&j| h(j) < 1.0 && h(j) <= h(j - 1) && h(j) <= h(j + 1))
             .map(|j| {
                 let (mut a, av) = backprop_costates(&p, st, &[(j, [1.0, 0.0, 0.0, 0.0])]);
@@ -797,13 +860,13 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
                     a[t] += av[t][0] * c[0] + av[t][1] * c[1];
                 } } }
                 fold_tail(&mut a, k);
-                (a, o.margins[stage] - h(j))
-            }).collect();
+                (a, graze.unwrap() - h(j))
+            }).collect() };
         project_halfspaces(&mut d, &cons);
         if dot(&d, &g) <= 0.0 {
             // Not an ascent direction once the dips are respected: drop the curvature model, and
             // if even the steepest direction fails, stop.
-            if hist.is_empty() { stall!() }
+            if hist.is_empty() { stall!(GradStop::NotAscent) }
             hist.clear();
             continue;
         }
@@ -814,23 +877,25 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
         for _ in 0..40 {
             let mut q: Vec<f64> = (0..n).map(|i| p[i] + step * d[i]).collect();
             clamp(&mut q);
-            let (q, sc, lo) = grad_total(obj, depth, mode, ke, &pen, &q);
+            let (q, sc, lo) = grad_total(obj, depth, mode, ke, bub, &pen, &q);
             let rise: f64 = (0..n).map(|i| { let m = q[i] - p[i]; if m >= 0.0 { s.up[i] * m } else { s.down[i] * m } }).sum();
             // A dip may not sink under half the margin unless it already was lower. why? under
             // `mth_lut` the physics is a staircase in pitch, and a dip parked on the floor is
             // crossed by table noise at every step size, so the line search stalls there. Found
             // on `y0 = 24` endurance, which stalled at t* 298 this way and reaches 411 with it.
-            if sc > s.f && sc >= s.f + o.c1 * rise && lo >= (0.5 * o.margins[stage]).min(lo0) { found = Some(q); break }
+            // Off with the graze.
+            let dip_ok = graze.map_or(true, |m| lo >= (0.5 * m).min(lo0));
+            if sc > s.f && sc >= s.f + o.c1 * rise && dip_ok { found = Some(q); break }
             step *= 0.5;
         }
         let Some(q) = found else {
             fails += 1;
-            if hist.is_empty() || fails > 3 { stall!() }
+            if hist.is_empty() || fails > 3 { stall!(GradStop::LineSearch) }
             hist.clear();
             continue;
         };
         fails = 0;
-        let sq = slopes(obj, depth, mode, ke, &pen, &q);
+        let sq = slopes(obj, depth, mode, ke, bub, &pen, &q);
         let gq = steepest(&sq);
         // A curvature pair for the ascent: s = q - p, y = -(gq - g), kept only when s.y > 0.
         let sv: Vec<f64> = (0..n).map(|i| q[i] - p[i]).collect();
@@ -843,9 +908,12 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
         p = q;
         s = sq;
         g = gq;
-        if bail && s.eg.st.iter().all(|x| x.pos.y + depth >= 0.0) { break }
+        if bail && s.eg.st.iter().all(|x| x.pos.y + depth >= 0.0) { stop = GradStop::Survives; break }
     }
-    (p, s.f, used)
+    let gmax = g.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+    eprintln!("grad: cap {n} stop {stop:?} after {used} iters, stage {stage}, score {:.4}, |g|max {gmax:.2e}, \
+               pre-exit min clearance {:.3e}", s.f, pre_exit_min(&s.eg.st, s.eg.k, depth));
+    (p, s.f, used, bub)
 }
 
 /// The minipump seed: `d` degrees nose-down for `k` ticks, pitch 0 for 10, -40 while `v_y` is
@@ -902,8 +970,9 @@ fn exit_cmd(a: &Args) {
     };
     let passes = a.num("--passes", 100usize);
     let ke = a.num("--ke", 0.0);
-    // `--bubble margin,weight` (blocks, blocks of energy per tick at contact); `--shrink r`
-    // multiplies both by `r` after every pass, across cap doublings.
+    // `--bubble margin,weight` (blocks, blocks of energy per tick at contact). `--shrink r`
+    // multiplies both by `r`: under `--method tick`, after every pass, across cap doublings;
+    // under `grad`, once per stall stage (`GradOpts`), restarting at every cap as the graze does.
     let mut bub = a.get("--bubble").map_or((1.0, 0.0), |v| {
         let w: Vec<f64> = v.split(',').map(|x| x.parse().unwrap()).collect();
         (w[0], w[1])
@@ -924,27 +993,32 @@ fn exit_cmd(a: &Args) {
     let (grad, coord) = match method { "tick" => (false, true), "grad" => (true, false), "grad+tick" => (true, true),
                                        m => panic!("bad --method {m}: tick, grad or grad+tick") };
     if grad {
-        // The gradient differentiates neither the bubble nor a multi-pitch move, so refuse them
-        // rather than quietly optimize something else.
-        if bub.1 != 0.0 || a.get("--shrink").is_some() { panic!("--bubble/--shrink: not differentiated, use --method tick") }
+        // The gradient does not differentiate a multi-pitch move, so refuse them rather than
+        // quietly optimize something else.
         if !coord && (a.get("--moves").is_some() || a.0.iter().any(|x| x == "--shift")) {
             panic!("--moves/--shift: --method grad makes no moves; use grad+tick")
         }
     }
+    // `--graze off`: no dip projection and no rejection rule (the bubble alone, or nothing).
+    let graze = a.get("--graze").unwrap_or("1e-2,3e-3,1e-3");
     let go = GradOpts { iters: a.num("--iters", 2000), mem: a.num("--mem", 10), max_step: a.num("--max-step", 5.0),
                         c1: a.num("--c1", 1e-4),
-                        margins: a.get("--graze").unwrap_or("1e-2,3e-3,1e-3").split(',').map(|x| x.parse().expect("--graze")).collect() };
+                        margins: if graze == "off" { vec![] } else { graze.split(',').map(|x| x.parse().expect("--graze")).collect() },
+                        bub, shrink, stages: a.num("--anneal", 0usize) + 1 };
     let clock = std::time::Instant::now();
     let rough = Rough { shape, ..a.opts().rough };
     let mut used = Vec::new();
+    // The bubble the gradient's last stage scored with.
+    let mut gbub = bub;
     let (obj, sc) = loop {
         let obj = a.obj(n);
         let mut q = init_from(&p, n);
         let mut tag = String::new();
         if grad {
-            let (r, _, k) = ascend_grad(&obj, depth, &q, mode, ke, rough, &go, n < nmax);
+            let (r, _, k, b) = ascend_grad(&obj, depth, &q, mode, ke, rough, &GradOpts { bub, ..go.clone() }, n < nmax);
             q = r.iter().map(|&x| x as f32 as f64).collect();
             tag = format!("g{k}");
+            gbub = b;
         }
         let sc = if coord {
             let (r, s, k) = ascend(&obj, depth, &q, mode, ke, rough, passes,
@@ -955,7 +1029,8 @@ fn exit_cmd(a: &Args) {
         } else {
             // Scored as `ascend` scores what it keeps: on the `f32` pitches the replay flies.
             let st = obj.replay(&q);
-            utility(&st, depth, mode, ke) - Rough { mu: rough.mu * mode.per_block(), ..rough }.cost(&q)
+            utility(&st, depth, mode, ke) - mode.per_block() * bubble_cost(&st, depth, gbub)
+                - Rough { mu: rough.mu * mode.per_block(), ..rough }.cost(&q)
         };
         used.push(format!("{tag}@{n}"));
         p = q;
@@ -970,8 +1045,9 @@ fn exit_cmd(a: &Args) {
     // The default method's header is unchanged; the others name themselves and their settings,
     // and add their wall time.
     let (mnote, wall) = if grad {
-        (format!(" method {method} iters {} mem {} max-step {} c1 {} graze {}", go.iters, go.mem, go.max_step, go.c1,
-                 go.margins.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",")),
+        (format!(" method {method} iters {} mem {} max-step {} c1 {} graze {}{}", go.iters, go.mem, go.max_step, go.c1,
+                 if go.margins.is_empty() { "off".into() } else { go.margins.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",") },
+                 if go.stages > 1 { format!(" anneal {}", go.stages - 1) } else { String::new() }),
          format!("  wall {:.2}s", clock.elapsed().as_secs_f64()))
     } else { (String::new(), String::new()) };
     let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}{mnote}\n\
@@ -1111,8 +1187,15 @@ mod tests {
         worst
     }
 
+    /// What `utility_grad` differentiates: `utility` less the bubble in score units.
+    fn priced(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), q: &[f64]) -> f64 {
+        let st = obj.replay(q);
+        utility(&st, depth, mode, ke) - mode.per_block() * bubble_cost(&st, depth, bub)
+    }
+
     /// The first-exit utility's gradient, through the secant at the crossing, for both modes,
-    /// with and without the exit-energy term, and for a survivor's value-to-go.
+    /// with and without the exit-energy term, with and without the bubble, and for a survivor's
+    /// value-to-go.
     #[test]
     fn exit_gradient_matches_finite_differences() {
         let n = 200;
@@ -1123,20 +1206,36 @@ mod tests {
         let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
         assert!(st[..=170].iter().all(|s| s.pos.y + depth > 0.05), "the test schedule dips early");
         assert_eq!(live_end(&st, depth), 171);
+        // A bubble deep enough to hold the pre-exit dip and the last few states before the
+        // crossing, and one too thin to hold anything but the crossing term.
+        let lo = pre_exit_min(&st, 171, depth);
+        let inside = |m: f64| (1..171).filter(|&j| st[j].pos.y + depth < m).count();
+        let (thick, thin) = ((lo + 0.4, 0.3), (0.02, 0.05));
+        assert!(inside(thick.0) >= 4 && inside(thin.0) == 0, "bubble holds {} and {}", inside(thick.0), inside(thin.0));
         let ticks = [0, 5, 59, 60, 75, 89, 90, 120, 168, 169, 170];
         for mode in [Exit::Time, Exit::Dist] {
             for ke in [0.0, -0.3] {
-                let eg = utility_grad(&obj, depth, mode, ke, &p);
-                let (err, fd, g) = fd_worst(&|q| utility(&obj.replay(q), depth, mode, ke), &eg.g, &p, &ticks);
-                eprintln!("exit {mode:?} ke {ke}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
-                assert!(err < 1e-4, "{mode:?} ke {ke}: fd {fd} vs adjoint {g}");
-                assert!(eg.g[171..].iter().all(|&x| x == 0.0), "a dead pitch has a gradient");
+                let bare = utility_grad(&obj, depth, mode, ke, (1.0, 0.0), &p).g;
+                for bub in [(1.0, 0.0), thick, thin] {
+                    let eg = utility_grad(&obj, depth, mode, ke, bub, &p);
+                    // The bubble's own share of the gradient, at the ticks checked, relative to the
+                    // utility's: a check that it is not lost in the tolerance.
+                    let share = ticks.iter().map(|&t| (eg.g[t] - bare[t]).abs() / bare[t].abs().max(1e-2)).fold(0.0, f64::max);
+                    if bub.1 != 0.0 { assert!(share > 0.05, "{mode:?} bubble {bub:?}: its gradient is only {share:.1e} of the utility's") }
+                    let (err, fd, g) = fd_worst(&|q| priced(&obj, depth, mode, ke, bub, q), &eg.g, &p, &ticks);
+                    eprintln!("exit {mode:?} ke {ke} bubble {bub:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6}), bubble share {share:.2}");
+                    assert!(err < 1e-4, "{mode:?} ke {ke} bubble {bub:?}: fd {fd} vs adjoint {g}");
+                    assert!(eg.g[171..].iter().all(|&x| x == 0.0), "a dead pitch has a gradient");
+                }
             }
-            // Survivor: the floor far below.
-            let eg = utility_grad(&obj, 1000.0, mode, 0.0, &p);
-            let (err, fd, g) = fd_worst(&|q| utility(&obj.replay(q), 1000.0, mode, 0.0), &eg.g, &p, &[0, 60, 150, 199]);
-            eprintln!("survivor {mode:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
-            assert!(err < 1e-4, "survivor {mode:?}: fd {fd} vs adjoint {g}");
+            // Survivors: the floor far below, and just under the lowest state, inside a bubble.
+            let top = -st.iter().map(|s| s.pos.y).fold(f64::INFINITY, f64::min) + 0.05;
+            for (d, bub) in [(1000.0, (1.0, 0.0)), (top, (0.5, 0.3))] {
+                let eg = utility_grad(&obj, d, mode, 0.0, bub, &p);
+                let (err, fd, g) = fd_worst(&|q| priced(&obj, d, mode, 0.0, bub, q), &eg.g, &p, &[0, 60, 150, 199]);
+                eprintln!("survivor {mode:?} bubble {bub:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
+                assert!(err < 1e-4, "survivor {mode:?} bubble {bub:?}: fd {fd} vs adjoint {g}");
+            }
         }
     }
 
@@ -1151,15 +1250,17 @@ mod tests {
         let st = obj.replay(&p);
         let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
         flat_tail(&mut p, 171);
-        for shape in [PriceShape::L2(2.0), PriceShape::Huber(0.5), PriceShape::L1] {
+        let bubble = (pre_exit_min(&st, 171, depth) + 0.4, 0.3);
+        for (shape, bub) in [(PriceShape::L2(2.0), (1.0, 0.0)), (PriceShape::Huber(0.5), (1.0, 0.0)),
+                             (PriceShape::L1, (1.0, 0.0)), (PriceShape::L2(2.0), bubble)] {
             // A price far above the default, so its gradient is not lost under the utility's.
             let pen = Rough { mu: 0.05, shape, ..Default::default() };
-            let s = slopes(&obj, depth, Exit::Time, 0.0, &pen, &p);
+            let s = slopes(&obj, depth, Exit::Time, 0.0, bub, &pen, &p);
             assert_eq!(s.up, s.down, "no pitch sits on the switch, so the two slopes agree");
-            let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, &pen, q).1;
+            let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, bub, &pen, q).1;
             let (err, fd, g) = fd_worst(&f, &s.up, &p, &[0, 1, 59, 60, 61, 100, 168, 169, 170]);
-            eprintln!("ascent objective, {shape}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
-            assert!(err < 1e-4, "{shape}: fd {fd} vs adjoint {g}");
+            eprintln!("ascent objective, {shape}, bubble {bub:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
+            assert!(err < 1e-4, "{shape} bubble {bub:?}: fd {fd} vs adjoint {g}");
         }
     }
 
@@ -1174,8 +1275,8 @@ mod tests {
         let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
         for t in [20, 100, 140] { p[t] = 0.0 }
         let pen = Rough::default();
-        let s = slopes(&obj, depth, Exit::Time, 0.0, &pen, &p);
-        let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, &pen, q).1;
+        let s = slopes(&obj, depth, Exit::Time, 0.0, (1.0, 0.0), &pen, &p);
+        let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, (1.0, 0.0), &pen, q).1;
         let h = 1.0 / 1024.0;
         for t in [20, 100, 140] {
             let (mut a, mut b) = (p.clone(), p.clone());
