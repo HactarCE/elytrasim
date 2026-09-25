@@ -12,11 +12,14 @@
 //!   safety --y0 <h> --n <n> [--init <spec>]   max soft-min clearance: is this horizon feasible?
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
+//!   laps   --file <pitches> --y0 <h>   every dip and peak of the clearance before the exit, and
+//!                                  the energy above the floor there: does a pump gain per lap?
 //!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
 //!          [--bubble <margin>,<weight>] [--shrink <r>] [--penalty l1|l2:<d>|huber:<d>]
 //!          [--moves tick,box:<k>:..,ramp,shift] [--method tick|grad|grad+tick]
 //!          [--iters <n>] [--mem <m>] [--max-step <deg>] [--c1 <c>] [--graze <blocks>,..|off]
 //!          [--anneal <k>]
+//!          [--after <file>]   (with `pumps`) keep <file> to its last apex, then fly the K laps
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it. `--method grad` is `ascend_grad`,
 //!                                  gradient ascent on the exit score; the default is `ascend`
@@ -25,7 +28,9 @@
 //!   --margin, --weight, --wall (the floor's price), --mu, --limit, --passes, --tol.
 //! An init spec is `hold:<p>`, `pump:<p_down>,<k>,<p_up>` (p_down for k ticks, then p_up),
 //! `tile:<file>` (a cycle repeated), or a pitch file (last pitch repeated). `exit` also takes
-//! `minipump[:<d>[,<k>]]`, see `minipump`.
+//! `minipump[:<d>[,<k>]]`, see `minipump`, and `pumps:<K>[,<key>=<v>..]`, a K-climb
+//! floor-grazing pump flown by events (keys `d lvl pull a a2 g end`; any not given is fitted to
+//! the seed's own exit score), see `Pumps`.
 //!
 //! Physics is `mth_lut` trig and `reference` flight, fixed: vanilla's table, and the kernel
 //! that is fastest on arm64 (README-sweep.md).
@@ -945,6 +950,135 @@ fn fit_minipump(obj: &Objective, depth: f64, mode: Exit, spec: &str) -> (Vec<f64
         .reduce(|| (vec![], 0.0, 0, f64::NEG_INFINITY), |a, b| if b.3 > a.3 { b } else { a })
 }
 
+/// The K-climb seed: a floor-grazing pump flown by events, not by tick counts, so one set of
+/// parameters means the same flight at every `y0` and on every lap.
+///
+/// From rest: dive at `d` degrees nose-down until the clearance falls under `lvl`; hold 0 until it
+/// falls under `pull`; pull at `a` while `v_y` still rises; then relax the pitch linearly in `v_y`,
+/// from `a` at the peak of `v_y` to `a2` as `v_y` reaches 0 (the apex). That is one climb. After each climb but the last, glide at 0 for `g` ticks and dive
+/// again; after the last, hold `end` to the exit. `lvl <= pull` skips the level-off.
+///
+/// Why these phases. They are the laps of the best `y0 = 32` range schedule (v11, 1362 ticks,
+/// five dips): a nose-down dive to about 3 blocks, pitch 0 for about ten ticks while the dive's
+/// `v_y` turns into forward speed (the `v_y < 0` conversion is largest at pitch 0), a pull that
+/// peaks at -47 to -57 as the flight grazes the floor, a climb whose pitch relaxes about linearly
+/// to -10 at the apex, then a glide or straight into the next dive. A relax held at a constant
+/// pitch instead (the first version) flew laps that each lost about a block at `y0 = 32`, so the
+/// fit could not use more than six of them; the same laps optimized gain 3-9 blocks each. Why events: a lap's timing depends on how fast it arrives, so
+/// a tick count fitted at one `y0` or on one lap is wrong on the next.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pumps { k: usize, d: f64, lvl: f64, pull: f64, a: f64, a2: f64, g: usize, end: f64 }
+
+impl Pumps {
+    fn show(&self) -> String {
+        format!("pumps:{},d={},lvl={},pull={},a={},a2={},g={},end={}", self.k, self.d, self.lvl, self.pull, self.a,
+                self.a2, self.g, self.end)
+    }
+}
+
+/// Flies `prefix`, then `Pumps` from where it leaves off, for `n` ticks in all, over a floor
+/// `depth` below the start. After a non-empty prefix the controller starts in the glide, as after
+/// a climb. Returns the pitches (after the exit, the last pitch repeated) and the exit score in
+/// `mode`.
+fn pumps(obj: &Objective, depth: f64, mode: Exit, q: &Pumps, prefix: &[f64]) -> (Vec<f64>, f64) {
+    #[derive(PartialEq)]
+    enum Ph { Dive, Level, Pull, Relax, Glide(usize), End }
+    let mut p = Vec::with_capacity(obj.n);
+    let mut st = vec![State { pos: Vec3::ZERO, vel: obj.v0 }];
+    let mut ph = if q.k == 0 { Ph::End } else if prefix.is_empty() { Ph::Dive } else { Ph::Glide(q.g) };
+    let mut climbs = 0;
+    let mut vtop = 1.0;
+    for &x in &prefix[..prefix.len().min(obj.n)] {
+        let s = st.last().unwrap().clone();
+        if s.pos.y + depth < 0.0 { break }
+        st.push(s.ticked_cached(PitchTrig::new(x as f32)));
+        p.push(x);
+    }
+    while p.len() < obj.n {
+        let s = st.last().unwrap().clone();
+        let h = s.pos.y + depth;
+        if h < 0.0 { break }
+        // Phase changes read the current state; `Pull` and `Relax` end on the next state's `v_y`.
+        loop {
+            let next = match ph {
+                Ph::Dive if h < q.lvl => Ph::Level,
+                Ph::Level if h < q.pull => Ph::Pull,
+                Ph::Glide(0) => Ph::Dive,
+                _ => break,
+            };
+            ph = next;
+        }
+        let x = match ph { Ph::Dive => q.d, Ph::Level | Ph::Glide(_) => 0.0, Ph::Pull => q.a,
+                           Ph::Relax => q.a2 + (q.a - q.a2) * (s.vel.y / vtop).clamp(0.0, 1.0),
+                           Ph::End => q.end };
+        let nx = s.ticked_cached(PitchTrig::new(x as f32));
+        match ph {
+            Ph::Pull if nx.vel.y < s.vel.y && nx.vel.y > 0.0 => { ph = Ph::Relax; vtop = s.vel.y }
+            Ph::Relax if nx.vel.y < 0.0 => {
+                climbs += 1;
+                ph = if climbs >= q.k { Ph::End } else { Ph::Glide(q.g) };
+            }
+            Ph::Glide(r) => ph = Ph::Glide(r.saturating_sub(1)),
+            _ => {}
+        }
+        p.push(x);
+        st.push(nx);
+    }
+    let sc = exit_score(&st, depth, mode);
+    let last = p.last().copied().unwrap_or(0.0);
+    p.resize(obj.n, last);
+    (p, sc)
+}
+
+/// `pumps:<K>[,<key>=<v>..]` fitted: every parameter not given is searched, first on a coarse
+/// grid, then by coordinate passes on finer ones, all on the seed's own exit score. Keys `d`,
+/// `lvl`, `pull`, `a`, `a2`, `g`, `end` as in `Pumps`.
+fn fit_pumps(obj: &Objective, depth: f64, mode: Exit, spec: &str, prefix: &[f64]) -> (Pumps, Vec<f64>, f64) {
+    let mut it = spec.split(',').filter(|x| !x.is_empty());
+    let k: usize = it.next().expect("pumps:<K>").parse().expect("pumps:<K>");
+    let mut fixed: Vec<(String, f64)> = Vec::new();
+    for kv in it {
+        let (key, v) = kv.split_once('=').unwrap_or_else(|| panic!("pumps: {kv} is not key=value"));
+        assert!(["d", "lvl", "pull", "a", "a2", "g", "end"].contains(&key), "pumps: unknown key {key}");
+        fixed.push((key.into(), v.parse().unwrap_or_else(|e| panic!("pumps: {kv}: {e:?}"))));
+    }
+    let get = |key: &str| fixed.iter().find(|(x, _)| x == key).map(|(_, v)| *v);
+    let set = |mut q: Pumps, i: usize, v: f64| -> Pumps {
+        match i { 0 => q.d = v, 1 => q.lvl = v, 2 => q.pull = v, 3 => q.a = v, 4 => q.a2 = v,
+                  5 => q.g = v.max(0.0).round() as usize, _ => q.end = v }
+        q
+    };
+    const KEYS: [&str; 7] = ["d", "lvl", "pull", "a", "a2", "g", "end"];
+    // Coarse grids, searched jointly, and fine ones, searched a coordinate at a time.
+    let coarse: [Vec<f64>; 7] = [
+        vec![0.0, 10.0, 20.0, 30.0, 40.0, 55.0], vec![0.0, 1.5, 3.0, 5.0, 8.0],
+        vec![0.1, 0.25, 0.5, 1.0, 2.0], vec![-30.0, -45.0, -60.0], vec![0.0, -10.0, -20.0],
+        vec![0.0, 15.0, 40.0, 80.0], vec![0.0, -13.0, -22.0]];
+    let fine: [Vec<f64>; 7] = [
+        (0..=36).map(|i| 2.5 * i as f64).collect(), (0..=40).map(|i| i as f64 / 4.0).collect(),
+        (0..=60).map(|i| i as f64 / 20.0).collect(), (0..=40).map(|i| -10.0 - 2.0 * i as f64).collect(),
+        (0..=20).map(|i| -2.0 * i as f64).collect(), (0..=40).map(|i| 5.0 * i as f64).collect(),
+        (0..=30).map(|i| -1.0 * i as f64).collect()];
+    let base = Pumps { k, d: 0.0, lvl: 0.0, pull: 0.0, a: 0.0, a2: 0.0, g: 0, end: 0.0 };
+    let base = (0..7).fold(base, |q, i| set(q, i, get(KEYS[i]).unwrap_or(coarse[i][0])));
+    let free: Vec<usize> = (0..7).filter(|&i| get(KEYS[i]).is_none()).collect();
+    let score = |q: &Pumps| pumps(obj, depth, mode, q, prefix).1;
+    let mut grid = vec![base];
+    for &i in &free { grid = grid.into_iter().flat_map(|q| coarse[i].iter().map(move |&v| set(q, i, v))).collect() }
+    let mut best = grid.par_iter().map(|q| (*q, score(q)))
+        .reduce(|| (base, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
+    for _ in 0..4 {
+        let before = best.1;
+        for &i in &free {
+            best = fine[i].par_iter().map(|&v| { let q = set(best.0, i, v); (q, score(&q)) })
+                .reduce(|| best, |a, b| if b.1 > a.1 { b } else { a });
+        }
+        if best.1 <= before { break }
+    }
+    let (p, sc) = pumps(obj, depth, mode, &best.0, prefix);
+    (best.0, p, sc)
+}
+
 /// First-exit ascent under a cap that doubles, up to `--nmax`, for as long as the answer
 /// survives it. Why: a survivor is scored on a value-to-go guess rather than an exit, so a cap
 /// that binds decides the answer. The ascent returns after the first pass whose schedule
@@ -960,13 +1094,36 @@ fn exit_cmd(a: &Args) {
                                                          m => panic!("bad --mode {m}") };
     let spec = a.get("--init").unwrap_or("hold:-13");
     let mut seed_note = String::new();
-    let mut p = match spec.strip_prefix("minipump") {
-        Some(r) => {
-            let (p, d, k, sc) = fit_minipump(&a.obj(n), depth, mode, r.trim_start_matches(':'));
-            seed_note = format!("  minipump d {d} k {k} seed score {sc:.4}");
-            p
+    let mut p = if let Some(r) = spec.strip_prefix("pumps:") {
+        // Fitted and flown on the largest cap, and the ascent starts at the first doubling of `--n`
+        // that the seed does not outlast. why? growing from a cap shorter than the seed's flight
+        // keeps only the seed's first `n` pitches and repeats the last one, which erases every
+        // lap after the first.
+        // `--after <file>`: continue that schedule from its last apex (the last tick whose `v_y`
+        // turns negative before its exit) with K more laps -- a continuation in laps, since the
+        // seed's own fixed-parameter laps lose energy and stop after a few.
+        let prefix = a.get("--after").map_or(vec![], |f| {
+            let x = read_pitches(f);
+            let st = a.obj(x.len()).replay(&x);
+            let end = live_end(&st, depth);
+            let apex = (1..end).rev().find(|&t| st[t - 1].vel.y > 0.0 && st[t].vel.y <= 0.0).unwrap_or(0);
+            x[..apex].to_vec()
+        });
+        let (q, p, sc) = fit_pumps(&a.obj(nmax), depth, mode, r, &prefix);
+        if let Some(f) = a.get("--after") { seed_note = format!("  after {f} ({} ticks)", prefix.len()) }
+        let live = Floor { depth, ..Default::default() }.survived(&a.obj(nmax).replay(&p));
+        while n < nmax && live >= n { n = (2 * n).min(nmax) }
+        seed_note = format!("{seed_note}  seed {} seed score {sc:.4}", q.show());
+        p[..n].to_vec()
+    } else {
+        match spec.strip_prefix("minipump") {
+            Some(r) => {
+                let (p, d, k, sc) = fit_minipump(&a.obj(n), depth, mode, r.trim_start_matches(':'));
+                seed_note = format!("  minipump d {d} k {k} seed score {sc:.4}");
+                p
+            }
+            None => init(spec, n),
         }
-        None => init(spec, n),
     };
     let passes = a.num("--passes", 100usize);
     let ke = a.num("--ke", 0.0);
@@ -1134,6 +1291,23 @@ fn main() {
                 for (t, s) in st.iter().enumerate().step_by(every) {
                     println!("  t {t:4}  y {:8.3}  TE {:8.3}  v ({:+.4}, {:.4})", s.pos.y, s.total_energy(), s.vel.y, s.vel.z);
                 }
+            }
+        }
+        Some("laps") => {
+            // A pump's laps: every local minimum (dip) and maximum (peak) of the clearance
+            // before the exit, with the energy above the floor, `TE + y0`, there.
+            let p = read_pitches(a.get("--file").expect("--file"));
+            let depth = a.num("--y0", 4.0);
+            let st = a.obj(p.len()).replay(&p);
+            let k = live_end(&st, depth);
+            let h = |j: usize| st[j].pos.y + depth;
+            println!("# exit at state {k} of {}", st.len() - 1);
+            for j in 1..k.min(st.len() - 1) {
+                let kind = if h(j) <= h(j - 1) && h(j) < h(j + 1) { "dip" }
+                           else if h(j) >= h(j - 1) && h(j) > h(j + 1) { "peak" } else { continue };
+                let s = &st[j];
+                println!("{kind:<4} t {j:5}  h {:9.5}  E {:8.4}  v ({:+.4}, {:.4})  pitch {:.2}",
+                         h(j), s.total_energy() + depth, s.vel.y, s.vel.z, p[j - 1]);
             }
         }
         Some("safety") => {
