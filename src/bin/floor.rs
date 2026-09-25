@@ -13,7 +13,8 @@
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
 //!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
-//!          [--bubble <margin>,<weight>] [--shrink <r>]
+//!          [--bubble <margin>,<weight>] [--shrink <r>] [--pen l1|l2:<d>|huber:<d>]
+//!          [--moves tick,box:<k>:..,ramp,shift]
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it
 //!
@@ -366,16 +367,118 @@ fn bubble_cost(states: &[State], depth: f64, (margin, weight): (f64, f64)) -> f6
     c
 }
 
+/// The curvature price's shape, applied to each second difference `x` (deg/tick^2) and scaled
+/// by `mu`. `Huber(d)` is `L1` with the corner rounded off: quadratic `x^2/2d` inside `d`, the same
+/// slope as `L1` outside. `L2(d)` is that quadratic everywhere. Why the rounded corner: near pitch 0
+/// the physics is quadratic in the pitch, so under `L1` a small first step toward spreading a
+/// lump always loses to its own price, and only a big jump pays.
+#[derive(Clone, Copy, Debug)]
+enum Shape { L1, L2(f64), Huber(f64) }
+
+impl Shape {
+    fn parse(s: &str) -> Shape {
+        let (k, d) = s.split_once(':').map_or((s, None), |(k, d)| (k, Some(d.parse::<f64>().unwrap())));
+        assert!(d.map_or(true, |d| d.is_finite() && d > 0.0), "--pen {s}: the width must be finite and > 0");
+        match k { "l1" => Shape::L1, "l2" => Shape::L2(d.expect("l2:<d>")),
+                  "huber" => Shape::Huber(d.expect("huber:<d>")), _ => panic!("bad --pen {s}") }
+    }
+    fn f(self, x: f64) -> f64 {
+        let a = x.abs();
+        match self {
+            Shape::L1 => a,
+            Shape::L2(d) => a * a / (2.0 * d),
+            Shape::Huber(d) => if a <= d { a * a / (2.0 * d) } else { a - 0.5 * d },
+        }
+    }
+}
+
+/// `mu` times the shape, summed over the schedule's second differences.
+#[derive(Clone, Copy, Debug)]
+struct Pen { mu: f64, shape: Shape }
+
+impl Pen {
+    fn cost(&self, p: &[f64]) -> f64 {
+        (0..p.len().saturating_sub(2)).map(|j| self.shape.f(p[j] - 2.0 * p[j + 1] + p[j + 2])).sum::<f64>() * self.mu
+    }
+    /// The three terms the window's center takes part in, at `x`.
+    fn local(&self, w: &Win5, x: f64) -> f64 {
+        let g = |i: usize| if i == 2 { Some(x) } else { w[i] };
+        (0..3).filter_map(|j| match (g(j), g(j + 1), g(j + 2)) {
+            (Some(a), Some(b), Some(d)) => Some(self.shape.f(a - 2.0 * b + d)),
+            _ => None,
+        }).sum::<f64>() * self.mu
+    }
+}
+
+/// A move that changes many pitches at once, sized by one number `d`, searched like a pitch.
+/// Why: the curvature price couples neighbors, so a change that needs several pitches to move
+/// together -- a ramp that should start a tick later, a lump that should spread -- can be
+/// uphill along every single pitch.
+///
+/// * `Shift`: `d` added to every live pitch from `t` on. Changes two second differences.
+/// * `Box(k)`: `d` added to pitches `t .. t+k`. Changes four.
+/// * `Ramp`: `d * (s - t)` added to every live pitch `s > t`. Changes the second difference
+///   centered on `t`, and the one at the live/dead boundary, since the dead tail is held flat
+///   (that term is the last live slope): a sweep of ramps is coordinate search in the second
+///   differences, where the price is separable but for that one term. At `t = 0` it is the
+///   schedule's initial slope; the initial pitch is a `Shift` at 0, which a ramp sweep also
+///   tries. Clamping at the limit and the `f32` round break the ramp's exactness.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Move { Shift, Box(usize), Ramp }
+
+impl Move {
+    fn parse(s: &str) -> Vec<Move> {
+        match s.split(':').collect::<Vec<_>>().as_slice() {
+            ["shift"] => vec![Move::Shift],
+            ["ramp"] => vec![Move::Ramp],
+            ["box", ks @ ..] => ks.iter().map(|k| Move::Box(k.parse().unwrap())).collect(),
+            _ => panic!("bad move {s}"),
+        }
+    }
+    /// `p` with the move applied at `t` over the live pitches `..end`; the dead ones after it are
+    /// set to the new last live pitch, as `ascend` keeps them.
+    fn apply(self, p: &[f64], t: usize, end: usize, d: f64, lim: f64) -> Vec<f64> {
+        let mut q = p.to_vec();
+        for s in t..end {
+            let dx = match self {
+                Move::Shift => d,
+                Move::Box(k) => if s < t + k { d } else { 0.0 },
+                Move::Ramp => d * (s - t) as f64,
+            };
+            if dx != 0.0 { q[s] = (p[s] + dx).clamp(-lim, lim) as f32 as f64 }
+        }
+        if end > 0 { let last = q[end - 1]; q[end..].iter_mut().for_each(|x| *x = last) }
+        q
+    }
+    /// The grid `d` is scanned on. A ramp's grid is in degrees at the tail's end, so a long tail
+    /// gets fine slopes and a short one coarse.
+    fn grid(self, t: usize, end: usize) -> (Vec<f64>, f64) {
+        match self {
+            Move::Ramp => { let l = end.saturating_sub(t).max(1) as f64;
+                            ((-80..=80).map(|i| 0.5 * i as f64 / l).collect(), 0.5 / l) }
+            _ => ((-40..=40).map(|i| 0.25 * i as f64).collect(), 0.25),
+        }
+    }
+}
+
+/// The first dead pitch: the one after the pitch whose state is the first under the floor, or
+/// `n` if the replay never goes under.
+fn live_end(st: &[State], depth: f64) -> usize {
+    (1..st.len()).find(|&k| st[k].pos.y + depth < 0.0).unwrap_or(st.len() - 1)
+}
+
 /// Coordinate ascent on a first-exit score over a fixed cap. The same sweep as `polish` -- a
 /// global scan of every tick's pitch on a 0.25-degree grid, a ternary refine, the `f32` round,
 /// Gauss-Seidel -- but scored on the whole replay rather than on a terminal state, and every pass
-/// global. The l1 curvature price is charged as in `polish`, converted to score units by
-/// `Exit::per_block`. Ticks after the exit are dead: they are not searched, and after each pass
-/// they are set to the last live pitch, so the curvature price never sees the seed's leftover
-/// tail.
-fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough, passes: usize,
-          tol: f64, bail: bool, shift: bool, bub: &mut (f64, f64), shrink: f64) -> (Vec<f64>, f64, usize) {
-    let rough = Rough { mu: rough.mu * mode.per_block(), ..rough };
+/// global. `tick: false` drops that sweep; each of `moves` then gets a sweep of its own, in order,
+/// every pass. The curvature price is quoted in blocks of energy as in `polish`, converted to
+/// score units by `Exit::per_block`. Ticks after the exit are dead: they are not searched, and
+/// after each pass they are set to the last live pitch, so the price never sees the seed's
+/// leftover tail.
+fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough, shape: Shape,
+          passes: usize, tol: f64, bail: bool, tick: bool, moves: &[Move], bub: &mut (f64, f64), shrink: f64)
+          -> (Vec<f64>, f64, usize) {
+    let pen = Pen { mu: rough.mu * mode.per_block(), shape };
     let step = 0.25;
     let lim = rough.limit;
     let cands: Vec<f64> = (0..=((2.0 * lim / step) as i64)).map(|i| (-lim + step * i as f64).min(lim)).collect();
@@ -391,7 +494,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
     let pb = mode.per_block();
     let total = |p: &[f64], b: (f64, f64)| {
         let st = obj.replay(p);
-        utility(&st, depth, mode, ke) - pb * bubble_cost(&st, depth, b) - rough.cost(p)
+        utility(&st, depth, mode, ke) - pb * bubble_cost(&st, depth, b) - pen.cost(p)
     };
     let mut best = total(&p, *bub);
     let mut quiet = 0;
@@ -400,7 +503,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
         done += 1;
         let before = best;
         let b = *bub;
-        for t in 0..p.len() {
+        for t in 0..if tick { p.len() } else { 0 } {
             let st = obj.replay(&p);
             // Dead tick: the replay is already under the floor by the state this pitch produces.
             if (1..=t).any(|k| st[k].pos.y + depth < 0.0) { break }
@@ -415,7 +518,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                     s = s.ticked_cached(q);
                     v.push(s.clone());
                 }
-                utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - rough.local(&w, x)
+                utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - pen.local(&w, x)
             };
             let (mut bp, mut bs) = (p[t], score(p[t]));
             let (gp, gs) = cands.par_iter().map(|&x| (x, score(x)))
@@ -430,21 +533,20 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
             if score(r) > bs { bp = r }
             p[t] = bp as f32 as f64;
         }
-        // Tail shifts: every pitch from `t` on moves by `d` together. The curvature price is
-        // not separable in the pitches -- moving one pitch off a straight line pays for three
-        // kinks, so a ramp that should start a tick later, or bend, advances by slivers under a
-        // per-pitch search -- but a tail shift changes only the two second differences at `t`.
-        if shift {
-            let dc: Vec<f64> = (-40..=40).map(|i| 0.25 * i as f64).collect();
-            for t in 0..p.len() {
+        // Multi-pitch moves (see `Move`), each scored on the whole price since they are not local.
+        for &mv in moves {
+            // A ramp sweep also moves the initial pitch, the one coordinate a ramp cannot reach.
+            let slots: Vec<(Move, usize)> = if mv == Move::Ramp { std::iter::once((Move::Shift, 0))
+                .chain((0..p.len()).map(|t| (Move::Ramp, t))).collect() } else { (0..p.len()).map(|t| (mv, t)).collect() };
+            for (mv, t) in slots {
                 let st = obj.replay(&p);
                 if (1..=t).any(|k| st[k].pos.y + depth < 0.0) { break }
-                let moved = |d: f64| -> Vec<f64> {
-                    p.iter().enumerate()
-                        .map(|(s, &x)| if s >= t { (x + d).clamp(-lim, lim) as f32 as f64 } else { x }).collect()
-                };
-                let score = |d: f64| -> f64 {
-                    let q = moved(d);
+                let end = live_end(&st, depth);
+                // The candidate as it would be kept: moved, then flattened from its *own* exit,
+                // which can come before the schedule's. Pricing the moved dead tail instead
+                // would let the end-of-pass flatten undo an accepted gain.
+                let realize = |d: f64| -> (Vec<f64>, f64) {
+                    let mut q = mv.apply(&p, t, end, d, lim);
                     let mut v = st[..=t].to_vec();
                     let mut s = st[t].clone();
                     for &x in &q[t..] {
@@ -452,12 +554,17 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                         s = s.ticked_cached(PitchTrig::new(x as f32));
                         v.push(s.clone());
                     }
-                    utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - rough.cost(&q)
+                    let k = v.len() - 1;
+                    if k < q.len() { let last = q[k - 1]; q[k..].iter_mut().for_each(|x| *x = last) }
+                    let sc = utility(&v, depth, mode, ke) - pb * bubble_cost(&v, depth, b) - pen.cost(&q);
+                    (q, sc)
                 };
+                let score = |d: f64| realize(d).1;
+                let (grid, h) = mv.grid(t, end);
                 let s0 = score(0.0);
-                let (mut bd, mut bs) = dc.par_iter().map(|&d| (d, score(d)))
+                let (mut bd, mut bs) = grid.par_iter().map(|&d| (d, score(d)))
                     .reduce(|| (0.0, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
-                let (mut a, mut b) = (bd - 0.25, bd + 0.25);
+                let (mut a, mut b) = (bd - h, bd + h);
                 for _ in 0..30 {
                     let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
                     if score(m1) < score(m2) { a = m1 } else { b = m2 }
@@ -465,7 +572,7 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
                 let r = 0.5 * (a + b);
                 let sr = score(r);
                 if sr > bs { bd = r; bs = sr }
-                if bs > s0 { p = moved(bd) }
+                if bs > s0 { p = realize(bd).0 }
             }
         }
         flatten(&mut p);
@@ -542,12 +649,19 @@ fn exit_cmd(a: &Args) {
     });
     let shrink = a.num("--shrink", 1.0);
     let bub0 = bub;
+    let pen_spec = a.get("--pen").unwrap_or("l1");
+    let shape = Shape::parse(pen_spec);
+    // `--moves tick,box:3:9,ramp,shift`: which sweeps a pass makes, in order. `--shift` is
+    // `tick,shift`.
+    let mv_spec = a.get("--moves").map(str::to_string)
+        .unwrap_or(if a.0.iter().any(|x| x == "--shift") { "tick,shift".into() } else { "tick".into() });
+    let tick = mv_spec.split(',').any(|m| m == "tick");
+    let moves: Vec<Move> = mv_spec.split(',').filter(|m| *m != "tick").flat_map(Move::parse).collect();
     let mut used = Vec::new();
     let (obj, sc) = loop {
         let obj = a.obj(n);
-        let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, a.opts().rough, passes,
-                                a.num("--tol", 1e-3), n < nmax, a.0.iter().any(|x| x == "--shift"),
-                                &mut bub, shrink);
+        let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, a.opts().rough, shape, passes,
+                                a.num("--tol", 1e-3), n < nmax, tick, &moves, &mut bub, shrink);
         used.push(format!("{k}@{n}"));
         p = q;
         let fl = Floor { depth, ..Default::default() };
@@ -558,7 +672,7 @@ fn exit_cmd(a: &Args) {
     let fl = Floor { depth, ..Default::default() };
     let k = fl.survived(&st);
     let verdict = if k >= n { "  SURVIVES the cap: score is a value-to-go guess" } else { "" };
-    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} ke {ke} bubble {},{} shrink {shrink}{seed_note}\n\
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} pen {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}\n\
                         # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{verdict}\n{}\n",
                        obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit, bub0.0, bub0.1,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),

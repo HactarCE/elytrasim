@@ -194,12 +194,12 @@ The conversion did *not* remove the one-tick nose-down spikes above `y0 = 20`, b
 "paid for" either, as this section first claimed. Flattening a spike to its neighbors' mean costs
 0.1-3.9 ticks, but that test removes the nose-down itself. Spreading the same total lift dump
 (`sum sin^2 p`) over nine ticks scores *better* (`y0 = 16` endurance: score 212.016 -> 212.082;
-spreading both lumps and re-ascending, 212.217 with roughness 202 -> 86). Why the ascent makes
-lumps: at pitch >= 0 the up-conversion branch is off and a tick depends on pitch only through
-`cos^2 p`, so near 0 the physics is flat (quadratic in `p`) while the l1 price is linear. A small
-one-tick step from 0 always loses, only a big jump pays, and a per-tick search can never take the
-first step toward a spread-out version. Measured 2026-09-24 17:45 EDT by an independent agent on
-single cells at `y0 = 15, 16`.
+spreading both lumps and re-ascending, 212.217 with roughness 202 -> 86). The proposed reason: at
+pitch >= 0 the up-conversion branch is off and a tick depends on pitch only through `cos^2 p`, so
+near 0 the physics is flat (quadratic in `p`) while the l1 price is linear, and a small one-tick
+step from 0 always loses. Measured 2026-09-24 17:45 EDT by an independent agent on single cells at
+`y0 = 15, 16`. But rounding the price's corner (Huber, 6b) leaves the spikes, while a quadratic
+price removes them, so the corner is at best not the whole story.
 
 ### 6a. Terminal energy, tail shifts, and a growing cap (kept; measured 2026-09-24 17:00 EDT)
 
@@ -223,6 +223,50 @@ range +229 blocks (+4.5%). Range comes out rougher (summed |second difference| 8
 partly because it finds more pumps -- one more climb at `y0 = 24` and `32`. The cost is 1.7x the
 core time of growing alone; the slowest cell took 840 s on one core. Data: `runs/floor/v3-ke`
 (c sweep), `v4-mu`, `v5-grow`, `v6-shift`.
+
+### 6b. The curvature price's shape, and multi-pitch moves (measured 2026-09-24 19:00 EDT)
+
+`--pen l1|huber:<d>|l2:<d>` sets the shape of the price on each second difference `x`: `|x|`,
+`x^2/2d` inside `d` degrees and `|x| - d/2` outside, or `x^2/2d` everywhere, all times `mu`.
+`--moves tick,box:<k>:..,ramp,shift` sets which sweeps a pass makes: `box:k` adds one change to `k`
+consecutive pitches, and `ramp` adds `d*(s-t)` from `t` on, which is coordinate search in the second
+differences (see `Move` in `src/bin/floor.rs`). All runs below: `mu = 1e-4`, 30 passes, the
+minipump seed, `--n 150`, no bubble; sums over `y0 = 1..32`; chatter counts sign flips of the first
+difference with both steps over 2 degrees. `l1` with `tick` reproduces `v7-30pass` exactly.
+
+| variant | endurance Σt* | Σ\|d2\| | chatter | range Σz | Σ\|d2\| | chatter | core-h |
+|---|---|---|---|---|---|---|---|
+| l1 | 8104 | 4829 | 55 | 5263 | 8759 | 57 | 0.60 |
+| huber:0.5 | +3 | 4955 | 47 | +12 | 9460 | 65 | 0.59 |
+| huber:2 | +4 | 4677 | 35 | +5 | 9396 | 61 | 0.59 |
+| l2:0.125 | -13 | 900 | 0 | 0 | 1426 | 0 | 0.62 |
+| l2:0.5 | +22 | 1122 | 1 | -102 | 2259 | 0 | 0.61 |
+| l2:2 | +58 | 1839 | 8 | +258 | 3893 | 31 | 0.64 |
+| l1, tick+box:3:9:17:33 | -31 | 3487 | 65 | +170 | 4990 | 50 | 1.36 |
+| l2:0.5, tick+box | -36 | 1405 | 0 | +311 | 3625 | 4 | 1.40 |
+| l1, ramp only | -1050 | 5059 | 18 | -1145 | 4894 | 11 | 0.27 |
+
+* **The quadratic price removes the chatter and, on the sums, costs nothing.** Rounding only the
+  corner (Huber) barely changes anything, which argues against the corner mechanism in 6 (a small
+  first step losing to a linear price) and points at the large second differences instead: a
+  spike's price grows linearly in its height under l1 and quadratically under l2. Not tested
+  further than this. Under l1 the minipump seed's 2.5-degree dive plateau at `y0 = 13`
+  range stays at exactly 2.5 through every pass, box moves included; under `l2:0.5` it moves to
+  3.1-3.7 and `z` improves (72.19 -> 72.31). The plateau was only coordinatewise optimal.
+* **Range at `y0 >= 22` is basin luck.** Cells swing by 20% between variants (`y0 = 32`: 485 under
+  l1, 608 under `l2:0.5` with box moves), and no variant wins every cell, so the range sums above
+  measure which basins each variant fell into as much as the variant itself. Endurance at every `y0`,
+  and range below 22, agree across variants within about 2.5%.
+* **Ramp-only search is badly conditioned.** One ramp moves every later pitch, so 30 passes get
+  nowhere near the per-tick optimum, and it cannot make a sharp pull-up. Its low chatter is that of
+  a schedule that barely moved.
+* Box moves cost 2.3x the core time.
+* About 20 of the 32 optima per mode rest a mid-flight state within 1e-9 blocks of the floor, and
+  two of them (`dist_y27_hub0.5`, `dist_y27_l2_2`) go under by 1e-14 when replayed on the laptop
+  rather than on the cluster that solved them, exiting 100-200 ticks early. The vis skips them.
+
+Data: `runs/floor/v10-pen` (`buggy-moves/` holds the box and ramp runs from before a fix to how a move
+prices a candidate that exits earlier; they differ by at most 0.07).
 
 ### 7. Exact `f32` output (a correctness fix, kept)
 
@@ -310,6 +354,7 @@ Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repea
 (`exit` only) `minipump[:<d>[,<k>]]`.
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
-`runs/floor/v7-30pass/` the with/without-tail-shift ascents that `tools/plot_floor_profiles.py` draws,
+`runs/floor/v7-30pass/` the with/without-tail-shift ascents, `v8-bubble/` and `v9-bubble-cont/` the floor-bubble ones and
+`v10-pen/` the curvature-price shapes and search moves; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v10,
 `runs/floor/v2-cluster/` every solve behind the best schedules,
 and `runs/floor/inf/` the infinite-flight scan.
