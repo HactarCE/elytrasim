@@ -14,9 +14,11 @@
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
 //!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
 //!          [--bubble <margin>,<weight>] [--shrink <r>] [--penalty l1|l2:<d>|huber:<d>]
-//!          [--moves tick,box:<k>:..,ramp,shift]
+//!          [--moves tick,box:<k>:..,ramp,shift] [--method tick|grad|grad+tick]
+//!          [--iters <n>] [--mem <m>] [--max-step <deg>] [--c1 <c>] [--graze <blocks>,..]
 //!                                  the interpolated first exit; the cap doubles while the
-//!                                  answer survives it
+//!                                  answer survives it. `--method grad` is `ascend_grad`,
+//!                                  gradient ascent on the exit score; the default is `ascend`
 //!
 //! Common options: --vy, --vz (initial velocity, default 0), --lambda (default 0),
 //!   --margin, --weight, --wall (the floor's price), --mu, --limit, --passes, --tol.
@@ -544,6 +546,308 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
     (p, best, done)
 }
 
+/// `utility` and its gradient in every pitch, from one replay and one backward sweep
+/// (`elytrasim::adjoint`).
+///
+/// At an exit the seeds sit on the two states that straddle the floor: `t* = (k-1) + f` with
+/// `f = a / (a - b)`, `a = h[k-1]`, `b = h[k]`, so `dt*/da = -b/(a-b)^2` and `dt*/db = a/(a-b)^2`;
+/// `z(t*)` adds `1 - f` and `f` on the two `z`s and `(z_k - z_{k-1}) df` on the two heights. The
+/// crossing's *index* is a step function and has no derivative: this is the gradient of the
+/// score with the crossing held at the pair it is on, which is exact wherever the score is
+/// continuous. A touch-and-go (an earlier dip about to go under) is invisible to it; see
+/// `ascend_grad` for how that is handled. A survivor is seeded on its last state with the
+/// value-to-go's `d/d TE`.
+fn utility_grad(obj: &Objective, depth: f64, mode: Exit, ke: f64, p: &[f64]) -> ExitGrad {
+    use elytrasim::adjoint::{backprop_costates, te_cot};
+    let st = obj.replay(p);
+    let u = utility(&st, depth, mode, ke);
+    let k = live_end(&st, depth);
+    let mut seeds: Vec<(usize, [f64; 4])> = Vec::new();
+    let scaled = |c: [f64; 4], w: f64| c.map(|x| x * w);
+    let y = [1.0, 0.0, 0.0, 0.0];
+    if st[k].pos.y + depth < 0.0 {
+        let (a, b) = (st[k - 1].pos.y + depth, st[k].pos.y + depth);
+        let d = a - b;
+        let f = a / d;
+        let (dfa, dfb) = (-b / (d * d), a / (d * d));
+        match mode {
+            Exit::Time => { seeds.push((k - 1, scaled(y, dfa))); seeds.push((k, scaled(y, dfb))) }
+            Exit::Dist => {
+                let dz = st[k].pos.z - st[k - 1].pos.z;
+                seeds.push((k - 1, [dfa * dz, 1.0 - f, 0.0, 0.0]));
+                seeds.push((k, [dfb * dz, f, 0.0, 0.0]));
+            }
+        }
+        if ke != 0.0 {
+            // ke * per_block * (e0 + f (e1 - e0) + depth)
+            let c = ke * mode.per_block();
+            let (e0, e1) = (st[k - 1].total_energy(), st[k].total_energy());
+            seeds.push((k - 1, scaled(te_cot(&st[k - 1]), c * (1.0 - f))));
+            seeds.push((k, scaled(te_cot(&st[k]), c * f)));
+            seeds.push((k - 1, scaled(y, c * (e1 - e0) * dfa)));
+            seeds.push((k, scaled(y, c * (e1 - e0) * dfb)));
+        }
+    } else {
+        match mode {
+            Exit::Time => seeds.push((k, scaled(te_cot(&st[k]), 1.0 / MIN_SINK))),
+            Exit::Dist => { seeds.push((k, scaled(te_cot(&st[k]), BEST_GLIDE))); seeds.push((k, [0.0, 1.0, 0.0, 0.0])) }
+        }
+    }
+    let (g, av) = backprop_costates(p, &st, &seeds);
+    ExitGrad { u, g, av, k, st }
+}
+
+/// A gradient of `utility` with what `ascend_grad` needs around it.
+struct ExitGrad {
+    u: f64,
+    /// `dU/dp`, the derivative of the branches the replay took.
+    g: Vec<f64>,
+    /// Each tick's velocity costate, from `backprop_costates`.
+    av: Vec<[f64; 2]>,
+    /// The live length, `live_end`.
+    k: usize,
+    st: Vec<State>,
+}
+
+/// `p` with its dead tail -- every pitch from `k`, the live length -- set to the last live one,
+/// as `ascend` keeps it.
+fn flat_tail(p: &mut [f64], k: usize) {
+    if k > 0 && k < p.len() { let last = p[k - 1]; p[k..].iter_mut().for_each(|x| *x = last) }
+}
+
+/// What the gradient ascent maximizes, on a schedule as it would be kept: flattened from its own
+/// exit, then `utility - price`, exactly `ascend`'s `total` without a bubble. Returns the
+/// flattened schedule, its score and its lowest pre-exit dip (`pre_exit_min`).
+fn grad_total(obj: &Objective, depth: f64, mode: Exit, ke: f64, pen: &Rough, q: &[f64]) -> (Vec<f64>, f64, f64) {
+    let st = obj.replay(q);
+    let k = live_end(&st, depth);
+    let mut q = q.to_vec();
+    flat_tail(&mut q, k);
+    let sc = utility(&st, depth, mode, ke) - pen.cost(&q);
+    (q, sc, pre_exit_min(&st, k, depth))
+}
+
+/// Folds every dead pitch's share of a gradient onto the last live one: the dead tail is a copy
+/// of it, so that is the chain rule.
+fn fold_tail(g: &mut [f64], k: usize) {
+    if k > 0 && k < g.len() {
+        let tail: f64 = g[k..].iter().sum();
+        g[k - 1] += tail;
+        g[k..].iter_mut().for_each(|x| *x = 0.0);
+    }
+}
+
+/// The ascent direction's raw material at a schedule whose tail is flat from its exit: the score,
+/// its one-sided derivatives, and the replay.
+///
+/// Where a pitch sits on the forward-to-up switch (`climb_switch_partials`), the score has a
+/// corner in it: raising the pitch keeps the branch off, lowering it turns it on. `up` is the
+/// derivative of the branch taken (for raising), `down` the one for lowering. Elsewhere they are
+/// equal. The price's gradient is smooth for `l2`/`huber` and a subgradient for `l1`.
+struct Slopes { f: f64, up: Vec<f64>, down: Vec<f64>, eg: ExitGrad }
+
+fn slopes(obj: &Objective, depth: f64, mode: Exit, ke: f64, pen: &Rough, p: &[f64]) -> Slopes {
+    let eg = utility_grad(obj, depth, mode, ke, p);
+    let mut gp = vec![0.0; p.len()];
+    pen.grad(p, &mut gp);
+    let mut up: Vec<f64> = eg.g.iter().zip(&gp).map(|(a, b)| a - b).collect();
+    let mut down = up.clone();
+    for t in 0..eg.k.min(p.len()) {
+        if let Some(d) = climb_switch_partials(eg.st[t].vel, p[t]) {
+            down[t] += eg.av[t][0] * d[0] + eg.av[t][1] * d[1];
+        }
+    }
+    fold_tail(&mut up, eg.k);
+    fold_tail(&mut down, eg.k);
+    Slopes { f: eg.u - pen.cost(p), up, down, eg }
+}
+
+/// The steepest-ascent vector from one-sided slopes: each pitch moves the way that climbs, at
+/// that side's slope, and stays put at a corner that is a local maximum in it (`up <= 0 <=
+/// down`). Where the two agree this is the gradient.
+fn steepest(s: &Slopes) -> Vec<f64> {
+    s.up.iter().zip(&s.down).map(|(&u, &d)| {
+        let (a, b) = (u.max(0.0), d.min(0.0));
+        if a >= -b { a } else { b }
+    }).collect()
+}
+
+/// `d` moved as little as possible (Euclidean) to satisfy `a . d >= b` for every `(a, b)`:
+/// Hildreth's dual coordinate ascent, which for a handful of half-spaces converges in a few
+/// sweeps.
+fn project_halfspaces(d: &mut [f64], cons: &[(Vec<f64>, f64)]) {
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let norms: Vec<f64> = cons.iter().map(|(a, _)| dot(a, a)).collect();
+    let mut mu = vec![0.0; cons.len()];
+    for _ in 0..500 {
+        let mut worst: f64 = 0.0;
+        for (j, (a, b)) in cons.iter().enumerate() {
+            if norms[j] == 0.0 { continue }
+            let r = b - dot(a, d);
+            let delta = (r / norms[j]).max(-mu[j]);
+            if delta != 0.0 { mu[j] += delta; for i in 0..d.len() { d[i] += delta * a[i] } }
+            worst = worst.max(r);
+        }
+        if worst <= 1e-12 { break }
+    }
+}
+
+/// The least clearance over the states strictly before the exit pair (`1 .. k-1`), or over all
+/// of them for a survivor: the dips `ascend_grad` keeps off the floor. Infinite if there are none.
+fn pre_exit_min(st: &[State], k: usize, depth: f64) -> f64 {
+    let last = if st[k].pos.y + depth < 0.0 { k.saturating_sub(1) } else { k + 1 };
+    (1..last.min(st.len())).map(|j| st[j].pos.y + depth).fold(f64::INFINITY, f64::min)
+}
+
+/// Settings for `ascend_grad`.
+#[derive(Clone, Debug)]
+struct GradOpts {
+    /// Iterations per cap, at most; each takes at most one new gradient. In practice the ascent
+    /// stalls first (see `ascend_grad`).
+    iters: usize,
+    /// L-BFGS memory, pairs.
+    mem: usize,
+    /// Largest change of any one pitch in one step, degrees: a trust region on the direction,
+    /// applied before the line search.
+    max_step: f64,
+    /// Armijo's sufficient-increase constant.
+    c1: f64,
+    /// The clearance, blocks, every pre-exit dip is steered to keep (see `ascend_grad`), one
+    /// stage per entry: when the ascent stalls at one it moves on to the next.
+    margins: Vec<f64>,
+}
+
+/// Gradient ascent on the same first-exit score as `ascend`: projected L-BFGS with a
+/// backtracking (Armijo) line search on the true objective, `grad_total`, the pitch box
+/// `|p| <= limit` enforced by clamping each trial point.
+///
+/// Why a line search on the true objective rather than a fixed-rate method like Adam. The score
+/// is not smooth everywhere: a touch-and-go drops it by whole ticks, the forward-to-up switch at
+/// pitch 0 is a corner, and under `mth_lut` it is a staircase at 0.0055 degrees. A trial point is
+/// kept only if the replay says it is better, so none of those can make the iterate worse; the
+/// gradient only proposes.
+///
+/// Two things the plain gradient cannot see, handled explicitly:
+///
+/// * **Pre-exit dips.** A local minimum of the clearance before the exit pair is a constraint
+///   `h_j >= 0` that the score only feels by falling off a cliff when it breaks (a
+///   touch-and-go). Unhandled, the ascent walks a dip onto the floor within a few dozen steps,
+///   then every trial crosses it and the line search stalls there. So every dip under one block
+///   contributes its own gradient `a_j = dh_j/dp` (one more backward sweep), and the direction
+///   is projected onto `a_j . d >= margin - h_j`: to first order, a full step leaves the dip at
+///   `margin` or above. The optimum therefore stands `margin` off the floor at its dips.
+/// * **The forward-to-up switch at pitch 0.** The seed holds many pitches at exactly 0, where
+///   the branch taken (off) has zero pitch-derivative, so the taken-branch gradient never lowers
+///   them. `slopes` reports both one-sided derivatives there and `steepest` picks the side that
+///   climbs.
+///
+/// Returns the schedule, its score and the number of gradients taken.
+fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough,
+               o: &GradOpts, bail: bool) -> (Vec<f64>, f64, usize) {
+    use elytrasim::adjoint::backprop_costates;
+    let pen = Rough { mu: rough.mu * mode.per_block(), ..rough };
+    let lim = rough.limit;
+    let n = init.len();
+    let clamp = |q: &mut [f64]| q.iter_mut().for_each(|x| *x = x.clamp(-lim, lim));
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let mut p = init.to_vec();
+    clamp(&mut p);
+    p = grad_total(obj, depth, mode, ke, &pen, &p).0;
+    let mut s = slopes(obj, depth, mode, ke, &pen, &p);
+    let mut g = steepest(&s);
+    let mut hist: std::collections::VecDeque<(Vec<f64>, Vec<f64>, f64)> = Default::default();
+    let mut used = 0;
+    let mut fails = 0;
+    let mut stage = 0;
+    // A stall ends the stage; the last stage's stall ends the ascent.
+    macro_rules! stall { () => {{
+        if stage + 1 < o.margins.len() { stage += 1; hist.clear(); fails = 0; continue } else { break }
+    }} }
+    while used < o.iters {
+        used += 1;
+        // The box: a pitch on its bound whose slope points out of the box is held.
+        let mut gb = g.clone();
+        for i in 0..n { if (p[i] >= lim && gb[i] > 0.0) || (p[i] <= -lim && gb[i] < 0.0) { gb[i] = 0.0 } }
+        // Two-loop recursion, for ascent: d = H gb.
+        let mut d = gb.clone();
+        let mut alpha = vec![0.0; hist.len()];
+        for (i, (sv, y, rho)) in hist.iter().enumerate().rev() { alpha[i] = rho * dot(sv, &d); for j in 0..n { d[j] -= alpha[i] * y[j] } }
+        if let Some((sv, y, _)) = hist.back() {
+            let gamma = dot(sv, y) / dot(y, y);
+            d.iter_mut().for_each(|x| *x *= gamma);
+            for (i, (sv, y, rho)) in hist.iter().enumerate() { let b = rho * dot(y, &d); for j in 0..n { d[j] += sv[j] * (alpha[i] - b) } }
+        } else {
+            let m = gb.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+            if m == 0.0 { stall!() }
+            d.iter_mut().for_each(|x| *x /= m);                 // a first step of at most one degree
+        }
+        for i in 0..n { if (p[i] >= lim && d[i] > 0.0) || (p[i] <= -lim && d[i] < 0.0) { d[i] = 0.0 } }
+        let big = d.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        if big > o.max_step { d.iter_mut().for_each(|x| *x *= o.max_step / big) }
+        // The dips: every local minimum of the clearance before the exit pair, under one block.
+        let (st, k) = (&s.eg.st, s.eg.k);
+        let h = |j: usize| st[j].pos.y + depth;
+        let last = if st[k].pos.y + depth < 0.0 { k.saturating_sub(1) } else { k + 1 };
+        let cons: Vec<(Vec<f64>, f64)> = (1..last.min(st.len() - 1))
+            .filter(|&j| h(j) < 1.0 && h(j) <= h(j - 1) && h(j) <= h(j + 1))
+            .map(|j| {
+                let (mut a, av) = backprop_costates(&p, st, &[(j, [1.0, 0.0, 0.0, 0.0])]);
+                // At a pitch on the switch, the side this direction takes.
+                for t in 0..j { if d[t] < 0.0 { if let Some(c) = climb_switch_partials(st[t].vel, p[t]) {
+                    a[t] += av[t][0] * c[0] + av[t][1] * c[1];
+                } } }
+                fold_tail(&mut a, k);
+                (a, o.margins[stage] - h(j))
+            }).collect();
+        project_halfspaces(&mut d, &cons);
+        if dot(&d, &g) <= 0.0 {
+            // Not an ascent direction once the dips are respected: drop the curvature model, and
+            // if even the steepest direction fails, stop.
+            if hist.is_empty() { stall!() }
+            hist.clear();
+            continue;
+        }
+        let lo0 = pre_exit_min(st, k, depth);
+        // Backtracking on the true objective. The predicted rise uses the one-sided slopes.
+        let mut step = 1.0;
+        let mut found = None;
+        for _ in 0..40 {
+            let mut q: Vec<f64> = (0..n).map(|i| p[i] + step * d[i]).collect();
+            clamp(&mut q);
+            let (q, sc, lo) = grad_total(obj, depth, mode, ke, &pen, &q);
+            let rise: f64 = (0..n).map(|i| { let m = q[i] - p[i]; if m >= 0.0 { s.up[i] * m } else { s.down[i] * m } }).sum();
+            // A dip may not sink under half the margin unless it already was lower. why? under
+            // `mth_lut` the physics is a staircase in pitch, and a dip parked on the floor is
+            // crossed by table noise at every step size, so the line search stalls there. Found
+            // on `y0 = 24` endurance, which stalled at t* 298 this way and reaches 411 with it.
+            if sc > s.f && sc >= s.f + o.c1 * rise && lo >= (0.5 * o.margins[stage]).min(lo0) { found = Some(q); break }
+            step *= 0.5;
+        }
+        let Some(q) = found else {
+            fails += 1;
+            if hist.is_empty() || fails > 3 { stall!() }
+            hist.clear();
+            continue;
+        };
+        fails = 0;
+        let sq = slopes(obj, depth, mode, ke, &pen, &q);
+        let gq = steepest(&sq);
+        // A curvature pair for the ascent: s = q - p, y = -(gq - g), kept only when s.y > 0.
+        let sv: Vec<f64> = (0..n).map(|i| q[i] - p[i]).collect();
+        let y: Vec<f64> = (0..n).map(|i| g[i] - gq[i]).collect();
+        let sy = dot(&sv, &y);
+        if sy > 1e-12 * dot(&sv, &sv).sqrt() * dot(&y, &y).sqrt() {
+            hist.push_back((sv, y, 1.0 / sy));
+            if hist.len() > o.mem { hist.pop_front(); }
+        }
+        p = q;
+        s = sq;
+        g = gq;
+        if bail && s.eg.st.iter().all(|x| x.pos.y + depth >= 0.0) { break }
+    }
+    (p, s.f, used)
+}
+
 /// The minipump seed: `d` degrees nose-down for `k` ticks, pitch 0 for 10, -40 while `v_y` is
 /// still rising, then 0. The dive is the part a per-tick search cannot invent from a hold, since
 /// no single tick of it pays on its own.
@@ -614,12 +918,46 @@ fn exit_cmd(a: &Args) {
         .unwrap_or(if a.0.iter().any(|x| x == "--shift") { "tick,shift".into() } else { "tick".into() });
     let tick = mv_spec.split(',').any(|m| m == "tick");
     let moves: Vec<Move> = mv_spec.split(',').filter(|m| *m != "tick").flat_map(Move::parse).collect();
+    // `--method tick` (default): `ascend`. `grad`: `ascend_grad`. `grad+tick`: `ascend_grad`,
+    // then `ascend` from its answer at every cap.
+    let method = a.get("--method").unwrap_or("tick");
+    let (grad, coord) = match method { "tick" => (false, true), "grad" => (true, false), "grad+tick" => (true, true),
+                                       m => panic!("bad --method {m}: tick, grad or grad+tick") };
+    if grad {
+        // The gradient differentiates neither the bubble nor a multi-pitch move, so refuse them
+        // rather than quietly optimize something else.
+        if bub.1 != 0.0 || a.get("--shrink").is_some() { panic!("--bubble/--shrink: not differentiated, use --method tick") }
+        if !coord && (a.get("--moves").is_some() || a.0.iter().any(|x| x == "--shift")) {
+            panic!("--moves/--shift: --method grad makes no moves; use grad+tick")
+        }
+    }
+    let go = GradOpts { iters: a.num("--iters", 2000), mem: a.num("--mem", 10), max_step: a.num("--max-step", 5.0),
+                        c1: a.num("--c1", 1e-4),
+                        margins: a.get("--graze").unwrap_or("1e-2,3e-3,1e-3").split(',').map(|x| x.parse().expect("--graze")).collect() };
+    let clock = std::time::Instant::now();
+    let rough = Rough { shape, ..a.opts().rough };
     let mut used = Vec::new();
     let (obj, sc) = loop {
         let obj = a.obj(n);
-        let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, Rough { shape, ..a.opts().rough }, passes,
-                                a.num("--tol", 1e-3), n < nmax, tick, &moves, &mut bub, shrink);
-        used.push(format!("{k}@{n}"));
+        let mut q = init_from(&p, n);
+        let mut tag = String::new();
+        if grad {
+            let (r, _, k) = ascend_grad(&obj, depth, &q, mode, ke, rough, &go, n < nmax);
+            q = r.iter().map(|&x| x as f32 as f64).collect();
+            tag = format!("g{k}");
+        }
+        let sc = if coord {
+            let (r, s, k) = ascend(&obj, depth, &q, mode, ke, rough, passes,
+                                   a.num("--tol", 1e-3), n < nmax, tick, &moves, &mut bub, shrink);
+            q = r;
+            tag = if tag.is_empty() { format!("{k}") } else { format!("{tag}+{k}") };
+            s
+        } else {
+            // Scored as `ascend` scores what it keeps: on the `f32` pitches the replay flies.
+            let st = obj.replay(&q);
+            utility(&st, depth, mode, ke) - Rough { mu: rough.mu * mode.per_block(), ..rough }.cost(&q)
+        };
+        used.push(format!("{tag}@{n}"));
         p = q;
         let fl = Floor { depth, ..Default::default() };
         if fl.survived(&obj.replay(&p)) < n || n >= nmax { break (obj, sc) }
@@ -629,8 +967,15 @@ fn exit_cmd(a: &Args) {
     let fl = Floor { depth, ..Default::default() };
     let k = fl.survived(&st);
     let verdict = if k >= n { "  SURVIVES the cap: score is a value-to-go guess" } else { "" };
-    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}\n\
-                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{verdict}\n{}\n",
+    // The default method's header is unchanged; the others name themselves and their settings,
+    // and add their wall time.
+    let (mnote, wall) = if grad {
+        (format!(" method {method} iters {} mem {} max-step {} c1 {} graze {}", go.iters, go.mem, go.max_step, go.c1,
+                 go.margins.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",")),
+         format!("  wall {:.2}s", clock.elapsed().as_secs_f64()))
+    } else { (String::new(), String::new()) };
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}{mnote}\n\
+                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{wall}{verdict}\n{}\n",
                        obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit, bub0.0, bub0.1,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),
                        exit_energy(&st, depth).unwrap_or(f64::NAN), used.join(","),
@@ -732,6 +1077,117 @@ mod tests {
 
     fn at(y: &[f64]) -> Vec<State> {
         y.iter().enumerate().map(|(t, &y)| State { pos: Vec3::new(0.0, y, t as f64), vel: Vec3::ZERO }).collect()
+    }
+
+    // The gradient checks run under the default trig mode, `libm`, which no unit test here
+    // changes: smooth between branches, so central differences are a fair reference. Under
+    // `mth_lut` (a 65536-cell table) they would be differences of a staircase.
+
+    /// A glide, a pull and a glide again, every pitch at least a degree from the forward-to-up
+    /// switch at 0, and dyadic, so `p +- 1/16` round-trips through `f32` exactly.
+    fn schedule(n: usize) -> Vec<f64> {
+        let mut x: u64 = 12345;
+        (0..n).map(|t| {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let r = (x >> 40) as f64 / (1u64 << 24) as f64 - 0.5;
+            let base = if (60..90).contains(&t) { -30.0 } else { 9.0 };
+            ((base + 6.0 * r) * 64.0).round() / 64.0
+        }).collect()
+    }
+
+    /// The worst relative error of `g` against central differences of `f` at `ticks`, and the
+    /// finite difference and gradient where it occurred.
+    fn fd_worst(f: &dyn Fn(&[f64]) -> f64, g: &[f64], p: &[f64], ticks: &[usize]) -> (f64, f64, f64) {
+        let h = 1.0 / 16.0;
+        let mut worst = (0.0, 0.0, 0.0);
+        for &t in ticks {
+            let (mut a, mut b) = (p.to_vec(), p.to_vec());
+            a[t] += h;
+            b[t] -= h;
+            let fd = (f(&a) - f(&b)) / (2.0 * h);
+            let err = (fd - g[t]).abs() / g[t].abs().max(1e-2);
+            if err > worst.0 { worst = (err, fd, g[t]) }
+        }
+        worst
+    }
+
+    /// The first-exit utility's gradient, through the secant at the crossing, for both modes,
+    /// with and without the exit-energy term, and for a survivor's value-to-go.
+    #[test]
+    fn exit_gradient_matches_finite_differences() {
+        let n = 200;
+        let obj = Objective { v0: Vec3::ZERO, n, lambda: 0.0 };
+        let p = schedule(n);
+        let st = obj.replay(&p);
+        // The floor midway between states 170 and 171, which must be the first to go under it.
+        let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
+        assert!(st[..=170].iter().all(|s| s.pos.y + depth > 0.05), "the test schedule dips early");
+        assert_eq!(live_end(&st, depth), 171);
+        let ticks = [0, 5, 59, 60, 75, 89, 90, 120, 168, 169, 170];
+        for mode in [Exit::Time, Exit::Dist] {
+            for ke in [0.0, -0.3] {
+                let eg = utility_grad(&obj, depth, mode, ke, &p);
+                let (err, fd, g) = fd_worst(&|q| utility(&obj.replay(q), depth, mode, ke), &eg.g, &p, &ticks);
+                eprintln!("exit {mode:?} ke {ke}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
+                assert!(err < 1e-4, "{mode:?} ke {ke}: fd {fd} vs adjoint {g}");
+                assert!(eg.g[171..].iter().all(|&x| x == 0.0), "a dead pitch has a gradient");
+            }
+            // Survivor: the floor far below.
+            let eg = utility_grad(&obj, 1000.0, mode, 0.0, &p);
+            let (err, fd, g) = fd_worst(&|q| utility(&obj.replay(q), 1000.0, mode, 0.0), &eg.g, &p, &[0, 60, 150, 199]);
+            eprintln!("survivor {mode:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
+            assert!(err < 1e-4, "survivor {mode:?}: fd {fd} vs adjoint {g}");
+        }
+    }
+
+    /// The whole ascent objective -- utility less every curvature price, on the schedule
+    /// flattened from its exit -- against `slopes`, which folds the dead tail's price onto the
+    /// last live pitch.
+    #[test]
+    fn ascent_gradient_matches_finite_differences() {
+        let n = 200;
+        let obj = Objective { v0: Vec3::ZERO, n, lambda: 0.0 };
+        let mut p = schedule(n);
+        let st = obj.replay(&p);
+        let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
+        flat_tail(&mut p, 171);
+        for shape in [PriceShape::L2(2.0), PriceShape::Huber(0.5), PriceShape::L1] {
+            // A price far above the default, so its gradient is not lost under the utility's.
+            let pen = Rough { mu: 0.05, shape, ..Default::default() };
+            let s = slopes(&obj, depth, Exit::Time, 0.0, &pen, &p);
+            assert_eq!(s.up, s.down, "no pitch sits on the switch, so the two slopes agree");
+            let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, &pen, q).1;
+            let (err, fd, g) = fd_worst(&f, &s.up, &p, &[0, 1, 59, 60, 61, 100, 168, 169, 170]);
+            eprintln!("ascent objective, {shape}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
+            assert!(err < 1e-4, "{shape}: fd {fd} vs adjoint {g}");
+        }
+    }
+
+    /// At a pitch of exactly 0 the forward-to-up branch is off but one step down turns it on:
+    /// `slopes` gives the two one-sided derivatives, and they must match one-sided differences.
+    #[test]
+    fn switch_slopes_match_one_sided_differences() {
+        let n = 200;
+        let obj = Objective { v0: Vec3::ZERO, n, lambda: 0.0 };
+        let mut p = schedule(n);
+        let st = obj.replay(&p);
+        let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
+        for t in [20, 100, 140] { p[t] = 0.0 }
+        let pen = Rough::default();
+        let s = slopes(&obj, depth, Exit::Time, 0.0, &pen, &p);
+        let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, &pen, q).1;
+        let h = 1.0 / 1024.0;
+        for t in [20, 100, 140] {
+            let (mut a, mut b) = (p.clone(), p.clone());
+            a[t] += h;
+            b[t] -= h;
+            let (up, down) = ((f(&a) - f(&p)) / h, (f(&p) - f(&b)) / h);
+            eprintln!("switch at {t}: up fd {up:.5} slope {:.5}; down fd {down:.5} slope {:.5}", s.up[t], s.down[t]);
+            // One-sided differences carry an O(h) error; the gap between the sides is O(1).
+            let near = |fd: f64, g: f64| (fd - g).abs() < 1e-5 + 1e-2 * g.abs();
+            assert!(near(up, s.up[t]) && near(down, s.down[t]));
+            assert!((s.down[t] - s.up[t]).abs() > 1e-3, "the corner should be visible");
+        }
     }
 
     /// The bubble must not jump as the crossing slides past a tick.

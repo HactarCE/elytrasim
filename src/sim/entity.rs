@@ -284,3 +284,77 @@ fn update_fall_flying_movement_yaw_zero_cached(vel: Vec3, pitch: PitchTrig) -> V
             * 0.99_f32 as f64,
     )
 }
+
+/// One yaw-zero tick and its partial derivatives, for reverse-mode gradients (`crate::adjoint`).
+///
+/// The returned velocity is exactly `update_fall_flying_movement_cached`'s, so a replay built
+/// from it is the real one. The partials are `[[dvy'/dvy, dvy'/dvz, dvy'/dp], [dvz'/dvy,
+/// dvz'/dvz, dvz'/dp]]`, `p` in degrees, and they differentiate the kernel as if its trig were
+/// smooth: `d sin/dp = cos * pi/180` and so on, evaluated at the pitch's `f32` lean. Under
+/// `mth_lut` the real `sin` and `cos` are 65536-step staircases whose derivative is zero almost
+/// everywhere, so this is the derivative of the physics the table approximates, not of the table.
+///
+/// Branches are not smoothed. The down-to-forward conversion counts only when it fired
+/// (`v_y` after gravity `< 0`) and the forward-to-up one only when it fired (`sin(pitch) < 0`,
+/// which under `mth_lut` starts at about -0.0055 degrees, not at 0): each partial is the
+/// derivative of the branch actually taken. At a switch the true derivative jumps, and this
+/// reports the side the replay is on.
+///
+/// Assumes the yaw-zero plane (`vel.x == 0`), where every replay in this crate lives.
+pub fn fall_flying_partials(vel: Vec3, pitch: f64) -> (Vec3, [[f64; 3]; 2]) {
+    debug_assert!(vel.x == 0.0, "fall_flying_partials assumes the yaw-zero plane");
+    let pt = PitchTrig::new(pitch as f32);
+    let next = update_fall_flying_movement_cached(vel, pt);
+    let (dy, dz) = (0.98_f32 as f64, 0.99_f32 as f64);
+    let lift = pt.cos_sq;
+    let gy = vel.y + GRAVITY * (-1.0 + lift * 0.75);
+    if !(pt.cos.abs() > 0.0) {
+        // The dead tick at a vertical look: gravity (with its lift term) and drag, nothing else.
+        let lean = (pitch as f32 * (PI / 180.0) as f32) as f64;
+        let dl = -(2.0 * lean).sin() * PI / 180.0;
+        return (next, [[dy, 0.0, dy * 0.75 * GRAVITY * dl], [0.0, dz, 0.0]]);
+    }
+    let look_z = if pt.cos.is_sign_negative() { -1.0 } else { 1.0 };
+    let lean = (pitch as f32 * (PI / 180.0) as f32) as f64;
+    let k = PI / 180.0;
+    let dl = -(2.0 * lean).sin() * k;          // d cos^2 / dp
+    let ds = lean.cos() * k;                    // d sin / dp
+    let m = vel.z.abs();                        // move_hor_length, with vel.x == 0
+    let dm = if vel.z >= 0.0 { 1.0 } else { -1.0 };
+    // Rows are d/d(vy, vz, p).
+    let dgy = [1.0, 0.0, 0.75 * GRAVITY * dl];
+    let (mut vy1, mut vz1) = (dgy, [0.0, 1.0, 0.0]);
+    if gy < 0.0 {
+        // conv = -0.1 * lift * gy; vy += conv; vz += look_z * conv
+        let dconv = [-0.1 * lift, 0.0, -0.1 * (dl * gy + lift * dgy[2])];
+        for i in 0..3 { vy1[i] += dconv[i]; vz1[i] += look_z * dconv[i] }
+    }
+    if pt.sin < 0.0 {
+        // cu = m * -sin * 0.04; vy += 3.2 cu; vz -= look_z * cu
+        let s = pt.sin as f64;
+        let dcu = [0.0, -s * 0.04 * dm, -0.04 * m * ds];
+        for i in 0..3 { vy1[i] += 3.2 * dcu[i]; vz1[i] -= look_z * dcu[i] }
+    }
+    // Turning: vz = 0.9 vz + 0.1 look_z m.
+    let turn = [0.0, 0.1 * look_z * dm, 0.0];
+    let rows = [std::array::from_fn(|i| dy * vy1[i]), std::array::from_fn(|i| dz * (0.9 * vz1[i] + turn[i]))];
+    (next, rows)
+}
+
+/// The forward-to-up branch's `d(v_y', v_z')/dp` at a tick where it is off only because the
+/// pitch sits on its switch: `pitch <= 0` but `sin` is not `< 0` (exactly 0 under `libm`; within
+/// one table cell, about -0.0055 degrees, under `mth_lut`). `None` anywhere else.
+///
+/// Why. There the objective has a corner in this pitch, and `fall_flying_partials` reports the
+/// branch the replay took, which is the *off* side: the derivative for raising the pitch. The
+/// derivative for lowering it is this plus that. Neither is smoothed; a caller that wants the
+/// one-sided derivative in each direction takes both.
+pub fn climb_switch_partials(vel: Vec3, pitch: f64) -> Option<[f64; 2]> {
+    let pt = PitchTrig::new(pitch as f32);
+    if !(pitch <= 0.0) || pt.sin < 0.0 || !(pt.cos.abs() > 0.0) { return None }
+    let look_z = if pt.cos.is_sign_negative() { -1.0 } else { 1.0 };
+    let lean = (pitch as f32 * (PI / 180.0) as f32) as f64;
+    // cu = m * -sin * 0.04 contributes dcu/dp = -0.04 m cos * pi/180 at the switch.
+    let dcu = -0.04 * vel.z.abs() * lean.cos() * PI / 180.0;
+    Some([0.98_f32 as f64 * 3.2 * dcu, 0.99_f32 as f64 * 0.9 * -look_z * dcu])
+}

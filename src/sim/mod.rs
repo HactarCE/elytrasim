@@ -5,7 +5,7 @@ mod state;
 mod vec3;
 
 pub use entity::{
-    Entity, FlightMode, PitchTrig, flight_mode, set_flight_mode, update_fall_flying_movement,
+    Entity, FlightMode, PitchTrig, climb_switch_partials, fall_flying_partials, flight_mode, set_flight_mode, update_fall_flying_movement,
     update_fall_flying_movement_cached, update_fall_flying_movement_reference,
     update_fall_flying_movement_yaw_zero,
 };

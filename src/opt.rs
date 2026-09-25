@@ -669,6 +669,15 @@ impl PriceShape {
             PriceShape::Huber(d) => if a <= d { a * a / (2.0 * d) } else { a - 0.5 * d },
         }
     }
+    /// `df/dx`. `L1` has a corner at 0, where this returns the subgradient 0; everywhere else
+    /// it is the derivative.
+    pub fn df(self, x: f64) -> f64 {
+        match self {
+            PriceShape::L1 => if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 },
+            PriceShape::L2(d) => x / d,
+            PriceShape::Huber(d) => x.clamp(-d, d) / d,
+        }
+    }
 }
 
 /// The `--penalty` default for new solves. why? on the floor study a quadratic price removed the
@@ -768,6 +777,26 @@ impl Rough {
             for j in 0..p.len().saturating_sub(1) { c += self.mu_tv * (p[j + 1] - p[j]).abs() }
         }
         c
+    }
+
+    /// Adds `d cost / dp` to `g`: the gradient of `cost`, with `PriceShape::df`'s subgradient 0 at
+    /// an `L1` corner, and the same for the total-variation term.
+    pub fn grad(&self, p: &[f64], g: &mut [f64]) {
+        if self.mu != 0.0 {
+            for j in 0..p.len().saturating_sub(2) {
+                let a = self.mu * self.shape.df(p[j] - 2.0 * p[j + 1] + p[j + 2]);
+                g[j] += a;
+                g[j + 1] -= 2.0 * a;
+                g[j + 2] += a;
+            }
+        }
+        if self.mu_tv != 0.0 {
+            for j in 0..p.len().saturating_sub(1) {
+                let a = self.mu_tv * PriceShape::L1.df(p[j + 1] - p[j]);
+                g[j + 1] += a;
+                g[j] -= a;
+            }
+        }
     }
 
     /// Just the terms the pitch at the window's center takes part in, evaluated at `x`. This is
