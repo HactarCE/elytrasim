@@ -13,7 +13,7 @@
 //!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
 //!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
 //!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
-//!          [--bubble <margin>,<weight>] [--shrink <r>] [--pen l1|l2:<d>|huber:<d>]
+//!          [--bubble <margin>,<weight>] [--shrink <r>] [--penalty l1|l2:<d>|huber:<d>]
 //!          [--moves tick,box:<k>:..,ramp,shift]
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it
@@ -606,8 +606,8 @@ fn exit_cmd(a: &Args) {
     });
     let shrink = a.num("--shrink", 1.0);
     let bub0 = bub;
-    let pen_spec = a.get("--pen").unwrap_or("l1");
-    let shape = PriceShape::parse(pen_spec).unwrap_or_else(|e| panic!("--pen: {e}"));
+    let pen_spec = a.get("--penalty").unwrap_or(DEFAULT_PENALTY);
+    let shape = PriceShape::parse(pen_spec).unwrap_or_else(|e| panic!("--penalty: {e}"));
     // `--moves tick,box:3:9,ramp,shift`: which sweeps a pass makes, in order. `--shift` is
     // `tick,shift`.
     let mv_spec = a.get("--moves").map(str::to_string)
@@ -629,7 +629,7 @@ fn exit_cmd(a: &Args) {
     let fl = Floor { depth, ..Default::default() };
     let k = fl.survived(&st);
     let verdict = if k >= n { "  SURVIVES the cap: score is a value-to-go guess" } else { "" };
-    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} pen {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}\n\
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}\n\
                         # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{verdict}\n{}\n",
                        obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit, bub0.0, bub0.1,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),

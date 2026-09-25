@@ -63,7 +63,7 @@ does not need a good seed, only a dive and a flick in roughly the right place.
 
 ## The landscape at one cell
 
-`v0 = 0, n = 300, lambda = 0`, `--trig mth_lut --mu 1e-4 --limit 85`, 264 seeds:
+`v0 = 0, n = 300, lambda = 0`, `--trig mth_lut --mu 1e-4 --limit 85` (l1; `--penalty l1` since the default became l2), 264 seeds:
 
 ```
  123 cyclic     dJ 0.01 .. 19.71

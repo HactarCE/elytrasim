@@ -637,7 +637,7 @@ impl Jitter {
 /// **`Default` is not current practice.** It is `mu = 0, limit = 90` -- the *unpriced* objective,
 /// because `certify` and `residuals` need exactly that to check a profile against plain `J`.
 /// Runs that are actually flown set the price: `runs/atlas` uses `mu = 1e-4, limit = 85` and
-/// `runs/antichatter` uses `mu = 1e-3, limit = 85` (as of commit bf5b9e3). Seeding new work from
+/// `runs/antichatter` uses `mu = 1e-3, limit = 85`, both l1 (as of commit bf5b9e3). Seeding new work from
 /// a profile means inheriting *its* header, not this default -- and the two older generations,
 /// `runs/corpus` and `runs/veljit`, carry no `rough` line at all and were regularized by jitter
 /// and stopping time instead. See the generations table in `README.md`.
@@ -670,6 +670,12 @@ impl PriceShape {
         }
     }
 }
+
+/// The `--penalty` default for new solves. why? on the floor study a quadratic price removed the
+/// chatter at no cost (README-floor 6b), and on the `v0 = 0, n = 300` atlas cell it moved the
+/// flick by one tick at a cost of 0.007 blocks of `J` (runs/pencycle). Headers written before
+/// 2026-09-24 carry no `penalty` line and are l1, which is what a missing line still reads as.
+pub const DEFAULT_PENALTY: &str = "l2:2";
 
 impl std::fmt::Display for PriceShape {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -1662,7 +1668,7 @@ cap, slew_cap, |pitch| limit",
             w("# rough       0 0 inf inf 90         # no price on hand movement, no pitch margin");
         }
         if self.rough.shape != PriceShape::L1 {
-            w(&format!("# pen         {}                # shape of the mu price per second difference", self.rough.shape));
+            w(&format!("# penalty     {}                # shape of the mu price per second difference; l1 if absent", self.rough.shape));
         }
         if let Some(t) = self.rough.flick_at {
             w(&format!("# flick       {t} {}              # first tick at or below this pitch",
@@ -1767,7 +1773,7 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                             limit: g(4, 90.0)?, ..Rough::default() }
                     }
                 };
-                if let Some(v) = field("pen") {
+                if let Some(v) = field("penalty") {
                     rough.shape = PriceShape::parse(v.split('#').next().unwrap_or("").trim())?;
                 }
                 let flick: Vec<String> = text.lines().filter_map(|l| {

@@ -109,8 +109,9 @@ sweep verify <file>...
 sweep fingerprint
 ```
 
-`--mu <price>` is the l1 curvature price and is the current chatter regularizer; `runs/atlas`
-was built at `--mu 1e-4 --limit 85`. The `--jitter` shown above is the older generation's
+`--mu <price>` is the curvature price and is the current chatter regularizer; `--penalty` sets its
+shape, `l2:2` by default since 2026-09-24 and l1 before. `runs/atlas` was built at
+`--mu 1e-4 --limit 85` under l1, so extending or re-checking it now needs `--penalty l1`. The `--jitter` shown above is the older generation's
 regularizer and current runs set it to 0 -- see the table further up.
 
 A shard is one `(vy0, vz0)` cell, so it is a directory and an independent job. Inside a shard,

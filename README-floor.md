@@ -226,7 +226,8 @@ core time of growing alone; the slowest cell took 840 s on one core. Data: `runs
 
 ### 6b. The curvature price's shape, and multi-pitch moves (measured 2026-09-24 19:00 EDT)
 
-`--pen l1|huber:<d>|l2:<d>` sets the shape of the price on each second difference `x`: `|x|`,
+`--penalty l1|huber:<d>|l2:<d>` (`l2:2` by default since 2026-09-24 23:45 EDT; `l1`
+before, including every run in this section) sets the shape of the price on each second difference `x`: `|x|`,
 `x^2/2d` inside `d` degrees and `|x| - d/2` outside, or `x^2/2d` everywhere, all times `mu`.
 `--moves tick,box:<k>:..,ramp,shift` sets which sweeps a pass makes: `box:k` adds one change to `k`
 consecutive pitches, and `ramp` adds `d*(s-t)` from `t` on, which is coordinate search in the second

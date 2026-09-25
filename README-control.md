@@ -189,7 +189,7 @@ sweep polish --trig mth_lut --n 300 --vy 0.167467 --vz 0.200887 --lambda 0 \
 # 2. project and polish: local mean, then converge under a price and a margin
 sweep polish --trig mth_lut --n 300 --vy 0.167467 --vz 0.200887 --lambda 0 \
              --passes 200 --tol 0.002 --init relaxed.pitches \
-             --presmooth 9 --mu 0.0001 --limit 85 --out flyable.pitches
+             --presmooth 9 --mu 0.0001 --penalty l1 --limit 85 --out flyable.pitches
 ```
 
 `mu = 1e-4` is the point on the frontier below that sits at the reference cycle's own curvature;
@@ -519,7 +519,7 @@ ticks beyond 89.9 degrees. And the corpus is written under `trig = libm`, where 
 that the degenerate cells are degenerate: the *good* cells are sitting on a discontinuity too,
 and no statistic in the header says so.
 
-Rebuilding wants `--trig mth_lut --limit 85 --mu 1e-4` and the relax/project/polish recipe per
+Rebuilding wants `--trig mth_lut --limit 85 --mu 1e-4 --penalty l1` and the relax/project/polish recipe per
 cell. That has not been done.
 
 ## Does it hold up away from one cell?
@@ -534,7 +534,7 @@ cannot show whether a long path through the plane drifts. 66 minutes.
 ```
 sweep run --trig mth_lut --out runs/antichatter/shard0 --vys 0 --vzs 0 \
           --ns <the corpus's 11> --lams <the corpus's 33> \
-          --mu 0.0001 --limit 85 --passes 60 --tol 0.002 --anchor <the solved n=300 cell>
+          --mu 0.0001 --penalty l1 --limit 85 --passes 60 --tol 0.002 --anchor <the solved n=300 cell>
 ```
 
 The same 363 cells, before and after:
