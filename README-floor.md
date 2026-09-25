@@ -475,7 +475,7 @@ time.
 
 Data: `runs/floor/v13-pumps` (`out/` the K table, `cont-k/` its continuations, `inf/` and `cont/`
 the infinite-flight scan, `v1-constant-relax/` the first seed; `summary.py`, `final.py`,
-`infsum.py` and `budget.py` print the tables below from them).
+`infsum.py` and `budget.py` print this section's and Infinite flight's tables from them).
 
 ### 7. Exact `f32` output (a correctness fix, kept)
 
