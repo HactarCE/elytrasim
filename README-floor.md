@@ -364,7 +364,17 @@ appends (both `y0 <= 8`, a few seconds each).
   moves `y0 = 32` from 577 to 1055 blocks, and a laptop run of the same binary found 1308 with
   step 2 and 611 with 5 (the likeliest reason: vanilla's lift `cos` is the platform's libm,
   see `src/sim/mth.rs`).
-  Only the endurance sums and range below 22 compare optimizers.
+  Only `y0` below about 18, in either mode, compares optimizers (see the next item).
+* **Endurance above `y0` about 18 is far from optimal under every method.** All of them stay in
+  the minipump seed's one-climb basin. Seeded instead from the same `y0`'s best range schedule,
+  `--method grad` reaches t* 1483.8 at `y0 = 32` (against 605.1; z 1111, above every range run),
+  and gains at every `y0 >= 20`: +16 at 21, +70 at 24, +266 at 27, +480 at 30. The reverse (range
+  seeded from endurance) loses at every `y0 >= 18`. A second climb needs a dive and a pull-up far
+  from a one-climb schedule, which no local method invents; range runs find extra laps and
+  endurance runs do not. The cross-seeded results are non-monotone in `y0` (27: 751, 28: 690),
+  so they are lower bounds too, and the infinite-flight threshold below (35-36 blocks) was found
+  from a different seed and may be lower. Measured 2026-09-25 00:30 EDT on the laptop,
+  `runs/floor/v11-grad/cross-seed`.
 * **Chatter.** Endurance: fewer flips (3 against 8) and 37% less roughness. Range: not
   uniformly. Most counted flips in every variant are the tops of pull-ups (-52 then -49) and the
   peaks of nose-down lumps; the gradient's own are 3-8 degree zigzags at the glide-to-dive entry
