@@ -369,9 +369,9 @@ appends (both `y0 <= 8`, a few seconds each).
   the minipump seed's one-climb basin. Seeded instead from the same `y0`'s best range schedule,
   `--method grad` reaches t* 1483.8 at `y0 = 32` (against 605.1; z 1111, above every range run),
   and gains at every `y0 >= 20`: +16 at 21, +70 at 24, +266 at 27, +480 at 30. The reverse (range
-  seeded from endurance) loses at every `y0 >= 18`. A second climb needs a dive and a pull-up far
-  from a one-climb schedule, which no local method invents; range runs find extra laps and
-  endurance runs do not. The cross-seeded results are non-monotone in `y0` (27: 751, 28: 690),
+  seeded from endurance) loses at every `y0 >= 18`. Range runs do grow extra laps from the one-climb seed under
+  `--method grad` (the `y0 = 32` `grad_s2` range run grew four as its cap doubled from 150 to
+  2400); endurance runs have not, and why is open. The cross-seeded results are non-monotone in `y0` (27: 751, 28: 690),
   so they are lower bounds too, and the infinite-flight threshold below (35-36 blocks) was found
   from a different seed and may be lower. Measured 2026-09-25 00:30 EDT on the laptop,
   `runs/floor/v11-grad/cross-seed`.
