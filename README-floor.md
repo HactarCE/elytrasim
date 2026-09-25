@@ -379,9 +379,8 @@ appends (both `y0 <= 8`, a few seconds each).
   uniformly. Most counted flips in every variant are the tops of pull-ups (-52 then -49) and the
   peaks of nose-down lumps; the gradient's own are 3-8 degree zigzags at the glide-to-dive entry
   of a late pump at `y0 = 30, 32` (`dist_y30_grad`, ticks 477-483), pitches at or above 0 where
-  the physics sees pitch only through `cos^2`. Proposed, not tested: the score is nearly flat in
-  how such a lump is spread, and the ascent stalls on table noise before the price's small
-  gradient smooths it.
+  the physics sees pitch only through `cos^2`. The first explanation proposed here (a flat
+  score, and the ascent stalling on table noise) was tested and is wrong; see 6e.
 * `grad+tick` is worse than `grad` alone on both sums: its coordinate passes at the smaller caps
   move the schedule the next cap's gradient ascent starts from, and it lands in other basins.
 
@@ -461,6 +460,49 @@ solves took about a minute at `-P 4`; every shrink run reached its last stage.
 Recommended when a dip mechanism is needed: `--graze off --bubble 0.01,1e-2 --shrink 0.3 --anneal 2`.
 The default is still the graze, unchanged. Data: `runs/floor/v12-bubble-grad` (`out/`, solver
 stop lines in `logs/`, `analyze.py` for the table), drawn by `tools/plot_floor_profiles.py`.
+
+### 6e. Why nose-down dives wobble: the flight is convex there (measured 2026-09-25 19:30 EDT)
+
+The multi-tick wobble in nose-down dives (10-25 degrees, period about 7 ticks; `dist_y32_grad_s2`
+ticks 420-540) is not an optimizer artifact. The flight's own score is **convex** in how the
+nose-down is spread across ticks, and the l2 price is too weak to cancel that at periods of about
+7-20 ticks.
+
+* **Measured curvature.** Along a sinusoidal wobble of period `P` over a 60-tick dive window
+  (pitch 16-41 degrees; `y0 = 32` range, smooth `libm` trig so finite differences are clean),
+  `v'Hv/|v|^2` of the flight score against that of the price (`l2:2`, `mu = 1e-4`), per deg^2:
+
+  ```
+  P        2        3        4        5        7        10       14       20       30
+  flight  +8.1e-4  +8.0e-4  +8.0e-4  +7.9e-4  +7.7e-4  +7.1e-4  +6.1e-4  +4.1e-4  -1.0e-4
+  price    8.1e-3   4.5e-3   2.0e-3   9.7e-4   2.9e-4   7.7e-5   2.2e-5   5.9e-6   1.5e-6
+  ```
+
+  The flight's curvature is positive and nearly independent of `P` up to about 14 ticks: a
+  per-tick effect. Lift goes as `cos^2 p`, so the lift a nose-down tick sheds goes as `sin^2 p`,
+  whose slope `sin 2p` still rises below 45 degrees: nose-down pays more where there already is
+  more of it. The price's curvature on second differences falls as `(2 - 2 cos(2 pi / P))^2`,
+  about `P^-4`. It wins at `P <= 5`, loses at 7-20, and past about 30 the flight turns concave
+  (the trajectory couples the ticks). So one-tick chatter is suppressed and the wobble settles at
+  the shortest unstable period.
+* **Not table noise, not the dip mechanism.** On `y0 = 24, 28, 30, 32` range, wobble (turning
+  points with a 5-degree swing, as a share of ticks) is 0.6-3.0% with the table, 0.9-1.9% with
+  smooth trig, and 0.7-3.1% with the bubble of 6d in place of the graze.
+* **The price weight is the lever.** At `mu = 1e-2` wobble falls to 0.1-0.5% and roughness to a
+  quarter, for range 1-3% lower at `y0 = 24` and `28` (the higher cells are basin noise). To
+  stabilize period `P` the price's curvature must exceed about 8e-4: `mu` of about 3e-3 covers
+  `P <= 10`, about 1e-2 covers 14.
+* **The same convexity explains the earlier findings.** Under `l1` it makes lumps (6), and at
+  `mu = 0` it makes bang-bang chatter: the `v0 = 0, n = 300` cycle polished at `mu = 0` alternates
+  0 and 85 degrees at its dive bottom and scores 19.836 against 19.704 at `mu = 1e-4`
+  (`runs/pencycle/mu`). The unregularized optimum *is* chattering; the price decides how much.
+* The dives sit at a floor graze (6 dips at 0.0006-0.0019 blocks in the laptop run), so smoothing
+  a whole lap's dive by even 0.18 degrees at most moves the next graze under the floor
+  (t* 1721 -> 697). The wobble cannot be judged by perturbing a finished flight.
+
+Data: `runs/floor/v14-wobble` (stage runs `cap*.pitches`, the matrix `m_<variant>_y<y0>.pitches`,
+the gradient dump `g.txt`). The `libm` switch and the `gradump` subcommand used here live only in
+a scratch worktree and were not merged.
 
 ### 7. Exact `f32` output (a correctness fix, kept)
 
