@@ -885,15 +885,17 @@ fn fit_minipump(obj: &Objective, depth: f64, mode: Exit, spec: &str) -> (Vec<f64
 /// parameters means the same flight at every `y0` and on every lap.
 ///
 /// From rest: dive at `d` degrees nose-down until the clearance falls under `lvl`; hold 0 until it
-/// falls under `pull`; pull at `a` while `v_y` still rises; hold `a2` until `v_y` goes negative
-/// (the apex). That is one climb. After each climb but the last, glide at 0 for `g` ticks and dive
+/// falls under `pull`; pull at `a` while `v_y` still rises; then relax the pitch linearly in `v_y`,
+/// from `a` at the peak of `v_y` to `a2` as `v_y` reaches 0 (the apex). That is one climb. After each climb but the last, glide at 0 for `g` ticks and dive
 /// again; after the last, hold `end` to the exit. `lvl <= pull` skips the level-off.
 ///
 /// Why these phases. They are the laps of the best `y0 = 32` range schedule (v11, 1362 ticks,
 /// five dips): a nose-down dive to about 3 blocks, pitch 0 for about ten ticks while the dive's
 /// `v_y` turns into forward speed (the `v_y < 0` conversion is largest at pitch 0), a pull that
-/// peaks at -47 to -57 as the flight grazes the floor, a relaxing climb to the apex, then a glide
-/// or straight into the next dive. Why events: a lap's timing depends on how fast it arrives, so
+/// peaks at -47 to -57 as the flight grazes the floor, a climb whose pitch relaxes about linearly
+/// to -10 at the apex, then a glide or straight into the next dive. A relax held at a constant
+/// pitch instead (the first version) flew laps that each lost about a block at `y0 = 32`, so the
+/// fit could not use more than six of them; the same laps optimized gain 3-9 blocks each. Why events: a lap's timing depends on how fast it arrives, so
 /// a tick count fitted at one `y0` or on one lap is wrong on the next.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pumps { k: usize, d: f64, lvl: f64, pull: f64, a: f64, a2: f64, g: usize, end: f64 }
@@ -914,6 +916,7 @@ fn pumps(obj: &Objective, depth: f64, mode: Exit, q: &Pumps) -> (Vec<f64>, f64) 
     let mut st = vec![State { pos: Vec3::ZERO, vel: obj.v0 }];
     let mut ph = if q.k == 0 { Ph::End } else { Ph::Dive };
     let mut climbs = 0;
+    let mut vtop = 1.0;
     while p.len() < obj.n {
         let s = st.last().unwrap().clone();
         let h = s.pos.y + depth;
@@ -928,11 +931,12 @@ fn pumps(obj: &Objective, depth: f64, mode: Exit, q: &Pumps) -> (Vec<f64>, f64) 
             };
             ph = next;
         }
-        let x = match ph { Ph::Dive => q.d, Ph::Level | Ph::Glide(_) => 0.0, Ph::Pull => q.a, Ph::Relax => q.a2,
+        let x = match ph { Ph::Dive => q.d, Ph::Level | Ph::Glide(_) => 0.0, Ph::Pull => q.a,
+                           Ph::Relax => q.a2 + (q.a - q.a2) * (s.vel.y / vtop).clamp(0.0, 1.0),
                            Ph::End => q.end };
         let nx = s.ticked_cached(PitchTrig::new(x as f32));
         match ph {
-            Ph::Pull if nx.vel.y < s.vel.y && nx.vel.y > 0.0 => ph = Ph::Relax,
+            Ph::Pull if nx.vel.y < s.vel.y && nx.vel.y > 0.0 => { ph = Ph::Relax; vtop = s.vel.y }
             Ph::Relax if nx.vel.y < 0.0 => {
                 climbs += 1;
                 ph = if climbs >= q.k { Ph::End } else { Ph::Glide(q.g) };
@@ -971,12 +975,12 @@ fn fit_pumps(obj: &Objective, depth: f64, mode: Exit, spec: &str) -> (Pumps, Vec
     // Coarse grids, searched jointly, and fine ones, searched a coordinate at a time.
     let coarse: [Vec<f64>; 7] = [
         vec![0.0, 10.0, 20.0, 30.0, 40.0, 55.0], vec![0.0, 1.5, 3.0, 5.0, 8.0],
-        vec![0.1, 0.25, 0.5, 1.0, 2.0], vec![-30.0, -45.0, -60.0], vec![0.0, -15.0],
+        vec![0.1, 0.25, 0.5, 1.0, 2.0], vec![-30.0, -45.0, -60.0], vec![0.0, -10.0, -20.0],
         vec![0.0, 15.0, 40.0, 80.0], vec![0.0, -13.0, -22.0]];
     let fine: [Vec<f64>; 7] = [
-        (0..=36).map(|i| 2.5 * i as f64).collect(), (0..=40).map(|i| 0.25 * i as f64).collect(),
-        (0..=60).map(|i| 0.05 * i as f64).collect(), (0..=40).map(|i| -10.0 - 2.0 * i as f64).collect(),
-        (0..=15).map(|i| -2.0 * i as f64).collect(), (0..=40).map(|i| 5.0 * i as f64).collect(),
+        (0..=36).map(|i| 2.5 * i as f64).collect(), (0..=40).map(|i| i as f64 / 4.0).collect(),
+        (0..=60).map(|i| i as f64 / 20.0).collect(), (0..=40).map(|i| -10.0 - 2.0 * i as f64).collect(),
+        (0..=20).map(|i| -2.0 * i as f64).collect(), (0..=40).map(|i| 5.0 * i as f64).collect(),
         (0..=30).map(|i| -1.0 * i as f64).collect()];
     let base = Pumps { k, d: 0.0, lvl: 0.0, pull: 0.0, a: 0.0, a2: 0.0, g: 0, end: 0.0 };
     let base = (0..7).fold(base, |q, i| set(q, i, get(KEYS[i]).unwrap_or(coarse[i][0])));
