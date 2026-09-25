@@ -641,10 +641,50 @@ impl Jitter {
 /// a profile means inheriting *its* header, not this default -- and the two older generations,
 /// `runs/corpus` and `runs/veljit`, carry no `rough` line at all and were regularized by jitter
 /// and stopping time instead. See the generations table in `README.md`.
+/// The shape of `Rough`'s price on each second difference `x` (deg/tick^2), before `mu`.
+/// `Huber(d)` is `L1` with the corner rounded off: `x^2/2d` inside `d`, the same slope as `L1`
+/// outside. `L2(d)` is that quadratic everywhere. Spelled `l1`, `huber:<d>`, `l2:<d>`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PriceShape { L1, L2(f64), Huber(f64) }
+
+impl PriceShape {
+    pub fn parse(s: &str) -> Result<PriceShape, String> {
+        let (k, d) = match s.split_once(':') {
+            None => (s, None),
+            Some((k, d)) => (k, Some(d.parse::<f64>().map_err(|e| format!("bad width in {s:?}: {e}"))?)),
+        };
+        if let Some(d) = d { if !(d.is_finite() && d > 0.0) { return Err(format!("{s:?}: the width must be finite and > 0")) } }
+        match (k, d) {
+            ("l1", None) => Ok(PriceShape::L1),
+            ("l2", Some(d)) => Ok(PriceShape::L2(d)),
+            ("huber", Some(d)) => Ok(PriceShape::Huber(d)),
+            _ => Err(format!("bad price shape {s:?}: l1, l2:<d> or huber:<d>")),
+        }
+    }
+    pub fn f(self, x: f64) -> f64 {
+        let a = x.abs();
+        match self {
+            PriceShape::L1 => a,
+            PriceShape::L2(d) => a * a / (2.0 * d),
+            PriceShape::Huber(d) => if a <= d { a * a / (2.0 * d) } else { a - 0.5 * d },
+        }
+    }
+}
+
+impl std::fmt::Display for PriceShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self { PriceShape::L1 => write!(f, "l1"), PriceShape::L2(d) => write!(f, "l2:{d}"),
+                     PriceShape::Huber(d) => write!(f, "huber:{d}") }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rough {
-    /// Blocks of `J` charged per degree/tick^2 of summed |second difference|.
+    /// Blocks of `J` charged per degree/tick^2 of summed |second difference|, or per unit of
+    /// `shape` of it.
     pub mu: f64,
+    /// What `mu` multiplies, per second difference. `L1` unless asked.
+    pub shape: PriceShape,
     /// Blocks of `J` charged per degree/tick of summed |first difference| -- plain total
     /// variation. Off by default; kept so the two norms can be compared on one footing.
     pub mu_tv: f64,
@@ -686,7 +726,7 @@ pub struct Rough {
 
 impl Default for Rough {
     fn default() -> Self {
-        Rough { mu: 0.0, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0,
+        Rough { mu: 0.0, shape: PriceShape::L1, mu_tv: 0.0, cap: f64::INFINITY, slew_cap: f64::INFINITY, limit: 90.0,
                 flick_at: None, flick_pitch: -80.0 }
     }
 }
@@ -716,7 +756,7 @@ impl Rough {
     pub fn cost(&self, p: &[f64]) -> f64 {
         let mut c = 0.0;
         if self.mu != 0.0 {
-            for j in 0..p.len().saturating_sub(2) { c += self.mu * (p[j] - 2.0 * p[j + 1] + p[j + 2]).abs() }
+            for j in 0..p.len().saturating_sub(2) { c += self.mu * self.shape.f(p[j] - 2.0 * p[j + 1] + p[j + 2]) }
         }
         if self.mu_tv != 0.0 {
             for j in 0..p.len().saturating_sub(1) { c += self.mu_tv * (p[j + 1] - p[j]).abs() }
@@ -733,7 +773,7 @@ impl Rough {
         if self.mu != 0.0 {
             for j in 0..3 {
                 if let (Some(a), Some(b), Some(d)) = (g(j), g(j + 1), g(j + 2)) {
-                    c += self.mu * (a - 2.0 * b + d).abs()
+                    c += self.mu * self.shape.f(a - 2.0 * b + d)
                 }
             }
         }
@@ -1621,6 +1661,9 @@ cap, slew_cap, |pitch| limit",
         } else {
             w("# rough       0 0 inf inf 90         # no price on hand movement, no pitch margin");
         }
+        if self.rough.shape != PriceShape::L1 {
+            w(&format!("# pen         {}                # shape of the mu price per second difference", self.rough.shape));
+        }
         if let Some(t) = self.rough.flick_at {
             w(&format!("# flick       {t} {}              # first tick at or below this pitch",
                        self.rough.flick_pitch));
@@ -1724,6 +1767,9 @@ corpus sweeps one cycle, so more than one is degenerate", sh.cycles));
                             limit: g(4, 90.0)?, ..Rough::default() }
                     }
                 };
+                if let Some(v) = field("pen") {
+                    rough.shape = PriceShape::parse(v.split('#').next().unwrap_or("").trim())?;
+                }
                 let flick: Vec<String> = text.lines().filter_map(|l| {
                     l.strip_prefix("# ")?.strip_prefix("flick")
                         .map(|v| v.split('#').next().unwrap_or("").trim().to_string())

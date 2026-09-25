@@ -367,49 +367,6 @@ fn bubble_cost(states: &[State], depth: f64, (margin, weight): (f64, f64)) -> f6
     c
 }
 
-/// The curvature price's shape, applied to each second difference `x` (deg/tick^2) and scaled
-/// by `mu`. `Huber(d)` is `L1` with the corner rounded off: quadratic `x^2/2d` inside `d`, the same
-/// slope as `L1` outside. `L2(d)` is that quadratic everywhere. Why the rounded corner: near pitch 0
-/// the physics is quadratic in the pitch, so under `L1` a small first step toward spreading a
-/// lump always loses to its own price, and only a big jump pays.
-#[derive(Clone, Copy, Debug)]
-enum Shape { L1, L2(f64), Huber(f64) }
-
-impl Shape {
-    fn parse(s: &str) -> Shape {
-        let (k, d) = s.split_once(':').map_or((s, None), |(k, d)| (k, Some(d.parse::<f64>().unwrap())));
-        assert!(d.map_or(true, |d| d.is_finite() && d > 0.0), "--pen {s}: the width must be finite and > 0");
-        match k { "l1" => Shape::L1, "l2" => Shape::L2(d.expect("l2:<d>")),
-                  "huber" => Shape::Huber(d.expect("huber:<d>")), _ => panic!("bad --pen {s}") }
-    }
-    fn f(self, x: f64) -> f64 {
-        let a = x.abs();
-        match self {
-            Shape::L1 => a,
-            Shape::L2(d) => a * a / (2.0 * d),
-            Shape::Huber(d) => if a <= d { a * a / (2.0 * d) } else { a - 0.5 * d },
-        }
-    }
-}
-
-/// `mu` times the shape, summed over the schedule's second differences.
-#[derive(Clone, Copy, Debug)]
-struct Pen { mu: f64, shape: Shape }
-
-impl Pen {
-    fn cost(&self, p: &[f64]) -> f64 {
-        (0..p.len().saturating_sub(2)).map(|j| self.shape.f(p[j] - 2.0 * p[j + 1] + p[j + 2])).sum::<f64>() * self.mu
-    }
-    /// The three terms the window's center takes part in, at `x`.
-    fn local(&self, w: &Win5, x: f64) -> f64 {
-        let g = |i: usize| if i == 2 { Some(x) } else { w[i] };
-        (0..3).filter_map(|j| match (g(j), g(j + 1), g(j + 2)) {
-            (Some(a), Some(b), Some(d)) => Some(self.shape.f(a - 2.0 * b + d)),
-            _ => None,
-        }).sum::<f64>() * self.mu
-    }
-}
-
 /// A move that changes many pitches at once, sized by one number `d`, searched like a pitch.
 /// Why: the curvature price couples neighbors, so a change that needs several pitches to move
 /// together -- a ramp that should start a tick later, a lump that should spread -- can be
@@ -475,10 +432,10 @@ fn live_end(st: &[State], depth: f64) -> usize {
 /// score units by `Exit::per_block`. Ticks after the exit are dead: they are not searched, and
 /// after each pass they are set to the last live pitch, so the price never sees the seed's
 /// leftover tail.
-fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough, shape: Shape,
+fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough,
           passes: usize, tol: f64, bail: bool, tick: bool, moves: &[Move], bub: &mut (f64, f64), shrink: f64)
           -> (Vec<f64>, f64, usize) {
-    let pen = Pen { mu: rough.mu * mode.per_block(), shape };
+    let pen = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let step = 0.25;
     let lim = rough.limit;
     let cands: Vec<f64> = (0..=((2.0 * lim / step) as i64)).map(|i| (-lim + step * i as f64).min(lim)).collect();
@@ -650,7 +607,7 @@ fn exit_cmd(a: &Args) {
     let shrink = a.num("--shrink", 1.0);
     let bub0 = bub;
     let pen_spec = a.get("--pen").unwrap_or("l1");
-    let shape = Shape::parse(pen_spec);
+    let shape = PriceShape::parse(pen_spec).unwrap_or_else(|e| panic!("--pen: {e}"));
     // `--moves tick,box:3:9,ramp,shift`: which sweeps a pass makes, in order. `--shift` is
     // `tick,shift`.
     let mv_spec = a.get("--moves").map(str::to_string)
@@ -660,7 +617,7 @@ fn exit_cmd(a: &Args) {
     let mut used = Vec::new();
     let (obj, sc) = loop {
         let obj = a.obj(n);
-        let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, a.opts().rough, shape, passes,
+        let (q, sc, k) = ascend(&obj, depth, &init_from(&p, n), mode, ke, Rough { shape, ..a.opts().rough }, passes,
                                 a.num("--tol", 1e-3), n < nmax, tick, &moves, &mut bub, shrink);
         used.push(format!("{k}@{n}"));
         p = q;

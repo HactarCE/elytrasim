@@ -17,7 +17,8 @@
 //!   A seed given with --init or --anchor does NOT supply the route; --trig/--flight still do,
 //!   defaults included, and a seed built under another route is refused. See `require_physics`.
 //!
-//! Roughness options: --mu <per deg/tick^2>, --mu-tv, --cap, --slew-cap, --limit <deg>
+//! Roughness options: --mu <per deg/tick^2>, --pen l1|l2:<d>|huber:<d> (the shape --mu prices, l1
+//!   by default; see `PriceShape`), --mu-tv, --cap, --slew-cap, --limit <deg>
 //!   The l1 curvature price, and the current chatter regularizer. Unlike a pass budget it is a
 //!   *price*, so the polish runs to convergence and the answer is a real optimum that `verify`
 //!   can re-check. `runs/atlas` was built at `--mu 1e-4 --limit 85`.
@@ -84,6 +85,7 @@ impl Args {
             steady: self.has("--steady"),
             rough: Rough {
                 mu: self.num("--mu", 0.0),
+                shape: self.get("--pen").map_or(PriceShape::L1, |v| PriceShape::parse(v).unwrap_or_else(|e| panic!("--pen: {e}"))),
                 mu_tv: self.num("--mu-tv", 0.0),
                 cap: self.num("--cap", f64::INFINITY),
                 slew_cap: self.num("--slew-cap", f64::INFINITY),
