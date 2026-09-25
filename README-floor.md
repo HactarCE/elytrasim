@@ -269,6 +269,115 @@ difference with both steps over 2 degrees. `l1` with `tick` reproduces `v7-30pas
 Data: `runs/floor/v10-pen` (`buggy-moves/` holds the box and ramp runs from before a fix to how a move
 prices a candidate that exits earlier; they differ by at most 0.07).
 
+### 6c. Gradient ascent (`--method grad`; measured 2026-09-25 00:06 EDT, commit 9136906)
+
+`floor exit --method grad` replaces the coordinate sweep with L-BFGS ascent on the exact gradient
+of the same score, every pitch moving at once. The default is still `--method tick` (`ascend`);
+`grad+tick` runs the coordinate sweep from the gradient's answer at every cap. Seed, growing cap,
+dead-tail flattening, the `f32` round and the header's score are the same as `ascend`'s.
+
+**The gradient** (`src/adjoint.rs`) is one replay and one backward sweep, O(n). The tick's
+partials (`fall_flying_partials` in `src/sim/entity.rs`) differentiate trig as if it were smooth
+-- under `mth_lut` it is a 65536-cell staircase whose derivative is 0 almost everywhere -- and
+count each branch of the flight kernel only where the replay took it, with no smoothing. At the
+exit the score is differentiated through the secant, `dt*/dh[k-1] = -b/(a-b)^2` and
+`dt*/dh[k] = a/(a-b)^2` (plus `1 - f` and `f` on the two `z`s for range), with the crossing's
+index held; a survivor is differentiated through its value-to-go. The l2 and Huber prices are
+differentiated exactly and l1 by its subgradient (0 at the corner). Checked against central
+differences under `libm` in `cargo test`: worst relative error 4e-5 through the crossing (both
+modes, with and without `--ke`) and 5e-6 on the whole priced objective.
+
+**The optimizer.** L-BFGS, 10 pairs, a first step of at most 1 degree and after that at most 5
+per pitch per step (`--max-step`), and an Armijo line search on the true score: the replay, not
+the gradient, decides whether a step is kept. why? the score has a corner at pitch 0, a
+staircase at 0.0055 degrees and whole-tick cliffs at a touch-and-go; a fixed-rate method (Adam)
+would step across all three blind. `--iters` (2000 per cap) never binds: every run stops at a
+stall, after at most 1209 iterations at one cap.
+
+**What the plain gradient cannot see, and what it cost before it was handled.** Both measured on
+the laptop, 2026-09-24.
+
+* **Dips.** A pre-exit minimum of the clearance is a constraint the score feels only by falling
+  off a cliff. Unhandled, the ascent walks a dip onto the floor and every trial step then crosses
+  it: the first version, with neither fix in this list, stalled on `y0 = 16` endurance at
+  t* 186.2 (coordinate ascent: 214.9) with a dip 1e-5 blocks off the floor. Each dip under
+  one block now adds its own gradient (one more backward sweep) and the step is projected onto
+  `dh_j . d >= margin - h_j`. A margin of 1e-4 was not enough: under `mth_lut` a dip parked there
+  is crossed by the table's noise at every step size (`y0 = 24` endurance stalled at 298 ticks),
+  so the line search also rejects a step that sinks a dip under half the margin, and the margin
+  steps down `0.01, 0.003, 0.001` blocks (`--graze`), one stage per stall. The optima therefore
+  stand 5e-4 to 5e-3 blocks off the floor at their dips, where coordinate ascent's rest within
+  1e-9 -- and every gradient file replays on the laptop to within 1e-3 of the header the cluster
+  wrote, where `dist_y27_l2_2` still goes under by 1e-14 (6b).
+* **Pitch 0.** The forward-to-up branch is off at exactly 0, and the off branch's pitch-derivative
+  there is 0 (lift goes as `cos^2`), so the seed's zeros never move. At a pitch on that switch
+  the ascent takes both one-sided derivatives (`climb_switch_partials`) and moves the way that
+  climbs. This is the other branch's derivative, used only at pitches sitting on the switch, and
+  no smoothing. Without it, over `y0 = 4, 8, .., 32`: endurance 1824 against 2319 ticks, range
+  1161 against 1769 blocks.
+
+**Results.** Cluster, `y0 = 1..32`, minipump seed, `--n 150`, `--penalty l2:2`, no bubble;
+coordinate ascent is `--moves tick --passes 30 --tol -1e9`, rerun on the same build as the
+gradient runs (it reproduces v10's `l2:2` sums). Roughness is Σ|second difference| and chatter
+the sign flips of the first difference with both steps over 2 degrees, over live pitches.
+Core time is the gradient runs' own `wall` (which leaves out the seed fit, a fraction of a
+second) and `times.tsv` for coordinate ascent, which lost 2 of its 64 lines to interleaved
+appends (both `y0 <= 8`, a few seconds each).
+
+| variant | endurance Σt* | Σ\|d2\| | chatter | range Σz | Σ\|d2\| | chatter | core time |
+|---|---|---|---|---|---|---|---|
+| coordinate, 30 passes | 8162 | 1839 | 8 | 5521 | 3893 | 31 | 2130 s |
+| grad | +203 | 1156 | 3 | +675 | 4263 | 40 | 18 s |
+| grad, `--max-step 2` | +193 | 1118 | 3 | +1337 | 3676 | 20 | 20 s |
+| grad+tick, 30 passes | +183 | 1104 | 5 | +538 | 3449 | 31 | 2346 s |
+
+```
+ y0   endurance t*: coord    grad  step 2     range z(t*): coord    grad  step 2
+  1                  12.66   12.66   12.66                    0.53    0.53    0.53
+  4                  36.45   36.45   36.45                    5.86    5.86    5.86
+  8                  83.83   83.82   83.82                   26.21   26.21   26.21
+ 10                 112.48  112.48  112.48                   43.14   43.13   43.13
+ 12                 140.80  140.79  140.79                   61.51   62.27   62.31
+ 13                 153.40  154.40  154.43                   72.26   72.99   72.96
+ 14                 173.35  173.28  173.40                   84.12   84.61   84.50
+ 16                 214.86  215.32  215.37                  111.24  111.69  111.82
+ 18                 263.90  262.24  260.43                  142.88  145.50  145.28
+ 20                 306.40  318.10  317.77                  177.27  186.58  183.44
+ 22                 349.05  361.72  363.79                  219.28  239.41  239.65
+ 24                 397.47  413.22  413.31                  275.96  303.74  305.33
+ 26                 456.36  462.47  462.43                  324.42  419.54  415.00
+ 28                 500.12  510.93  509.14                  408.07  473.91  447.24
+ 30                 537.00  562.33  560.25                  481.50  527.77  648.90
+ 32                 570.43  605.23  598.28                  537.76  577.44 1055.25
+```
+
+* **It is about 120 times cheaper and, above `y0` about 12, better.** The slowest single solve
+  took 4.9 s, against up to 128 s for coordinate ascent. Endurance gains grow with height, to
+  +35 ticks (6%) at `y0 = 32`, flying the same single climb better (one dip each, 606 against
+  571 ticks). It loses at `y0 = 14` and `18` (by 1.7 ticks at 18), and with step 2 also at 15
+  and 17.
+* **Below `y0` about 12 it stops short by up to 0.011 ticks.** There are no dips there; the line
+  search stalls when its predicted rise falls under the table's noise, where the coordinate
+  scan, which prices every candidate on the real table, still resolves. `grad+tick` closes it.
+* **Range is basin luck above `y0 = 22`, more so than in 6b.** The gradient runs find more and
+  longer pump laps (`y0 = 26`: 4 dips and 614 ticks, against 3 and 460), but the step size alone
+  moves `y0 = 32` from 577 to 1055 blocks, and a laptop run of the same binary found 1308 with
+  step 2 and 611 with 5 (the likeliest reason: vanilla's lift `cos` is the platform's libm,
+  see `src/sim/mth.rs`).
+  Only the endurance sums and range below 22 compare optimizers.
+* **Chatter.** Endurance: fewer flips (3 against 8) and 37% less roughness. Range: not
+  uniformly. Most counted flips in every variant are the tops of pull-ups (-52 then -49) and the
+  peaks of nose-down lumps; the gradient's own are 3-8 degree zigzags at the glide-to-dive entry
+  of a late pump at `y0 = 30, 32` (`dist_y30_grad`, ticks 477-483), pitches at or above 0 where
+  the physics sees pitch only through `cos^2`. Proposed, not tested: the score is nearly flat in
+  how such a lump is spread, and the ascent stalls on table noise before the price's small
+  gradient smooths it.
+* `grad+tick` is worse than `grad` alone on both sums: its coordinate passes at the smaller caps
+  move the schedule the next cap's gradient ascent starts from, and it lands in other basins.
+
+Data: `runs/floor/v11-grad` (`l2_2`, `grad`, `grad_s2`, `gradtick`), drawn by
+`tools/plot_floor_profiles.py`.
+
 ### 7. Exact `f32` output (a correctness fix, kept)
 
 An exit optimum skims the floor at zero margin. Written to four decimals, one `y0 = 30` schedule
@@ -345,6 +454,7 @@ least `D` at which it is still `>= 0` -- which `polish --steady` with a `Floor` 
 ```
 floor probe
 floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump] [--ke <c>] [--shift] [--n 150] [--tol 1e-3] [--out <file>]
+             [--method tick|grad|grad+tick] [--iters 2000] [--max-step 5] [--graze 1e-2,3e-3,1e-3]
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]
@@ -356,6 +466,6 @@ Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repea
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
 `runs/floor/v7-30pass/` the with/without-tail-shift ascents, `v8-bubble/` and `v9-bubble-cont/` the floor-bubble ones and
-`v10-pen/` the curvature-price shapes and search moves; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v10,
+`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v11,
 `runs/floor/v2-cluster/` every solve behind the best schedules,
 and `runs/floor/inf/` the infinite-flight scan.
