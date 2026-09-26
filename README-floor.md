@@ -373,7 +373,8 @@ appends (both `y0 <= 8`, a few seconds each).
   `--method grad` (the `y0 = 32` `grad_s2` range run grew four as its cap doubled from 150 to
   2400); endurance runs have not, and why is open. The cross-seeded results are non-monotone in `y0` (27: 751, 28: 690),
   so they are lower bounds too, and the infinite-flight threshold then quoted (35-36 blocks) was
-  lowered to 29.25 by the K-climb seed (6f, Infinite flight). Measured 2026-09-25 00:30 EDT on the laptop,
+  lowered to 29.25 by the K-climb seed (6f, Infinite flight) and to at most 29.0 by the backward
+  DP (6g). Measured 2026-09-25 00:30 EDT on the laptop,
   `runs/floor/v11-grad/cross-seed`.
 * **Chatter.** Endurance: fewer flips (3 against 8) and 37% less roughness. Range: not
   uniformly. Most counted flips in every variant are the tops of pull-ups (-52 then -49) and the
@@ -562,7 +563,8 @@ with 2 more seed laps (`--after`, below), then grad. Below `y0 = 12` every `K` t
   run.** Endurance takes 2 climbs from 21, 3 from 26, 4-7 from 29. Range usually takes one more
   climb than endurance from `y0 = 24` (not at 26 or 30). Endurance gains up to 102% over v11's best, and 337% over
   plain `grad`, whose one-climb basin is the whole gap. Range gains up to 122% over v11's best.
-* **From `y0` about 29.25 there is no best `K`** (see Infinite flight): every lap gains
+* **From `y0` about 29.25 there is no best `K`** (see Infinite flight; the DP's laps gain from
+  `y0 = 29.0`, 6g): every lap gains
   energy, so more laps is always longer and further. The `y0 >= 30` rows measure how many laps
   the seed can fly, not an optimum. Continuing a `y0 = 30` flight in laps reached t* 21007 after
   8 rounds and was still gaining.
@@ -593,6 +595,87 @@ Data: `runs/floor/v13-pumps` (`out/` the K table, `cont-k/` its continuations, `
 the infinite-flight scan, `v1-constant-relax/` the first seed; `summary.py`, `final.py`,
 `infsum.py` and `budget.py` print this section's and Infinite flight's tables from them).
 
+### 6g. Backward DP (`floordp`; measured 2026-09-26 17:35 EDT on the cluster, commit 9525ae6)
+
+`floordp` computes the value of every state instead of improving one schedule. The state is
+`(h, v_y, v_z)`: the kernel reads only velocity and pitch, and the floor only the clearance.
+Sweep `n` of backward induction is `V_n(s) = max_p [r + V_{n-1}(s')]`, the best flight capped
+at `n` ticks. `r` is 1 (endurance) or the tick's `dz` (range). A step under the floor earns only
+the fraction `h / (h - h')` of `r`, exactly `exit_score`'s interpolated exit. `V` lives on a grid
+read by trilinear interpolation, with heights `hmax (i / (nh-1))^1.5`, packed toward the floor.
+171 pitches, 1 degree apart. The **policy** is then flown in the exact simulator from rest: each
+tick, the pitch on a 0.25-degree grid that maximizes `r + V(s')`. `V` is the grid's opinion; the
+flown policy is a real flight. Gauss-Seidel in order of rising energy was tried first and gained
+nothing: a glide moves about 0.07 blocks a tick against cells of 0.02-0.4, so a backup mostly
+reads its own cell.
+
+**The grid limits it, and velocity spacing most of all.** At `y0 = 16`, against the best
+earlier answer (`runs/floor/v16-dp/known-before-dp.tsv`, the maximum over every earlier run):
+
+| grid | h nodes | dv | pitch step | endurance V / best, flown / best | range V / best, flown / best |
+|---|---|---|---|---|---|
+| hi_v05 | 133 to 33 | 0.05 | 1 | 1.312, 0.9731 | 1.521, 0.9445 |
+| hi_v025 | 133 to 33 | 0.025 | 1 | 1.051, 0.9969 | 1.073, 0.9961 |
+| lo_v025 | 69 to 17 | 0.025 | 1 | 1.051, 0.9956 | 1.075, 0.9948 |
+| lo_v025_dp05 | 69 to 17 | 0.025 | 0.5 | 1.051, 0.9957 | - |
+| lo_v025_nh137 | 137 to 17 | 0.025 | 1 | 1.044, 0.9976 | - |
+| lo_v0125 | 69 to 17 | 0.0125 | 1 | 1.014, 0.9981 | 1.025, 0.9973 |
+
+* `V` is optimistic, and converges from above as `dv` shrinks (31%, 5%, 1.4% over at
+  `y0 = 16`). Interpolation lets a state borrow value from neighbors it cannot reach. It is not
+  an upper bound either: at `dv = 0.0125` it reads 0.9997 of the best at `y0 = 10`. On the
+  coarser grids it never converges above about `y0 = 17`, still rising after 1700 sweeps, so
+  there it is not an estimate of anything.
+* The pitch step does not matter (1 against 0.5 degrees agree to 1e-4), and doubling the height
+  nodes helps a little.
+* **Below `y0` about 12 the DP confirms the earlier answers.** Its flown policy matches the best
+  to 1e-4 in both modes at every grid, and on the finest grid it is within 0.2% (0.9% at
+  `y0 = 13`) up to 16.
+
+**Above that it finds better flights.** On the `dv = 0.025`, 33-block grid, the flown policy
+alone beats every earlier answer at `y0 = 26..28`. Polished by `floor exit --method grad`
+(defaults, the policy as the seed), it beats or ties them from 16 up:
+
+| y0 | best t* | DP flown | DP polished | vs best | best z | DP flown | DP polished | vs best |
+|---|---|---|---|---|---|---|---|---|
+| 16 | 216.1 | 215.4 | 216.4 | +0.1% | 111.8 | 111.4 | 111.8 | +0.0% |
+| 18 | 265.2 | 264.8 | 266.0 | +0.3% | 145.5 | 144.0 | 145.4 | -0.1% |
+| 19 | 292.1 | 285.5 | 288.3 | -1.3% | 165.1 | 163.6 | 164.9 | -0.1% |
+| 20 | 321.9 | 319.7 | 321.8 | -0.0% | 186.7 | 185.1 | 186.7 | +0.0% |
+| 22 | 401.2 | 398.1 | 402.9 | +0.4% | 240.5 | 239.3 | 242.4 | +0.8% |
+| 24 | 502.6 | 499.0 | 506.4 | +0.8% | 317.6 | 314.9 | 319.8 | +0.7% |
+| 25 | 579.8 | 575.0 | 582.3 | +0.4% | 369.4 | 367.6 | 374.5 | +1.4% |
+| 26 | 655.8 | 663.8 | 676.5 | +3.2% | 428.5 | 437.4 | 447.1 | +4.3% |
+| 27 | 788.2 | 803.5 | 817.4 | +3.7% | 521.1 | 543.4 | 555.4 | +6.6% |
+| 28 | 968.8 | 1056.9 | 1093.0 | +12.8% | 610.7 | 735.4 | 760.8 | +24.6% |
+| 29 | 1456.1 | no exit | - | sustained | 1018.3 | no exit | - | sustained |
+
+(`runs/floor/v16-dp/readme_tables.py` prints every `y0`.) The best-before at 24-29 came from
+`pumps` seeds continued lap by lap (6f), and still the DP wins, by keeping more energy per lap.
+At `y0 = 28` both pump with dips of 0.001, but the DP flights' peak energies fall 25.0, 23.9,
+22.0, 18.9, 14.3 (endurance) against 24.8, 23.4, 21.4, 17.0, 10.7. In range the old flight
+glides 170 ticks between its third and fourth laps and ends with 5 peaks; the DP pumps
+steadily and has 6. The DP has no curvature price, so its policies are rough; the gradient
+polish, which has the l2 price, is what the table's polished column scores.
+
+**From rest at `y0 = 29` the DP policy flies forever** (both modes, 20000 ticks, 127-130 dips,
+the lowest 1e-4 blocks above the floor; replayed independently by `floor laps`). Every earlier
+flight died at 29.0 (Infinite flight). Its laps gain energy from the first: peaks 26.7, 26.8,
+26.9, 27.2, 27.5, 28.1, .. (endurance), where the `pumps` laps break even only at about 27. The
+first dive costs the same, `29 - 26.7`. The peaks level off at 34.7, with the peak height at
+33.0-33.1, the top of the grid, which values nothing higher: that plateau is the grid's, not
+the physics'.
+
+Caveats. The policy is feedback on a grid, so the flight it gives is only as good as the grid
+near the states it visits. `V` above about `y0 = 17` is not a trustworthy estimate even at
+`dv = 0.025` (still 5-80% over and rising). What is trustworthy is every flown or polished number
+here: each is a replay.
+
+Data: `runs/floor/v16-dp` (`<run>.txt` each run's table, `<run>/` its policies as pitch files,
+`<run>.err` its sweep log; `pol/` the polished policies; `known-before-dp.tsv` the comparison;
+`compare.py`, `polcmp.py`, `readme_tables.py`). Cost on one cluster node (4 cores): 1.3 s per
+sweep at 0.8M states, 5.1 s at 3.2M, 10 s at 6.7M.
+
 ### 7. Exact `f32` output (a correctness fix, kept)
 
 An exit optimum skims the floor at zero margin. Written to four decimals, one `y0 = 30` schedule
@@ -621,7 +704,12 @@ two rounds of warm starts from the neighbors' winners: 341 solves, 7.8 core-hour
 
 ## Infinite flight
 
-From rest, flight is sustained from **`y0 = 29.25`**. At 29.0 no run sustained it: 8 runs from
+**Superseded in part by 6g (2026-09-26):** the backward DP's policy flies forever from rest at
+`y0 = 29.0`, with laps that gain energy from a peak of 26.7, so the threshold below is too high and
+the break-even of about 27 is the `pumps` laps', not the physics'. The rest of this section
+is about those laps.
+
+From rest, flight was sustained from **`y0 = 29.25`**. At 29.0 no run sustained it: 8 runs from
 the `pumps` seed (two starts, two step sizes, 2 or 4 laps per round) all died after 8-9 climbs.
 That brackets the threshold in (29.0, 29.25] **as found, not proved**: a better lap or a better
 first dive could lower it. Measured 2026-09-25 18:30 EDT on the laptop, commit 93aa9da plus
@@ -738,6 +826,6 @@ Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repea
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
 `runs/floor/v7-30pass/` the with/without-tail-shift ascents, `v8-bubble/` and `v9-bubble-cont/` the floor-bubble ones and
-`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent, `v12-bubble-grad/` the gradient with a bubble, `v13-pumps/` the K-climb seed and the infinite-flight scan with it, `v14-wobble/` the wobble study; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v12,
+`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent, `v12-bubble-grad/` the gradient with a bubble, `v13-pumps/` the K-climb seed and the infinite-flight scan with it, `v14-wobble/` the wobble study, `v16-dp/` the backward DP; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v12,
 `runs/floor/v2-cluster/` every solve behind the best schedules,
 and `runs/floor/inf/` the first infinite-flight scan (tiled cycle, superseded).

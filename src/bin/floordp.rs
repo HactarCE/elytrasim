@@ -28,6 +28,8 @@
 //! Usage: floordp --mode time|dist [--hmax 34] [--nh 137] [--gamma 1] [--vymin -3] [--vymax 2] [--vzmax 3]
 //!                [--dv 0.05] [--dp 1] [--sweeps 400] [--tol 1e-4] [--cap 1e5]
 //!                [--y0 1,2,..] [--fine 0.25] [--maxt 20000] [--every 50] [--out <dir>]
+//!                [--save <file>] [--load <file>]   V as raw little-endian f32, for the same grid;
+//!                                                  `--load` skips the sweeps
 //!
 //! Physics is `floor`'s: `mth_lut` trig and `reference` flight.
 
@@ -135,6 +137,7 @@ fn main() {
                       dv, (vzmax / dv).round() as usize + 1);
     let dp: f64 = a.num("--dp", 1.0);
     let lim = 85.0;
+    assert!(((2.0 * lim / dp).round() * dp - 2.0 * lim).abs() < 1e-9, "--dp {dp} does not divide 170: +85 would be left out");
     let pitches: Vec<f64> = (0..=((2.0 * lim / dp).round() as i64)).map(|i| (-lim + dp * i as f64).min(lim)).collect();
     let trig: Vec<PitchTrig> = pitches.iter().map(|&p| PitchTrig::new(p as f32)).collect();
     let sweeps: usize = a.num("--sweeps", 400);
@@ -142,10 +145,23 @@ fn main() {
     let cap: f64 = a.num("--cap", 1e5);
     let y0s: Vec<f64> = a.get("--y0").map_or((1..=32).map(|y| y as f64).collect(),
                                               |s| s.split(',').map(|x| x.parse().unwrap()).collect());
+    assert!(y0s.iter().all(|&y| y <= hmax), "a --y0 above --hmax {hmax} would read V clamped to the grid's top");
     eprintln!("grid {} x {} x {} = {} states (gamma {gamma}: dh {:.4} at the floor, {:.3} at the top; dv {dv}; h 0..{hmax}, v_y {:.2}..{vymax}, v_z 0..{vzmax}); {} pitches",
               g.nh, g.nvy, g.nvz, g.len(), g.h(1), hmax - g.h(nh - 2), g.vy0, trig.len());
 
+    // `--save` writes `<file>.spec` beside `V`, and `--load` refuses a `V` whose spec differs:
+    // the byte count alone accepts a different `--gamma`, `--hmax`, `--dv` or `--dp`.
+    let vspec = format!("{} grid {}x{}x{} hmax {hmax} gamma {gamma} vy {} dv {dv} dp {dp}",
+                        match mode { Mode::Time => "time", Mode::Dist => "dist" }, g.nh, g.nvy, g.nvz, g.vy0);
     let mut v = vec![0.0f32; g.len()];
+    if let Some(f) = a.get("--load") {
+        let saved = std::fs::read_to_string(format!("{f}.spec")).unwrap_or_else(|e| panic!("{f}.spec: {e}"));
+        assert_eq!(saved.trim(), vspec, "{f} was saved for another grid or mode");
+        let b = std::fs::read(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+        assert_eq!(b.len(), 4 * g.len(), "{f} is not a V for this grid");
+        v = b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    }
+    let sweeps = if a.get("--load").is_some() { 0 } else { sweeps };
     let clock = std::time::Instant::now();
     let start = |v: &[f32], y0: f64| g.at(v, y0, 0.0, 0.0);
     let every: usize = a.num("--every", 50);
@@ -174,6 +190,10 @@ fn main() {
         if rise < tol { break }
     }
 
+    if let Some(f) = a.get("--save") {
+        std::fs::write(f, v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        std::fs::write(format!("{f}.spec"), format!("{vspec}\n")).unwrap();
+    }
     // The policy, flown exactly from rest.
     let fine: f64 = a.num("--fine", 0.25);
     let fp: Vec<f64> = (0..=((2.0 * lim / fine).round() as i64)).map(|i| (-lim + fine * i as f64).min(lim)).collect();
@@ -186,7 +206,7 @@ fn main() {
     println!("{:>5} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}", "y0", "V(start)", "rise/100", "t*", "z(t*)", "outside", "dips<1");
     let maxt: usize = a.num("--maxt", 20000);
     for (yi, &y0) in y0s.iter().enumerate() {
-        let rise100 = start(&v, y0) - back.front().map_or(0.0, |b| b[yi]);
+        let rise100 = start(&v, y0) - back.front().map_or(f64::NAN, |b| b[yi]);
         let (mut h, mut vel, mut z) = (y0, Vec3::ZERO, 0.0);
         let mut p = Vec::new();
         let mut outside = 0;
