@@ -18,7 +18,7 @@
 //!          [--bubble <margin>,<weight>] [--shrink <r>] [--penalty l1|l2:<d>|huber:<d>]
 //!          [--moves tick,box:<k>:..,ramp,shift] [--method tick|grad|grad+tick]
 //!          [--iters <n>] [--mem <m>] [--max-step <deg>] [--c1 <c>] [--graze <blocks>,..|off]
-//!          [--anneal <k>] [--soft <c>[,<e>[,<m>[,<kill>]]]] [--grow <g>]
+//!          [--anneal <k>]
 //!          [--after <file>]   (with `pumps`) keep <file> to its last apex, then fly the K laps
 //!                                  the interpolated first exit; the cap doubles while the
 //!                                  answer survives it. `--method grad` is `ascend_grad`,
@@ -314,18 +314,15 @@ impl Exit {
 /// that energy spent at min sink (`Time`) or at the best glide ratio (`Dist`), the two steady-glide
 /// constants from `probe`. Crude, but it only has to rank schedules that all survive the cap.
 fn exit_score(states: &[State], depth: f64, mode: Exit) -> f64 {
-    score_at(states, depth, mode, exit_at(states, depth, Soft::OFF))
-}
-
-/// `exit_score` read at the crossing pair `(k-1, k)`, or as a survivor for `None`.
-fn score_at(states: &[State], depth: f64, mode: Exit, k: Option<usize>) -> f64 {
-    if let Some(k) = k {
+    for k in 1..states.len() {
         let (a, b) = (states[k - 1].pos.y + depth, states[k].pos.y + depth);
-        let f = a / (a - b);
-        return match mode {
-            Exit::Time => (k - 1) as f64 + f,
-            Exit::Dist => states[k - 1].pos.z + f * (states[k].pos.z - states[k - 1].pos.z),
-        };
+        if b < 0.0 {
+            let f = a / (a - b);
+            return match mode {
+                Exit::Time => (k - 1) as f64 + f,
+                Exit::Dist => states[k - 1].pos.z + f * (states[k].pos.z - states[k - 1].pos.z),
+            };
+        }
     }
     let s = states.last().unwrap();
     let e = s.total_energy() + depth;
@@ -338,11 +335,7 @@ fn score_at(states: &[State], depth: f64, mode: Exit, k: Option<usize>) -> f64 {
 /// The energy the replay still holds where it crosses the floor, in blocks: `TE + y0` along the
 /// same secant as `t*`, which at `y = -y0` is all kinetic. `None` if it never crosses.
 fn exit_energy(states: &[State], depth: f64) -> Option<f64> {
-    energy_at(states, depth, exit_at(states, depth, Soft::OFF))
-}
-
-fn energy_at(states: &[State], depth: f64, k: Option<usize>) -> Option<f64> {
-    k.map(|k| {
+    (1..states.len()).find(|&k| states[k].pos.y + depth < 0.0).map(|k| {
         let (a, b) = (states[k - 1].pos.y + depth, states[k].pos.y + depth);
         let f = a / (a - b);
         let (e0, e1) = (states[k - 1].total_energy(), states[k].total_energy());
@@ -356,80 +349,9 @@ fn energy_at(states: &[State], depth: f64, k: Option<usize>) -> Option<f64> {
 /// proxy, crediting speed the exit alone does not see. Survivors get nothing extra: their
 /// value-to-go already counts all their energy.
 fn utility(states: &[State], depth: f64, mode: Exit, ke: f64) -> f64 {
-    utility_soft(states, depth, mode, ke, Soft::OFF)
-}
-
-/// `utility` over a soft floor (`Soft`): scored at the last crossing before the kill, less the
-/// soft floor's price in score units. With `Soft::OFF`, exactly `utility`.
-fn utility_soft(states: &[State], depth: f64, mode: Exit, ke: f64, soft: Soft) -> f64 {
-    let k = exit_at(states, depth, soft);
-    let mut u = score_at(states, depth, mode, k);
-    if ke != 0.0 { u += energy_at(states, depth, k).map_or(0.0, |e| ke * mode.per_block() * e) }
-    if soft.on() { u -= mode.per_block() * soft_cost(states, depth, soft, k) }
-    u
-}
-
-/// The soft floor (`--soft`): going under the floor no longer ends the flight. Each state before
-/// the flight's *last* crossing pays `c * (m - h)^e` blocks of energy for its clearance `h`
-/// below `m`, and the flight is scored where it crosses the floor for the last time before it
-/// first sinks `kill` blocks under it (`exit_at`). The utility per tick is then `1 - c (m-h)^e`
-/// ticks' worth of energy (endurance), a reward that goes negative past a depth set by `c`.
-///
-/// Why. The hard exit makes a dip that touches the floor mid-flight a cliff: the flight ends at
-/// that dip, and every lap after it is lost at once. The gradient cannot see the cliff, so
-/// `ascend_grad` keeps dips `margin` off the floor by projection instead (the graze). Here the
-/// dip pays a price that starts at zero, and the laps after it still count.
-///
-/// What is left discontinuous: a flight that sinks to `-kill` and one that turns back just short
-/// of it; and an underground stretch whose top reaches the floor from below, which moves the last
-/// crossing. Both are far from where a good flight lives, unless `c` is small enough that
-/// tunneling pays.
-///
-/// `m > 0` puts the price's zero above the floor. With `e = 1` it is an exact penalty: past the
-/// dip's multiplier, `c` holds the dip at `m` rather than under it, so the answer flies under the
-/// hard rules too.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Soft { c: f64, e: i32, m: f64, kill: f64 }
-
-impl Soft {
-    const OFF: Soft = Soft { c: 0.0, e: 1, m: 0.0, kill: 0.0 };
-    fn on(&self) -> bool { self.c > 0.0 }
-    /// Price of clearance `h`, blocks of energy.
-    fn pen(&self, h: f64) -> f64 { if h < self.m { self.c * (self.m - h).powi(self.e) } else { 0.0 } }
-    /// `-d pen / dh`.
-    fn dpen(&self, h: f64) -> f64 { if h < self.m { self.c * self.e as f64 * (self.m - h).powi(self.e - 1) } else { 0.0 } }
-    fn show(&self) -> String { format!("{},{},{},{}", self.c, self.e, self.m, self.kill) }
-}
-
-/// The crossing a replay is scored at: the pair `(k-1, k)` with `h[k-1] >= 0 > h[k]`, or `None` for
-/// a survivor. Hard floor: the first such pair. Soft floor: the last one at or before the first
-/// state under `-kill` (or the last state); a survivor is one whose last scored state is above
-/// the floor.
-fn exit_at(states: &[State], depth: f64, soft: Soft) -> Option<usize> {
-    let h = |k: usize| states[k].pos.y + depth;
-    if !soft.on() { return (1..states.len()).find(|&k| h(k) < 0.0) }
-    let end = live_end(states, depth + soft.kill);
-    if h(end) >= 0.0 { return None }
-    (1..=end).rev().find(|&k| h(k) < 0.0 && h(k - 1) >= 0.0)
-}
-
-/// The soft floor's price on a replay scored at `k`, blocks of energy: every state before the
-/// crossing pair, and the pair's full-contact price `pen(0)` times `f`, as `bubble_cost` does,
-/// so that nothing jumps as the crossing slides past a tick when `m > 0`.
-fn soft_cost(states: &[State], depth: f64, soft: Soft, k: Option<usize>) -> f64 {
-    let h = |j: usize| states[j].pos.y + depth;
-    match k {
-        Some(k) => (1..k).map(|j| soft.pen(h(j))).sum::<f64>() + h(k - 1) / (h(k - 1) - h(k)) * soft.pen(0.0),
-        None => (1..states.len()).map(|j| soft.pen(h(j))).sum(),
-    }
-}
-
-/// The lowest clearance before the scored crossing: the deepest dip the soft floor let through
-/// (negative) or kept off it. On a hard floor, the dips `ascend_grad` keeps off it: the states
-/// strictly before the exit pair, or all of them for a survivor. Infinite if there are none.
-fn soft_min(states: &[State], depth: f64, soft: Soft) -> f64 {
-    let end = exit_at(states, depth, soft).map_or(states.len(), |k| k - 1);
-    (1..end).map(|j| states[j].pos.y + depth).fold(f64::INFINITY, f64::min)
+    let base = exit_score(states, depth, mode);
+    if ke == 0.0 { return base }
+    base + exit_energy(states, depth).map_or(0.0, |e| ke * mode.per_block() * e)
 }
 
 /// The bubble's price on a replay: `weight * (max(0, margin - h) / margin)^2` per tick, in
@@ -644,33 +566,16 @@ fn ascend(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough:
 ///
 /// The bubble is seeded on each priced state's height, `-2 weight (margin - h) / margin^2` per
 /// state inside it, and its crossing term `f * weight` through the same `df/da`, `df/db` as `t*`.
-fn utility_grad(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), soft: Soft, p: &[f64]) -> ExitGrad {
+fn utility_grad(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), p: &[f64]) -> ExitGrad {
     use elytrasim::adjoint::{backprop_costates, te_cot};
     let st = obj.replay(p);
     let pb = mode.per_block();
-    let u = utility_soft(&st, depth, mode, ke, soft) - pb * bubble_cost(&st, depth, bub);
-    // The live length runs to the kill; the score reads the pair `exit_at` picks, the first
-    // crossing on a hard floor, the last on a soft one. A survivor's `k` is its last state.
-    let live = live_end(&st, depth + soft.kill);
-    let ks = exit_at(&st, depth, soft);
-    let k = ks.unwrap_or(live);
+    let u = utility(&st, depth, mode, ke) - pb * bubble_cost(&st, depth, bub);
+    let k = live_end(&st, depth);
     let mut seeds: Vec<(usize, [f64; 4])> = Vec::new();
     let scaled = |c: [f64; 4], w: f64| c.map(|x| x * w);
     let y = [1.0, 0.0, 0.0, 0.0];
-    let crossed = ks.is_some();
-    if soft.on() {
-        // `-pb * soft_cost`: each priced state, and the pair's `f * pen(0)`.
-        for j in 1..if crossed { k } else { k + 1 } {
-            let h = st[j].pos.y + depth;
-            if h < soft.m { seeds.push((j, scaled(y, pb * soft.dpen(h)))) }
-        }
-        if crossed && soft.m > 0.0 {
-            let (a, b) = (st[k - 1].pos.y + depth, st[k].pos.y + depth);
-            let d = a - b;
-            seeds.push((k - 1, scaled(y, -pb * soft.pen(0.0) * (-b / (d * d)))));
-            seeds.push((k, scaled(y, -pb * soft.pen(0.0) * (a / (d * d)))));
-        }
-    }
+    let crossed = st[k].pos.y + depth < 0.0;
     let (margin, weight) = bub;
     if weight != 0.0 {
         // The states `bubble_cost` prices: `1 .. k-1` before a crossing, `1 ..= k` for a survivor.
@@ -714,7 +619,7 @@ fn utility_grad(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64
         }
     }
     let (g, av) = backprop_costates(p, &st, &seeds);
-    ExitGrad { u, g, av, k: live, st }
+    ExitGrad { u, g, av, k, st }
 }
 
 /// A gradient of `utility` with what `ascend_grad` needs around it.
@@ -737,15 +642,15 @@ fn flat_tail(p: &mut [f64], k: usize) {
 
 /// What the gradient ascent maximizes, on a schedule as it would be kept: flattened from its own
 /// exit, then `utility - bubble - price`, exactly `ascend`'s `total`. Returns the flattened
-/// schedule, its score and its lowest pre-exit dip (`soft_min`).
-fn grad_total(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), soft: Soft, pen: &Rough, q: &[f64])
+/// schedule, its score and its lowest pre-exit dip (`pre_exit_min`).
+fn grad_total(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), pen: &Rough, q: &[f64])
               -> (Vec<f64>, f64, f64) {
     let st = obj.replay(q);
-    let k = live_end(&st, depth + soft.kill);
+    let k = live_end(&st, depth);
     let mut q = q.to_vec();
     flat_tail(&mut q, k);
-    let sc = utility_soft(&st, depth, mode, ke, soft) - mode.per_block() * bubble_cost(&st, depth, bub) - pen.cost(&q);
-    (q, sc, soft_min(&st, depth, soft))
+    let sc = utility(&st, depth, mode, ke) - mode.per_block() * bubble_cost(&st, depth, bub) - pen.cost(&q);
+    (q, sc, pre_exit_min(&st, k, depth))
 }
 
 /// Folds every dead pitch's share of a gradient onto the last live one: the dead tail is a copy
@@ -767,8 +672,8 @@ fn fold_tail(g: &mut [f64], k: usize) {
 /// equal. The price's gradient is smooth for `l2`/`huber` and a subgradient for `l1`.
 struct Slopes { f: f64, up: Vec<f64>, down: Vec<f64>, eg: ExitGrad }
 
-fn slopes(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), soft: Soft, pen: &Rough, p: &[f64]) -> Slopes {
-    let eg = utility_grad(obj, depth, mode, ke, bub, soft, p);
+fn slopes(obj: &Objective, depth: f64, mode: Exit, ke: f64, bub: (f64, f64), pen: &Rough, p: &[f64]) -> Slopes {
+    let eg = utility_grad(obj, depth, mode, ke, bub, p);
     let mut gp = vec![0.0; p.len()];
     pen.grad(p, &mut gp);
     let mut up: Vec<f64> = eg.g.iter().zip(&gp).map(|(a, b)| a - b).collect();
@@ -813,6 +718,13 @@ fn project_halfspaces(d: &mut [f64], cons: &[(Vec<f64>, f64)]) {
     }
 }
 
+/// The least clearance over the states strictly before the exit pair (`1 .. k-1`), or over all
+/// of them for a survivor: the dips `ascend_grad` keeps off the floor. Infinite if there are none.
+fn pre_exit_min(st: &[State], k: usize, depth: f64) -> f64 {
+    let last = if st[k].pos.y + depth < 0.0 { k.saturating_sub(1) } else { k + 1 };
+    (1..last.min(st.len())).map(|j| st[j].pos.y + depth).fold(f64::INFINITY, f64::min)
+}
+
 /// Settings for `ascend_grad`.
 #[derive(Clone, Debug)]
 struct GradOpts {
@@ -836,14 +748,8 @@ struct GradOpts {
     /// The bubble's margin and weight are multiplied by this at every stage after the first.
     shrink: f64,
     /// Stages at least (`--anneal` + 1): a stall ends one, and the next starts from its answer
-    /// with the graze margin's next entry (or its last), the bubble shrunk once more and the soft
-    /// floor's `c` grown once more.
+    /// with the graze margin's next entry (or its last) and the bubble shrunk once more.
     stages: usize,
-    /// The soft floor (`Soft`); `Soft::OFF` is the hard exit.
-    soft: Soft,
-    /// The soft floor's `c` is multiplied by this at every stage after the first: a continuation
-    /// from a floor that lets dips through toward one that holds them.
-    grow: f64,
 }
 
 impl GradOpts {
@@ -854,7 +760,6 @@ impl GradOpts {
         let r = self.shrink.powi(i as i32);
         (self.bub.0 * r, self.bub.1 * r)
     }
-    fn soft(&self, i: usize) -> Soft { Soft { c: self.soft.c * self.grow.powi(i as i32), ..self.soft } }
 }
 
 /// Why `ascend_grad` stopped, for the log.
@@ -890,14 +795,10 @@ enum GradStop { Iters, Survives, ZeroGradient, NotAscent, LineSearch }
 /// constraint, holds the dip where the bubble's slope balances the utility's. `GradOpts` can run
 /// either, both, or neither.
 ///
-/// The soft floor (`Soft`) is the other alternative, and replaces the exit itself: dips under
-/// the floor are priced, not fatal. With the graze on as well, the projection lifts dips that
-/// are under the floor, and the rejection rule lets no dip sink further.
-///
-/// Returns the schedule, its score (at the last stage's bubble and soft floor), the number of
-/// gradients taken, and the last stage's bubble and soft floor.
+/// Returns the schedule, its score (at the last stage's bubble), the number of gradients taken
+/// and the last stage's bubble.
 fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, rough: Rough,
-               o: &GradOpts, bail: bool) -> (Vec<f64>, f64, usize, (f64, f64), Soft) {
+               o: &GradOpts, bail: bool) -> (Vec<f64>, f64, usize, (f64, f64)) {
     use elytrasim::adjoint::backprop_costates;
     let pen = Rough { mu: rough.mu * mode.per_block(), ..rough };
     let lim = rough.limit;
@@ -908,9 +809,8 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
     clamp(&mut p);
     let mut stage = 0;
     let mut bub = o.bubble(0);
-    let mut soft = o.soft(0);
-    p = grad_total(obj, depth, mode, ke, bub, soft, &pen, &p).0;
-    let mut s = slopes(obj, depth, mode, ke, bub, soft, &pen, &p);
+    p = grad_total(obj, depth, mode, ke, bub, &pen, &p).0;
+    let mut s = slopes(obj, depth, mode, ke, bub, &pen, &p);
     let mut g = steepest(&s);
     let mut hist: std::collections::VecDeque<(Vec<f64>, Vec<f64>, f64)> = Default::default();
     let mut used = 0;
@@ -922,11 +822,9 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
         stop = $why;
         if stage + 1 < o.stages() {
             stage += 1; hist.clear(); fails = 0;
-            if o.bubble(stage) != bub || o.soft(stage) != soft {
+            if o.bubble(stage) != bub {
                 bub = o.bubble(stage);
-                soft = o.soft(stage);
-                p = grad_total(obj, depth, mode, ke, bub, soft, &pen, &p).0;
-                s = slopes(obj, depth, mode, ke, bub, soft, &pen, &p);
+                s = slopes(obj, depth, mode, ke, bub, &pen, &p);
                 g = steepest(&s);
             }
             continue
@@ -953,11 +851,10 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
         for i in 0..n { if (p[i] >= lim && d[i] > 0.0) || (p[i] <= -lim && d[i] < 0.0) { d[i] = 0.0 } }
         let big = d.iter().fold(0.0f64, |a, x| a.max(x.abs()));
         if big > o.max_step { d.iter_mut().for_each(|x| *x *= o.max_step / big) }
-        // The dips: every local minimum of the clearance before the scored pair, under one block
-        // -- under the floor too, on a soft one, which is how the graze repairs a soft answer.
+        // The dips: every local minimum of the clearance before the exit pair, under one block.
         let (st, k) = (&s.eg.st, s.eg.k);
         let h = |j: usize| st[j].pos.y + depth;
-        let last = exit_at(st, depth, soft).map_or(st.len(), |k| k.saturating_sub(1));
+        let last = if st[k].pos.y + depth < 0.0 { k.saturating_sub(1) } else { k + 1 };
         let graze = o.margin(stage);
         let cons: Vec<(Vec<f64>, f64)> = if graze.is_none() { vec![] } else { (1..last.min(st.len() - 1))
             .filter(|&j| h(j) < 1.0 && h(j) <= h(j - 1) && h(j) <= h(j + 1))
@@ -978,14 +875,14 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
             hist.clear();
             continue;
         }
-        let lo0 = soft_min(st, depth, soft);
+        let lo0 = pre_exit_min(st, k, depth);
         // Backtracking on the true objective. The predicted rise uses the one-sided slopes.
         let mut step = 1.0;
         let mut found = None;
         for _ in 0..40 {
             let mut q: Vec<f64> = (0..n).map(|i| p[i] + step * d[i]).collect();
             clamp(&mut q);
-            let (q, sc, lo) = grad_total(obj, depth, mode, ke, bub, soft, &pen, &q);
+            let (q, sc, lo) = grad_total(obj, depth, mode, ke, bub, &pen, &q);
             let rise: f64 = (0..n).map(|i| { let m = q[i] - p[i]; if m >= 0.0 { s.up[i] * m } else { s.down[i] * m } }).sum();
             // A dip may not sink under half the margin unless it already was lower. why? under
             // `mth_lut` the physics is a staircase in pitch, and a dip parked on the floor is
@@ -1003,7 +900,7 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
             continue;
         };
         fails = 0;
-        let sq = slopes(obj, depth, mode, ke, bub, soft, &pen, &q);
+        let sq = slopes(obj, depth, mode, ke, bub, &pen, &q);
         let gq = steepest(&sq);
         // A curvature pair for the ascent: s = q - p, y = -(gq - g), kept only when s.y > 0.
         let sv: Vec<f64> = (0..n).map(|i| q[i] - p[i]).collect();
@@ -1016,13 +913,12 @@ fn ascend_grad(obj: &Objective, depth: f64, init: &[f64], mode: Exit, ke: f64, r
         p = q;
         s = sq;
         g = gq;
-        if bail && exit_at(&s.eg.st, depth, soft).is_none() { stop = GradStop::Survives; break }
+        if bail && s.eg.st.iter().all(|x| x.pos.y + depth >= 0.0) { stop = GradStop::Survives; break }
     }
     let gmax = g.iter().fold(0.0f64, |a, x| a.max(x.abs()));
-    let lo = soft_min(&s.eg.st, depth, soft);
     eprintln!("grad: cap {n} stop {stop:?} after {used} iters, stage {stage}, score {:.4}, |g|max {gmax:.2e}, \
-               pre-exit min clearance {lo:.3e}{}", s.f, if soft.on() { format!(", soft c {}", soft.c) } else { String::new() });
-    (p, s.f, used, bub, soft)
+               pre-exit min clearance {:.3e}", s.f, pre_exit_min(&s.eg.st, s.eg.k, depth));
+    (p, s.f, used, bub)
 }
 
 /// The minipump seed: `d` degrees nose-down for `k` ticks, pitch 0 for 10, -40 while `v_y` is
@@ -1205,8 +1101,7 @@ fn exit_cmd(a: &Args) {
         // lap after the first.
         // `--after <file>`: continue that schedule from its last apex (the last tick whose `v_y`
         // turns negative before its exit) with K more laps -- a continuation in laps, since the
-        // seed's own fixed-parameter laps lose energy and stop after a few. The seed, its fit and
-        // this exit are the hard floor's even under `--soft`.
+        // seed's own fixed-parameter laps lose energy and stop after a few.
         let prefix = a.get("--after").map_or(vec![], |f| {
             let x = read_pitches(f);
             let st = a.obj(x.len()).replay(&x);
@@ -1261,44 +1156,26 @@ fn exit_cmd(a: &Args) {
             panic!("--moves/--shift: --method grad makes no moves; use grad+tick")
         }
     }
-    // `--soft c[,e[,m[,kill]]]`: the soft floor (`Soft`), `e` 1, `m` 0 and `kill` 2 blocks unless
-    // given; `--grow g` multiplies `c` per stall stage (`GradOpts`). Gradient only, and it
-    // replaces the bubble. The graze is off unless `--graze` is given: with it, the projection
-    // lifts every dip, under the floor or not, to the margin, while the soft score keeps the laps
-    // after a dip that is still under -- the way to make a soft answer fly under hard rules,
-    // since a hard ascent from it would end the flight at that dip.
-    let soft = a.get("--soft").map_or(Soft::OFF, |v| {
-        let w: Vec<f64> = v.split(',').map(|x| x.parse().expect("--soft")).collect();
-        let e = w.get(1).copied().unwrap_or(1.0);
-        assert!(e >= 1.0 && e.fract() == 0.0, "--soft: the exponent is a whole number >= 1, not {e}");
-        Soft { c: w[0], e: e as i32, m: w.get(2).copied().unwrap_or(0.0), kill: w.get(3).copied().unwrap_or(2.0) }
-    });
-    if soft.on() {
-        assert!(grad && !coord, "--soft: --method grad only");
-        assert!(bub.1 == 0.0, "--soft replaces --bubble");
-    }
     // `--graze off`: no dip projection and no rejection rule (the bubble alone, or nothing).
-    let graze = a.get("--graze").unwrap_or(if soft.on() { "off" } else { "1e-2,3e-3,1e-3" });
+    let graze = a.get("--graze").unwrap_or("1e-2,3e-3,1e-3");
     let go = GradOpts { iters: a.num("--iters", 2000), mem: a.num("--mem", 10), max_step: a.num("--max-step", 5.0),
                         c1: a.num("--c1", 1e-4),
                         margins: if graze == "off" { vec![] } else { graze.split(',').map(|x| x.parse().expect("--graze")).collect() },
-                        bub, shrink, stages: a.num("--anneal", 0usize) + 1, soft, grow: a.num("--grow", 1.0) };
+                        bub, shrink, stages: a.num("--anneal", 0usize) + 1 };
     let clock = std::time::Instant::now();
     let rough = Rough { shape, ..a.opts().rough };
     let mut used = Vec::new();
-    // The bubble and soft floor the gradient's last stage scored with.
+    // The bubble the gradient's last stage scored with.
     let mut gbub = bub;
-    let mut gsoft = soft;
     let (obj, sc) = loop {
         let obj = a.obj(n);
         let mut q = init_from(&p, n);
         let mut tag = String::new();
         if grad {
-            let (r, _, k, b, sf) = ascend_grad(&obj, depth, &q, mode, ke, rough, &GradOpts { bub, ..go.clone() }, n < nmax);
+            let (r, _, k, b) = ascend_grad(&obj, depth, &q, mode, ke, rough, &GradOpts { bub, ..go.clone() }, n < nmax);
             q = r.iter().map(|&x| x as f32 as f64).collect();
             tag = format!("g{k}");
             gbub = b;
-            gsoft = sf;
         }
         let sc = if coord {
             let (r, s, k) = ascend(&obj, depth, &q, mode, ke, rough, passes,
@@ -1309,14 +1186,13 @@ fn exit_cmd(a: &Args) {
         } else {
             // Scored as `ascend` scores what it keeps: on the `f32` pitches the replay flies.
             let st = obj.replay(&q);
-            utility_soft(&st, depth, mode, ke, gsoft) - mode.per_block() * bubble_cost(&st, depth, gbub)
+            utility(&st, depth, mode, ke) - mode.per_block() * bubble_cost(&st, depth, gbub)
                 - Rough { mu: rough.mu * mode.per_block(), ..rough }.cost(&q)
         };
         used.push(format!("{tag}@{n}"));
         p = q;
         let fl = Floor { depth, ..Default::default() };
-        let survives = if soft.on() { exit_at(&obj.replay(&p), depth, gsoft).is_none() } else { fl.survived(&obj.replay(&p)) >= n };
-        if !survives || n >= nmax { break (obj, sc) }
+        if fl.survived(&obj.replay(&p)) < n || n >= nmax { break (obj, sc) }
         n = (2 * n).min(nmax);
     };
     let st = obj.replay(&p);
@@ -1331,22 +1207,12 @@ fn exit_cmd(a: &Args) {
                  if go.stages > 1 { format!(" anneal {}", go.stages - 1) } else { String::new() }),
          format!("  wall {:.2}s", clock.elapsed().as_secs_f64()))
     } else { (String::new(), String::new()) };
-    // A soft answer is kept to its kill, not its first crossing: the laps after a dip under the
-    // floor are what a hardening run (`--init <file>`) needs. The header's `t*`, `z(t*)`,
-    // `survived`, exit KE and verdict stay the hard floor's on purpose -- they are what the
-    // schedule is worth -- and the soft reading follows as `soft:`.
-    let (snote, shown) = if soft.on() {
-        (format!(" soft {} grow {}", soft.show(), go.grow),
-         format!("  soft: c {} last crossing {:.4} deepest dip {:+.4}", gsoft.c,
-                 score_at(&st, depth, mode, exit_at(&st, depth, gsoft)), soft_min(&st, depth, gsoft)))
-    } else { (String::new(), String::new()) };
-    let keep = if soft.on() { live_end(&st, depth + soft.kill) } else { k };
-    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}{mnote}{snote}\n\
-                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{wall}{verdict}{shown}\n{}\n",
+    let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}{mnote}\n\
+                        # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{wall}{verdict}\n{}\n",
                        obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit, bub0.0, bub0.1,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),
                        exit_energy(&st, depth).unwrap_or(f64::NAN), used.join(","),
-                       fmt_pitches(&p[..(keep + 1).min(n)]));
+                       fmt_pitches(&p[..(k + 1).min(n)]));
     match a.get("--out") {
         Some(o) => { std::fs::write(o, &text).unwrap(); print!("{}", text.lines().take(2).collect::<Vec<_>>().join("\n") + "\n") }
         None => print!("{text}"),
@@ -1516,16 +1382,16 @@ mod tests {
         assert_eq!(live_end(&st, depth), 171);
         // A bubble deep enough to hold the pre-exit dip and the last few states before the
         // crossing, and one too thin to hold anything but the crossing term.
-        let lo = soft_min(&st, depth, Soft::OFF);
+        let lo = pre_exit_min(&st, 171, depth);
         let inside = |m: f64| (1..171).filter(|&j| st[j].pos.y + depth < m).count();
         let (thick, thin) = ((lo + 0.4, 0.3), (0.02, 0.05));
         assert!(inside(thick.0) >= 4 && inside(thin.0) == 0, "bubble holds {} and {}", inside(thick.0), inside(thin.0));
         let ticks = [0, 5, 59, 60, 75, 89, 90, 120, 168, 169, 170];
         for mode in [Exit::Time, Exit::Dist] {
             for ke in [0.0, -0.3] {
-                let bare = utility_grad(&obj, depth, mode, ke, (1.0, 0.0), Soft::OFF, &p).g;
+                let bare = utility_grad(&obj, depth, mode, ke, (1.0, 0.0), &p).g;
                 for bub in [(1.0, 0.0), thick, thin] {
-                    let eg = utility_grad(&obj, depth, mode, ke, bub, Soft::OFF, &p);
+                    let eg = utility_grad(&obj, depth, mode, ke, bub, &p);
                     // The bubble's own share of the gradient, at the ticks checked, relative to the
                     // utility's: a check that it is not lost in the tolerance.
                     let share = ticks.iter().map(|&t| (eg.g[t] - bare[t]).abs() / bare[t].abs().max(1e-2)).fold(0.0, f64::max);
@@ -1539,7 +1405,7 @@ mod tests {
             // Survivors: the floor far below, and just under the lowest state, inside a bubble.
             let top = -st.iter().map(|s| s.pos.y).fold(f64::INFINITY, f64::min) + 0.05;
             for (d, bub) in [(1000.0, (1.0, 0.0)), (top, (0.5, 0.3))] {
-                let eg = utility_grad(&obj, d, mode, 0.0, bub, Soft::OFF, &p);
+                let eg = utility_grad(&obj, d, mode, 0.0, bub, &p);
                 let (err, fd, g) = fd_worst(&|q| priced(&obj, d, mode, 0.0, bub, q), &eg.g, &p, &[0, 60, 150, 199]);
                 eprintln!("survivor {mode:?} bubble {bub:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
                 assert!(err < 1e-4, "survivor {mode:?} bubble {bub:?}: fd {fd} vs adjoint {g}");
@@ -1558,14 +1424,14 @@ mod tests {
         let st = obj.replay(&p);
         let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
         flat_tail(&mut p, 171);
-        let bubble = (soft_min(&st, depth, Soft::OFF) + 0.4, 0.3);
+        let bubble = (pre_exit_min(&st, 171, depth) + 0.4, 0.3);
         for (shape, bub) in [(PriceShape::L2(2.0), (1.0, 0.0)), (PriceShape::Huber(0.5), (1.0, 0.0)),
                              (PriceShape::L1, (1.0, 0.0)), (PriceShape::L2(2.0), bubble)] {
             // A price far above the default, so its gradient is not lost under the utility's.
             let pen = Rough { mu: 0.05, shape, ..Default::default() };
-            let s = slopes(&obj, depth, Exit::Time, 0.0, bub, Soft::OFF, &pen, &p);
+            let s = slopes(&obj, depth, Exit::Time, 0.0, bub, &pen, &p);
             assert_eq!(s.up, s.down, "no pitch sits on the switch, so the two slopes agree");
-            let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, bub, Soft::OFF, &pen, q).1;
+            let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, bub, &pen, q).1;
             let (err, fd, g) = fd_worst(&f, &s.up, &p, &[0, 1, 59, 60, 61, 100, 168, 169, 170]);
             eprintln!("ascent objective, {shape}, bubble {bub:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6})");
             assert!(err < 1e-4, "{shape} bubble {bub:?}: fd {fd} vs adjoint {g}");
@@ -1583,8 +1449,8 @@ mod tests {
         let depth = -0.5 * (st[170].pos.y + st[171].pos.y);
         for t in [20, 100, 140] { p[t] = 0.0 }
         let pen = Rough::default();
-        let s = slopes(&obj, depth, Exit::Time, 0.0, (1.0, 0.0), Soft::OFF, &pen, &p);
-        let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, (1.0, 0.0), Soft::OFF, &pen, q).1;
+        let s = slopes(&obj, depth, Exit::Time, 0.0, (1.0, 0.0), &pen, &p);
+        let f = |q: &[f64]| grad_total(&obj, depth, Exit::Time, 0.0, (1.0, 0.0), &pen, q).1;
         let h = 1.0 / 1024.0;
         for t in [20, 100, 140] {
             let (mut a, mut b) = (p.clone(), p.clone());
@@ -1597,73 +1463,6 @@ mod tests {
             assert!(near(up, s.up[t]) && near(down, s.down[t]));
             assert!((s.down[t] - s.up[t]).abs() > 1e-3, "the corner should be visible");
         }
-    }
-
-    /// The soft floor's gradient, on a replay that dips under the floor mid-flight and comes back
-    /// up before its last crossing: each shape, with the price's zero on the floor and above it,
-    /// and with the kill reached inside the replay (2 and 5 blocks) and never (1000).
-    #[test]
-    fn soft_gradient_matches_finite_differences() {
-        let n = 200;
-        let obj = Objective { v0: Vec3::ZERO, n, lambda: 0.0 };
-        // A dive, a level-off, a pull and a glide, jittered off the switch at 0 as `schedule` is.
-        let p: Vec<f64> = schedule(n).iter().enumerate().map(|(t, &x)| {
-            let base = if t < 45 { 35.0 } else if t < 50 { 4.0 } else if t < 68 { -40.0 } else { 9.0 };
-            x - if (60..90).contains(&t) { -30.0 } else { 9.0 } + base
-        }).collect();
-        let st = obj.replay(&p);
-        // The floor 0.2 above the dip at the pull's bottom.
-        let j0 = (1..70).min_by(|&a, &b| st[a].pos.y.total_cmp(&st[b].pos.y)).unwrap();
-        let depth = -st[j0].pos.y - 0.2;
-        let under: Vec<usize> = (1..200).filter(|&j| st[j].pos.y + depth < 0.0).collect();
-        let back = (j0..200).find(|&j| st[j].pos.y + depth >= 0.0);
-        assert!(under.len() >= 2 && back.is_some(), "the test schedule should dip under the floor and come back");
-        let ticks = [0, 5, 20, 40, 44, 45, 49, 50, 55, 60, 67, 70, 80];
-        for mode in [Exit::Time, Exit::Dist] {
-            // The tolerance is this schedule's own noise: central differences of the hard exit,
-            // the floor 0.5 under the dip, disagree with its (tested) gradient by 1-2e-4 here --
-            // a faster flight than `schedule`, so more `f32` trig noise per step.
-            let d2 = -st[j0].pos.y + 0.5;
-            let eg = utility_grad(&obj, d2, mode, 0.0, (1.0, 0.0), Soft::OFF, &p);
-            let (base, _, _) = fd_worst(&|q| utility(&obj.replay(q), d2, mode, 0.0), &eg.g, &p, &ticks);
-            eprintln!("hard {mode:?}, same schedule: worst relative error {base:.2e}");
-            for soft in [Soft { c: 0.3, e: 1, m: 0.0, kill: 2.0 }, Soft { c: 0.3, e: 2, m: 0.0, kill: 2.0 },
-                         Soft { c: 0.3, e: 1, m: 0.1, kill: 2.0 }, Soft { c: 0.3, e: 2, m: 0.1, kill: 5.0 },
-                         Soft { c: 0.3, e: 2, m: 0.1, kill: 1000.0 }] {
-                let k = exit_at(&st, depth, soft).unwrap();
-                let killed = st.iter().any(|x| x.pos.y + depth < -soft.kill);
-                assert_eq!(killed, soft.kill < 100.0, "{soft:?}: the kill should be reached iff it is 2 or 5 blocks");
-                assert!(k > back.unwrap(), "{soft:?}: scored at {k}, not past the dip");
-                let eg = utility_grad(&obj, depth, mode, 0.0, (1.0, 0.0), soft, &p);
-                // The price's own share of the gradient, against the same exit priced at nothing.
-                let bare = utility_grad(&obj, depth, mode, 0.0, (1.0, 0.0), Soft { c: 1e-300, ..soft }, &p).g;
-                let share = ticks.iter().map(|&t| (eg.g[t] - bare[t]).abs() / bare[t].abs().max(1e-2)).fold(0.0, f64::max);
-                assert!(share > 0.05, "{soft:?}: its gradient is only {share:.1e} of the utility's");
-                let f = |q: &[f64]| utility_soft(&obj.replay(q), depth, mode, 0.0, soft);
-                let (err, fd, g) = fd_worst(&f, &eg.g, &p, &ticks);
-                eprintln!("soft {mode:?} {soft:?}: worst relative error {err:.2e} (fd {fd:.6}, adjoint {g:.6}), price share {share:.2}");
-                assert!(err < 1e-3 && err < 3.0 * base, "{mode:?} {soft:?}: fd {fd} vs adjoint {g}");
-            }
-        }
-    }
-
-    /// The soft floor's point: a dip sliding under the floor, and the crossing sliding past a
-    /// tick, move the score by next to nothing.
-    #[test]
-    fn soft_floor_is_continuous() {
-        let eps = 1e-9;
-        let soft = Soft { c: 0.1, e: 1, m: 0.1, kill: 2.0 };
-        // A dip to the floor at state 2, then up and down through it for good at state 5.
-        let (a, b) = (at(&[0.0, -0.5, -1.0 + eps, -0.5, 0.0, -1.5]), at(&[0.0, -0.5, -1.0 - eps, -0.5, 0.0, -1.5]));
-        let (c, d) = (at(&[0.0, -0.5, -0.5, -0.5, -1.0 + eps, -1.5]), at(&[0.0, -0.5, -0.5, -0.5, -1.0 - eps, -1.5]));
-        for mode in [Exit::Time, Exit::Dist] {
-            let (x, y) = (utility_soft(&a, 1.0, mode, 0.0, soft), utility_soft(&b, 1.0, mode, 0.0, soft));
-            assert!((x - y).abs() < 1e-6, "{mode:?} dip: {x} {y}");
-            let (x, y) = (utility_soft(&c, 1.0, mode, 0.0, soft), utility_soft(&d, 1.0, mode, 0.0, soft));
-            assert!((x - y).abs() < 1e-6, "{mode:?} crossing: {x} {y}");
-        }
-        // The hard floor, for contrast, loses the flight after the dip.
-        assert!(exit_score(&b, 1.0, Exit::Time) < 2.5 && utility_soft(&b, 1.0, Exit::Time, 0.0, soft) > 4.0);
     }
 
     /// The bubble must not jump as the crossing slides past a tick.
