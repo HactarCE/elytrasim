@@ -595,7 +595,7 @@ Data: `runs/floor/v13-pumps` (`out/` the K table, `cont-k/` its continuations, `
 the infinite-flight scan, `v1-constant-relax/` the first seed; `summary.py`, `final.py`,
 `infsum.py` and `budget.py` print this section's and Infinite flight's tables from them).
 
-### 6g. Backward DP (`floordp`; measured 2026-09-26 17:35 EDT on the cluster, commit 9525ae6)
+### 6g. Backward DP (`floordp`; measured 2026-09-26 17:30 EDT on the cluster, commit 9525ae6)
 
 `floordp` computes the value of every state instead of improving one schedule. The state is
 `(h, v_y, v_z)`: the kernel reads only velocity and pitch, and the floor only the clearance.
