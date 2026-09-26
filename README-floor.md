@@ -593,6 +593,107 @@ Data: `runs/floor/v13-pumps` (`out/` the K table, `cont-k/` its continuations, `
 the infinite-flight scan, `v1-constant-relax/` the first seed; `summary.py`, `final.py`,
 `infsum.py` and `budget.py` print this section's and Infinite flight's tables from them).
 
+### 6g. A soft floor in place of the exit (`--soft`; measured 2026-09-25 23:05 EDT on the laptop)
+
+`--soft c[,e[,m[,kill]]]` (`Soft` in `src/bin/floor.rs`; `e` 1, `m` 0, `kill` 2 unless given)
+makes going under the floor survivable. Every state before the flight's **last** crossing pays
+`c (m - h)^e` blocks of energy for clearance `h < m`. The score is read at the last crossing
+before the flight first sinks `kill` blocks under. In endurance, a tick under the floor is then
+worth `1 - per_block * c * depth^e` ticks, which turns negative past a depth set by `c`. A dip
+that touches the floor mid-flight moves the score by nothing, where the hard exit loses every lap
+after it. What stays discontinuous: sinking to `-kill`, and an underground stretch whose top
+reaches the floor from below. `--grow g` multiplies `c` per stall stage, as `--shrink` does the
+bubble. Gradient only. The graze is off unless `--graze` is given. With it, the projection lifts
+dips that are under the floor, and the rejection rule lets none sink further. That combination is
+the **repair**: it makes a soft answer fly under the hard rules, where a hard ascent from it would
+end the flight at its first under-floor dip. The gradient is checked against finite differences
+on a flight that dips 0.2 under and climbs back out, for each shape, `m` and mode. The soft
+price is 2.6-36x the rest of the gradient at the checked ticks, and the error (1.2-3.0e-4) is
+the hard exit's on the same schedule (1.0-2.2e-4, `f32` trig noise at dive speed).
+
+All runs: `pumps:K` seeds, `K = 1..6`, both modes, `y0 = 8..32`, `--penalty l2:2 --n 150`,
+`--method grad`. "Repair" is `--soft 1000,2,0.001 --graze 1e-2,3e-3,1e-3` from the soft answer.
+Scores are the hard `t*` or `z(t*)` from the header, summed over `y0 = 20..32` of the best `K`
+against the hard graze's. Below 20 every arm ties the hard floor to 0.5%. Won, lost and failed
+count the 54 seeds per mode where the repaired answer beats hard by 1%, loses by 1%, or is under
+half of it. 6768 solves in about 4.5 minutes of wall clock at `-P 10`.
+
+| arm | mode | deepest dip of the soft answer: median, min, under/54 | raw | repaired | better of hard and repaired | won / lost / failed |
+|---|---|---|---|---|---|---|
+| hard, graze off | time | - | -28.5% | - | - | 0 / 49 / 0 |
+| hard, graze off | dist | - | -37.0% | - | - | 0 / 54 / 1 |
+| hard, restarted from its own answer | time | - | +0.9% | - | - | 4 / 0 / 0 |
+| hard, restarted from its own answer | dist | - | +8.9% | - | - | 20 / 0 / 0 |
+| repair settings, from the seed | time | +0.0008, +0.001, 0 | +0.5% | - | +1.1% | 10 / 3 / 0 |
+| repair settings, from the seed | dist | +0.0006, +0.001, 0 | +8.8% | - | +13.2% | 22 / 14 / 0 |
+| e=1, c=1 | time | -0.0053, -0.108, 38 | -47.5% | -1.0% | +0.6% | 9 / 2 / 0 |
+| e=1, c=1 | dist | -0.0789, -2.000, 49 | -84.5% | +30.9% | +37.3% | 23 / 14 / 3 |
+| e=1, c=10 | time | +0.0010, -0.003, 1 | -14.4% | -0.3% | +0.9% | 11 / 4 / 0 |
+| e=1, c=10 | dist | +0.0010, +0.000, 0 | -20.3% | +54.2% | +54.7% | 28 / 9 / 0 |
+| e=1, c=100 | time | +0.0235, +0.001, 0 | -28.8% | +0.4% | +1.0% | 10 / 5 / 0 |
+| e=1, c=100 | dist | +0.0200, +0.001, 0 | -37.4% | +11.5% | +11.5% | 28 / 9 / 0 |
+| e=2, c=10 | time | -0.0405, -0.087, 54 | -85.8% | +1.2% | +2.0% | 19 / 1 / 0 |
+| e=2, c=10 | dist | -0.0919, -0.399, 54 | -85.5% | +85.2% | +89.7% | 27 / 12 / 9 |
+| e=2, c=100 | time | -0.0044, -0.014, 54 | -85.8% | +0.3% | +1.2% | 17 / 1 / 0 |
+| **e=2, c=100** | **dist** | -0.0110, -0.041, 54 | -85.4% | **+49.9%** | +49.9% | **34 / 7 / 0** |
+| e=2, c=1000 | time | +0.0005, -0.000, 0 | -9.9% | -0.5% | +0.9% | 10 / 5 / 1 |
+| e=2, c=1e4 | time | +0.0009, +0.000, 0 | -12.5% | -1.9% | +0.2% | 7 / 6 / 0 |
+| e=2, c=1e4 | dist | +0.0010, +0.001, 0 | -22.9% | +19.2% | +19.2% | 23 / 14 / 0 |
+| **e=2, c 1 -> 1e4, x10 per stage** | **time** | +0.0009, -0.384, 1 | +1.7% | **+2.5%** | +2.6% | **20 / 0 / 0** |
+| e=2, c 1 -> 1e4, x10 per stage | dist | -0.0284, -1.872, 33 | -74.5% | +20.9% | +32.6% | 19 / 18 / 9 |
+| e=2, c 0.1 -> 1e4 | time | +0.0009, -1.480, 7 | -10.3% | -0.7% | +1.4% | 22 / 1 / 0 |
+| e=2, c 0.1 -> 1e4 | dist | -0.0007, -1.971, 27 | -20.8% | -3.5% | +2.6% | 26 / 20 / 6 |
+| e=1, c 0.3 -> 73, x3 per stage | time | +0.0010, -0.114, 4 | -3.8% | +0.5% | +1.8% | 13 / 1 / 0 |
+| e=1, c 0.3 -> 73, x3 per stage | dist | +0.0007, -0.908, 25 | -33.7% | -21.4% | +2.0% | 18 / 17 / 2 |
+
+`runs/floor/v15-soft/table.py` prints the full table: `e=1` at `c = 3, 30`, `e=2` at 1000 in
+range, and `x3` and `kill 5` variants of the continuation, all within the pattern below. Two
+range cells, `e=2` at `c = 1000` and `kill 5`, include one answer that outlasts the 4800 cap, so
+their sums include a value-to-go guess.
+
+* **The discontinuity hurts when nothing handles it, and the graze mostly handles it.** With the
+  graze off, the ascent walks a dip onto the floor and stalls there: -28% and -37%, every seed
+  worse (6c). A large exact penalty (`e=1`, `c >= 10`) does the same through its kink. Dips park
+  at `m`, the answers fly legally, and they score -14% to -37%. The graze's projection treats the
+  floor as a constraint and does not stall. In endurance that leaves little: the best soft route
+  gains 2.5%, against 0.9% for simply restarting the hard ascent.
+* **In range, the hard floor keeps the ascent from adding laps.** At `y0 = 30..32` a soft answer
+  with dips 0.1-0.34 under flies 6-10 floor dips, and the hard answer from the same seed 5-7
+  (`dist_y32_k6`: 10 against 6, with the last peak at 103 blocks of energy against 41). The
+  repair lifts every dip to 0.001 and keeps the laps: 10 dips, peak 104, `z` 5059 against 1680.
+  The likely mechanism, from Infinite flight: laps gain energy only above a break-even of about
+  27 blocks, and a deeper bottom is a faster one and gains more. Letting dips go under pushes the
+  whole sequence of laps past break-even. Once there, the laps can afford the lift back to the
+  floor. Endurance lap counts match between arms at every `y0` and `K` tried (as in 6f, its
+  ascent adds no laps).
+* **The magnitude has to be small enough to let dips through, and the repair has to follow.**
+  Raw soft answers that dip under score -85% under the hard rules: the hard exit ends them at
+  the first dip. The ones that stay above the floor (large `c`) are the stalled ones above.
+  After the repair, `e=2` at `c = 10` and `100` are the best range routes (+85%, +50%), well
+  ahead of 1e4 (+19%). `c = 10` has the larger sum but fails on 9 seeds, where the repair cannot
+  lift a dip 0.1-0.4 under. `c = 100` fails on none. (1000 sums to +88%, but with one cap
+  survivor, 8 failures, and as many seeds lost as won.)
+* **Too small, and the flight tunnels.** At `e=1, c=1` range dips go to -2.000, the kill depth:
+  diving deeper buys more speed than the price costs, so the cliff has only moved down to
+  `-kill`. The same happens inside the continuations that start at `c <= 1` (min -1.9). This is
+  why growing `c` within one ascent is the worse range route (+21%, 9 failures). L-BFGS carries
+  those deep dips into stiff stages it cannot leave, while a separate repair from a moderate `c`
+  lifts them.
+* **Where the gains are.** They concentrate at `y0 >= 30`, where sustained flight exists and a
+  score counts the laps kept rather than an optimum (Infinite flight, 6f). Range at `y0 = 28`
+  gains 8-11% on the routes above. At 20-26 gains are 0-3% in both modes. `y0 = 29` range
+  loses 3-34% for most arms (`e=2, c=100` gains 5.6%). Not examined why. Endurance `y0 = 31`
+  loses up to 6%.
+
+Use: for range, run `--soft 100,2,0.001`, then the repair from its answer, and keep the better
+of that and the hard answer. For endurance, `--soft 1,2,0.001 --grow 10 --anneal 4` then the
+repair; it won on 20 of 54 seeds and lost on none, for +2.5%. The default is unchanged: the
+graze.
+
+Data: `runs/floor/v15-soft` (`out/<mode>_y<y0>_k<K>_<arm>[+g|+h].pitches`, `+g` the repair, `+h` a
+plain hard ascent from the answer; `run.sh`, `harden.sh`, `rehard.sh`; `summary.py` and `table.py`
+print the tables, `laps.sh` counts floor dips).
+
 ### 7. Exact `f32` output (a correctness fix, kept)
 
 An exit optimum skims the floor at zero margin. Written to four decimals, one `y0 = 30` schedule
@@ -726,6 +827,7 @@ floor probe
 floor exit   --y0 8 --mode time|dist [--init hold:-13|minipump|pumps:<K>] [--after <file>] [--ke <c>] [--shift] [--n 150] [--tol 1e-3] [--out <file>]
              [--method tick|grad|grad+tick] [--iters 2000] [--max-step 5] [--graze 1e-2,3e-3,1e-3]
              [--bubble <margin>,<weight> [--shrink <r>] [--anneal <k>]] [--graze off]
+             [--soft <c>[,<e>[,<m>[,<kill>]]] [--grow <g>] [--anneal <k>]]   (6g; the graze is then off unless given)
 floor endure --y0 8 [--lambda 20 --anneal 3] [--out <file>]
 floor safety --y0 4 --n 37 [--init <spec>]
 floor solve  --y0 4 --n 36 [--init <spec>]
@@ -738,6 +840,6 @@ Init specs: `hold:<p>`, `pump:<p_down>,<k>,<p_up>`, `tile:<file>` (a cycle repea
 `--mu` and `--limit` are the usual curvature price and pitch limit, defaulting to `1e-4` and `85`
 as in `runs/atlas`. `runs/floor/` holds the best schedule per cell (`exit_{time,dist}_y<y0>.pitches`, `y0 = 1..32`),
 `runs/floor/v7-30pass/` the with/without-tail-shift ascents, `v8-bubble/` and `v9-bubble-cont/` the floor-bubble ones and
-`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent, `v12-bubble-grad/` the gradient with a bubble, `v13-pumps/` the K-climb seed and the infinite-flight scan with it, `v14-wobble/` the wobble study; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v12,
+`v10-pen/` the curvature-price shapes and search moves, `v11-grad/` gradient against coordinate ascent, `v12-bubble-grad/` the gradient with a bubble, `v13-pumps/` the K-climb seed and the infinite-flight scan with it, `v14-wobble/` the wobble study, `v15-soft/` the soft floor; `tools/plot_floor_profiles.py` draws the no-shift v7 run and all of v8-v12,
 `runs/floor/v2-cluster/` every solve behind the best schedules,
 and `runs/floor/inf/` the first infinite-flight scan (tiled cycle, superseded).
