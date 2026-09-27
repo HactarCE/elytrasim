@@ -6,7 +6,7 @@
 #SBATCH --output=logs/%x-%A_%a.out
 # The booster explorer: one array task per node, one cell per hyperthread. Submit with
 # `sbatch --array=0-<nodes-1> --export=ALL,RUN=<dir>`; the work list is $RUN/work.txt, one
-# "<speed> <angle>" per line, and the shard count is the array's size.
+# "<speed> <pitch>" per line, and the shard count is the array's size.
 set -u
 cd "${RUN:?set RUN}" || exit 1
 export TRIG=mth_lut LIM=89 FLIGHT=algebraic RAYON_NUM_THREADS=1

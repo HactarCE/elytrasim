@@ -13,24 +13,26 @@
 //! Markers are scored two ways: pointwise along the optimum's own trajectory, and flown
 //! closed-loop from the start to their own apex.
 //!
-//! A start aimed below horizontal is not a gain phase yet: the optimum holds pitch 0 until `v_z`
+//! A start aimed below horizontal (positive pitch) is not a gain phase yet: the optimum holds pitch 0 until `v_z`
 //! peaks (the cycle's snap, `vz_peaked`), flicks, and only then climbs. The `snap+` markers put
 //! that hold in front of a gain rule.
 //!
 //! Run as `TRIG=mth_lut LIM=89 cargo run --release --example booster -- <mode> ...`, which is what
-//! elytra-vario runs; `FLIGHT=algebraic` gives the same answers 3.6x faster. Speeds are b/t,
-//! angles are degrees above horizontal, and lists are comma-separated. Modes:
+//! elytra-vario runs; `FLIGHT=algebraic` gives the same answers 3.6x faster. Speeds are b/t, and
+//! lists are comma-separated. Every angle is a Minecraft pitch in degrees, negative nose-up;
+//! `<pitch>` for a launch is the look pitch the booster reads, so the boost's flight path is
+//! `-pitch` above horizontal. Modes:
 //!
-//!     [speeds] [angles]            the marker-vs-optimum grid (no mode word)
-//!     explore <speed> <angle> <dir> one explorer cell to <dir>, for tools/plot_booster_explorer.py
-//!     cell <speed> <angle>         the apex optimum, one line: speed,angle,apex,apex_tick
-//!     launch [speeds]              best approach angle per speed (grid + golden section)
-//!     ceiling <speed> <h> [angles] fewest ticks to reach h blocks up, per approach angle
+//!     [speeds] [pitches]           the marker-vs-optimum grid (no mode word)
+//!     explore <speed> <pitch> <dir> one explorer cell to <dir>, for tools/plot_booster_explorer.py
+//!     cell <speed> <pitch>         the apex optimum, one line: speed,pitch,apex,apex_tick
+//!     launch [speeds]              best approach pitch per speed (grid + golden section)
+//!     ceiling <speed> <h> [pitches] fewest ticks to reach h blocks up, per approach pitch
 //!     race <v_y> <v_z> <n> <held>  most height by tick n, against the markers and a held pitch
 //!     flights <v_y> <v_z>          optimum and three markers flown, for tools/plot_booster.py
 //!     lag <v_y> <v_z> <pitch0>     apex when following n=20 late or slowly
 //!     replay                       stdin "v_y v_z p0 p1 ...": the states, for checking logs
-//!     trace <speed> <angle>        the optimum's pitch per tick beside n=12, n=20 and both laws
+//!     trace <speed> <pitch>        the optimum's pitch per tick beside n=12, n=20 and both laws
 //!
 //! See README-booster.md for what the results say and how EMC's boosters work.
 
@@ -127,13 +129,14 @@ fn solve_height(v0: Vec3, seeds: &[Vec<f64>]) -> (f64, Vec<f64>) {
     }).max_by(|a, b| a.0.total_cmp(&b.0)).unwrap()
 }
 
-fn launch(speed: f64, angle: f64) -> Vec3 {
-    Vec3::new(0.0, speed * angle.to_radians().sin(), speed * angle.to_radians().cos())
+/// A booster's launch: `speed` b/t along a look at Minecraft `pitch` (negative is up).
+fn launch(speed: f64, pitch: f64) -> Vec3 {
+    Vec3::new(0.0, -speed * pitch.to_radians().sin(), speed * pitch.to_radians().cos())
 }
 
-/// The best apex from a booster launch at `speed` b/t, `angle` degrees above horizontal.
-fn apex_opt(speed: f64, angle: f64) -> (f64, Vec<f64>) {
-    let v0 = launch(speed, angle);
+/// The best apex from a booster launch at `speed` b/t and look `pitch`.
+fn apex_opt(speed: f64, pitch: f64) -> (f64, Vec<f64>) {
+    let v0 = launch(speed, pitch);
     let s0 = State { pos: Vec3::ZERO, vel: v0 };
     let seeds = vec![gain_bvp(&s0, 0.0, (0.0, 0.0), -45.0, 600),
                      fly(v0, &|s: &State| law(s.vel.z, 0.771)).0,
@@ -141,11 +144,11 @@ fn apex_opt(speed: f64, angle: f64) -> (f64, Vec<f64>) {
     solve_height(v0, &seeds)
 }
 
-/// The fewest ticks in which a launch at (`speed`, `angle`) can be `h` blocks up, and the
+/// The fewest ticks in which a launch at (`speed`, `pitch`) can be `h` blocks up, and the
 /// schedule that does it: bisection on `n` over `max y_n`, warm-started from the apex climb.
-fn soonest(speed: f64, angle: f64, h: f64) -> Option<(usize, Vec<f64>)> {
-    let v0 = launch(speed, angle);
-    let (apex, ps) = apex_opt(speed, angle);
+fn soonest(speed: f64, pitch: f64, h: f64) -> Option<(usize, Vec<f64>)> {
+    let v0 = launch(speed, pitch);
+    let (apex, ps) = apex_opt(speed, pitch);
     if apex < h { return None }
     let st = replay_from(v0, &ps);
     let mut hi = (0..st.len()).find(|&t| st[t].pos.y >= h).unwrap();
@@ -301,13 +304,13 @@ fn main() {
         return;
     }
     if a.get(1).map(|s| s.as_str()) == Some("launch") {
-        // The best launch angle for the apex at each booster speed: a 2.5-degree grid, then a
+        // The best launch pitch for the apex at each booster speed: a 2.5-degree grid, then a
         // golden-section refine around its best. CSV rows: the grid, then the refined optimum.
         let speeds = list(2, "1,1.25,1.5,1.75,2,2.25,2.5,2.75,3,3.25,3.5,3.75,4,4.25,4.5");
-        println!("kind,speed,angle,apex,apex_tick");
+        println!("kind,speed,pitch,apex,apex_tick");
         let rows: Vec<String> = speeds.par_iter().flat_map(|&v| {
             let grid: Vec<(f64, f64, usize)> = (0..=40).into_par_iter().map(|i| {
-                let g = -20.0 + 2.5 * i as f64;
+                let g = 20.0 - 2.5 * i as f64;
                 let (h, ps) = apex_opt(v, g);
                 (g, h, ps.len())
             }).collect();
@@ -328,8 +331,8 @@ fn main() {
         return;
     }
     if a.get(1).map(|s| s.as_str()) == Some("explore") {
-        // One explorer cell, written to <dir>/v<speed>_g<angle>.csv: the apex optimum from a
-        // launch at (speed, angle), and n=20 and the gain law flown from the same launch over
+        // One explorer cell, written to <dir>/v<speed>_p<pitch>.csv: the apex optimum from a
+        // launch at (speed, pitch), and n=20 and the gain law flown from the same launch over
         // the optimum's length plus 30 ticks, so each is seen past its own apex.
         let (v, g): (f64, f64) = (a[2].parse().unwrap(), a[3].parse().unwrap());
         let dir = &a[4];
@@ -342,7 +345,7 @@ fn main() {
         };
         let runs = [("optimum", opt), ("dTE n=20", flown(&|s: &State| dte(s, 20))),
                     ("law K=0.771", flown(&|s: &State| law(s.vel.z, 0.771)))];
-        let mut out = format!("# speed {v} angle {g} apex {h:.5} trig {:?} flight {:?} lim {}\nrule,t,pitch,y,z,vy,vz\n",
+        let mut out = format!("# speed {v} pitch {g} apex {h:.5} trig {:?} flight {:?} lim {}\nrule,t,pitch,y,z,vy,vz\n",
                               trig_mode(), flight_mode(), lim());
         for (name, ps) in &runs {
             for (t, s) in replay_from(v0, ps).iter().enumerate() {
@@ -350,23 +353,23 @@ fn main() {
                 out += &format!("{name},{t},{p},{:.5},{:.5},{:.6},{:.6}\n", s.pos.y, s.pos.z, s.vel.y, s.vel.z);
             }
         }
-        std::fs::write(format!("{dir}/v{v:.1}_g{g}.csv"), out).unwrap();
+        std::fs::write(format!("{dir}/v{v:.1}_p{g}.csv"), out).unwrap();
         return;
     }
     if a.get(1).map(|s| s.as_str()) == Some("cell") {
-        // One (speed, launch angle) cell: the apex optimum. For timing and for the explorer.
+        // One (speed, launch pitch) cell: the apex optimum. For timing and for the explorer.
         let (v, g): (f64, f64) = (a[2].parse().unwrap(), a[3].parse().unwrap());
         let (h, ps) = apex_opt(v, g);
         println!("{v},{g},{h:.4},{}", ps.len());
         return;
     }
     if a.get(1).map(|s| s.as_str()) == Some("ceiling") {
-        // The launch angle that reaches `h` blocks up soonest, at one booster speed.
+        // The launch pitch that reaches `h` blocks up soonest, at one booster speed.
         let v: f64 = a[2].parse().unwrap();
         let h: f64 = a[3].parse().unwrap();
-        let angles = list(4, "15,17.5,20,22.5,25,27.5,30,32.5,35");
-        println!("angle,ticks,z,pitches");
-        let rows: Vec<String> = angles.par_iter().map(|&g| match soonest(v, g, h) {
+        let pitches = list(4, "-15,-17.5,-20,-22.5,-25,-27.5,-30,-32.5,-35");
+        println!("pitch,ticks,z,pitches");
+        let rows: Vec<String> = pitches.par_iter().map(|&g| match soonest(v, g, h) {
             None => format!("{g},,,"),
             Some((n, ps)) => {
                 let st = replay_from(launch(v, g), &ps);
@@ -378,7 +381,7 @@ fn main() {
     }
     if a.get(1).map(|s| s.as_str()) == Some("trace") {
         let (v, g): (f64, f64) = (a[2].parse().unwrap(), a[3].parse().unwrap());
-        let v0 = Vec3::new(0.0, v * g.to_radians().sin(), v * g.to_radians().cos());
+        let v0 = launch(v, g);
         let s0 = State { pos: Vec3::ZERO, vel: v0 };
         let bvp0 = gain_bvp(&s0, 0.0, (0.0, 0.0), -45.0, 600);
         let ms = markers();
@@ -394,15 +397,15 @@ fn main() {
         return;
     }
     let speeds = list(1, "1.5,2,2.5,3,3.5,4");
-    let angles = list(2, "0,10,20,30");
+    let pitches = list(2, "0,-10,-20,-30");
     let ms = markers();
 
-    println!("# speed b/t, angle deg = flight path above horizontal at the boost");
+    println!("# speed b/t, pitch deg = the look the booster reads (Minecraft, negative is up)");
     println!("# height: pts = pointwise RMS deg on the optimum's climb (first 20 ticks | all); flown = apex height lost, blocks");
     println!("# cycle:  the same against the climb-to-apex optimum at the cycle's apex prices; flown = J lost, blocks");
     for &v in &speeds {
-        for &g in &angles {
-            let v0 = Vec3::new(0.0, v * g.to_radians().sin(), v * g.to_radians().cos());
+        for &g in &pitches {
+            let v0 = launch(v, g);
             let s0 = State { pos: Vec3::ZERO, vel: v0 };
 
             let bvp0 = gain_bvp(&s0, 0.0, (0.0, 0.0), -45.0, 600);
@@ -417,7 +420,7 @@ fn main() {
             let stc = replay_from(v0, &pc);
             let jc = value(stc.last().unwrap(), true);
 
-            println!("\n== |v| {v:.2} b/t ({:.1} b/s), angle {g:.0}: v_y {:.3} v_z {:.3}", v * 20.0, v0.y, v0.z);
+            println!("\n== |v| {v:.2} b/t ({:.1} b/s), pitch {g:.0}: v_y {:.3} v_z {:.3}", v * 20.0, v0.y, v0.z);
             println!("   height optimum: apex {h:.3} b at tick {apex_h} of {}; bvp(mu=0) {y_bvp0:.3} b in {} ticks", ph.len(), bvp0.len());
             println!("     pitches[0..10]: {}", ph.iter().take(10).map(|p| format!("{p:.1}")).collect::<Vec<_>>().join(" "));
             println!("   cycle optimum:  J {jc:.3}, apex y {:.3} v_z {:.3} at tick {}", stc.last().unwrap().pos.y, stc.last().unwrap().vel.z, pc.len());

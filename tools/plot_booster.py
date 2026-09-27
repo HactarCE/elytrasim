@@ -37,12 +37,12 @@ def main(path, out, title):
     for rule in order:
         rows, st = runs[rule], STYLE[rule]
         rows_p = [r for r in rows if r["pitch"] != ""][: n_opt + 5]
-        axes[0].plot([int(r["t"]) for r in rows_p], [-float(r["pitch"]) for r in rows_p], **st)
+        axes[0].plot([int(r["t"]) for r in rows_p], [float(r["pitch"]) for r in rows_p], **st)
         rows_c = rows[: n_opt + 5]
         axes[1].plot(col(rows_c, "t"), col(rows_c, "y"), **st)
         axes[2].plot(col(rows_c, "z"), col(rows_c, "y"), **st)
 
-    axes[0].set(xlabel="tick", ylabel="nose-up pitch, deg  (= −Minecraft pitch)", title="pitch flown")
+    axes[0].set(xlabel="tick", ylabel="pitch, deg  (negative is nose up)", title="pitch flown")
     axes[1].set(xlabel="tick", ylabel="height gained, blocks", title="height against time")
     axes[2].set(xlabel="horizontal distance, blocks", ylabel="height gained, blocks",
                 title="height against distance")
@@ -50,7 +50,7 @@ def main(path, out, title):
         ax.title.set_color(INK)
         ax.xaxis.label.set_color(INK2)
         ax.yaxis.label.set_color(INK2)
-    axes[0].set_ylim(-5, 95)
+    axes[0].set_ylim(-95, 5)
     axes[0].legend(frameon=False, fontsize=9, labelcolor=INK)
     fig.suptitle(f"Booster start, {title}: every rule flown closed-loop (vanilla trig, |pitch| ≤ 89)",
                  color=INK, fontsize=12)
