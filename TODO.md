@@ -40,6 +40,11 @@ josie's todo/notes, don't edit this, tho you can include it in commits
 - sweep λDPE + (1-λ)DTE (use something other than λ)
 - gain phase myopic-metric
 - initial snap down switching time myopic-metric. snap down until you hit some y-vel? maybe similar to the hold-0 switching time? where you are going to convert y-vel to z-vel
+- optimize optimizer
+    - A ramp that should start a tick later, or bend, has to move many ticks together, so a one-pitch-at-a-time search advances it by slivers.
+- how to do a pump over a min barrier st you exit as fast as possible
+- use clap
+- gain markers for when we have a huge about of vel for monster. this is ood for the lookahead 20 marker.
 
 ## turning experiments
 
