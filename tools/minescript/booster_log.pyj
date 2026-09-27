@@ -1,0 +1,137 @@
+r"""
+usage: \booster_log [tag]
+
+Logs the player's state once per client tick to minescript/booster_logs/<time>[_tag].csv,
+for comparing booster climbs against elytrasim. Runs until stopped with \killjob.
+
+One row per tick, whether or not gliding, so walking up to the booster is in the log too:
+
+  game_tick           level game time; consecutive rows differ by 1 unless the game stalled
+  x y z               Entity.getX/Y/Z
+  vx vy vz            getDeltaMovement(): the velocity the next tick starts from
+  yaw pitch           getYRot/getXRot, Minecraft convention (pitch negative = nose up)
+  fall_flying on_ground
+  hud_*               elytra-vario's own latest Sample and its markers, if the mod is loaded:
+                      the position/pitch it sampled (to align its tick with this one), and the
+                      1-tick and lookahead pitches it would draw now. Empty when it has none.
+
+Velocity-setting packets addressed to the player (SetEntityMotion, PlayerPosition, Explode)
+go to the matching .packets.txt with the game tick they arrived on -- that is the booster.
+Rows are flushed every second, so \killjob loses at most that much.
+"""
+
+from system.pyj.minescript import *
+import system.pyj.sys as sys
+
+Minecraft = JavaClass("net.minecraft.client.Minecraft")
+FileWriter = JavaClass("java.io.FileWriter")
+File = JavaClass("java.io.File")
+LocalDateTime = JavaClass("java.time.LocalDateTime")
+DateTimeFormatter = JavaClass("java.time.format.DateTimeFormatter")
+ConcurrentLinkedQueue = JavaClass("java.util.concurrent.ConcurrentLinkedQueue")
+Math = JavaClass("java.lang.Math")
+
+mc = Minecraft.getInstance()
+
+# elytra-vario is optional: without it the hud_* columns are empty.
+try:
+  VarioClient = JavaClass("jealoustone.elytravario.ElytraVarioClient")
+  VarioConfig = JavaClass("jealoustone.elytravario.VarioConfig")
+  recorder = VarioClient.RECORDER
+except Exception as e:
+  recorder = None
+  echo(f"booster_log: elytra-vario not found, hud columns will be empty ({e})")
+
+stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"))
+tag = "_" + sys.argv[1] if len(sys.argv) > 1 else ""
+log_dir = File(mc.gameDirectory, "minescript/booster_logs")
+log_dir.mkdirs()
+base = File(log_dir, stamp + tag).getPath()
+rows = FileWriter(base + ".csv")
+packets = FileWriter(base + ".packets.txt")
+pending_packets = ConcurrentLinkedQueue()
+
+COLUMNS = ["game_tick", "x", "y", "z", "vx", "vy", "vz", "yaw", "pitch", "fall_flying",
+           "on_ground", "hud_x", "hud_y", "hud_z", "hud_pitch", "hud_n1", "hud_horizon",
+           "hud_nH"]
+rows.write(",".join(COLUMNS) + "\n")
+
+WATCHED = ["SetEntityMotion", "PlayerPosition", "Explode"]
+state = {"ticks": 0, "boosts": 0, "last_motion": -100}
+
+
+def fmt(v):
+  return "" if v is None else str(v)
+
+
+def hud_columns():
+  if recorder is None:
+    return ["", "", "", "", "", "", ""]
+  s = recorder.latest()
+  if s is None:
+    return ["", "", "", "", "", "", ""]
+  n1 = recorder.optimalPitch()
+  horizon = VarioConfig.lookaheadTicks
+  nh = recorder.optimalPitch(horizon)
+  return [fmt(s.x()), fmt(s.y()), fmt(s.z()), fmt(s.pitch()),
+          "" if n1 is None else fmt(n1.pitch()), fmt(horizon),
+          "" if nh is None else fmt(nh.pitch())]
+
+
+def on_tick(event):
+  p = mc.player
+  if p is None or mc.level is None:
+    return
+  t = mc.level.getGameTime()
+  dm = p.getDeltaMovement()
+  flying = p.isFallFlying()
+  row = [fmt(t), fmt(p.getX()), fmt(p.getY()), fmt(p.getZ()),
+         fmt(dm.x), fmt(dm.y), fmt(dm.z), fmt(p.getYRot()), fmt(p.getXRot()),
+         "1" if flying else "0", "1" if p.onGround() else "0"] + hud_columns()
+  rows.write(",".join(row) + "\n")
+
+  motion = False
+  while not pending_packets.isEmpty():
+    line = pending_packets.poll()
+    packets.write(fmt(t) + "," + line + "\n")
+    if "SetEntityMotion" in line and ("id=" + str(p.getId()) + ",") in line:
+      motion = True
+
+  # A booster re-sends its velocity every tick you are inside it, so one pass is a burst of
+  # motion packets; announce the first of each burst, so a missed pass shows.
+  speed = Math.sqrt(dm.x * dm.x + dm.y * dm.y + dm.z * dm.z)
+  if motion:
+    if t - state["last_motion"] > 10:
+      state["boosts"] += 1
+      echo("booster_log: boost " + str(state["boosts"]) + " at " + str(Math.round(speed * 200) / 10.0)
+           + " b/s, pitch " + str(Math.round(p.getXRot() * 10) / 10.0))
+    state["last_motion"] = t
+
+  state["ticks"] += 1
+  if state["ticks"] % 20 == 0:
+    rows.flush()
+    packets.flush()
+
+
+def on_packet(event):
+  name = event.packet.getClass().getSimpleName()
+  for w in WATCHED:
+    if w in name:
+      pending_packets.add(name + "," + str(event.packet).replace("\n", " "))
+      return
+
+
+def close():
+  rows.flush()
+  rows.close()
+  packets.flush()
+  packets.close()
+
+
+add_event_listener("tick", on_tick)
+add_event_listener("clientbound_packet", on_packet)
+
+import system.pyj.atexit as atexit
+atexit.register(close)
+
+echo(f"booster_log: logging to {base}.csv -- \\killjob to stop")
