@@ -373,8 +373,8 @@ appends (both `y0 <= 8`, a few seconds each).
   `--method grad` (the `y0 = 32` `grad_s2` range run grew four as its cap doubled from 150 to
   2400); endurance runs have not, and why is open. The cross-seeded results are non-monotone in `y0` (27: 751, 28: 690),
   so they are lower bounds too, and the infinite-flight threshold then quoted (35-36 blocks) was
-  lowered to 29.25 by the K-climb seed (6f, Infinite flight) and to at most 29.0 by the backward
-  DP (6g). Measured 2026-09-25 00:30 EDT on the laptop,
+  lowered to 29.25 by the K-climb seed (6f, Infinite flight) and to (28.75, 29.0] by the
+  backward DP (6g). Measured 2026-09-25 00:30 EDT on the laptop,
   `runs/floor/v11-grad/cross-seed`.
 * **Chatter.** Endurance: fewer flips (3 against 8) and 37% less roughness. Range: not
   uniformly. Most counted flips in every variant are the tops of pull-ups (-52 then -49) and the
@@ -666,6 +666,17 @@ first dive costs the same, `29 - 26.7`. The peaks level off at 34.7, with the pe
 33.0-33.1, the top of the grid, which values nothing higher: that plateau is the grid's, not
 the physics'.
 
+**The DP's threshold is in (28.75, 29.0]** (same grid and 1700 sweeps, rerun with `V` saved at
+`y0` steps of 0.25 from 27.5; finished 2026-09-26 19:52 EDT on the cluster, commit 9525ae6). At 28.75
+the flown policy lands, in both modes (t* 1660.8, z 1205.0). Polished, it still lands
+(t* 1851.1, z 1524.6): the polish has a finite cap and no reason to add laps it cannot finish.
+The first peak decides it. At 28.75 it is 26.27 (endurance) and the peaks fall from there
+(26.10, 25.82, 25.38, ..); at 29.0 it is 26.67 and they rise. So the DP's laps break even at a
+first peak between 26.3 and 26.7. t* grows steeply as `y0` approaches the threshold: the
+polished endurance t* is 1093.0, 1205.8, 1401.2, 1851.1 at 28, 28.25, 28.5, 28.75, and range
+z(t*) is 760.8, 859.5, 1028.2, 1524.6. This is a threshold for this grid's policy,
+**not a proof**: a finer grid could lower it, as the finer grids did at 16.
+
 Caveats. The policy is feedback on a grid, so the flight it gives is only as good as the grid
 near the states it visits. `V` above about `y0 = 17` is not a trustworthy estimate even at
 `dv = 0.025` (still 5-80% over and rising). What is trustworthy is every flown or polished number
@@ -673,7 +684,8 @@ here: each is a replay.
 
 Data: `runs/floor/v16-dp` (`<run>.txt` each run's table, `<run>/` its policies as pitch files,
 `<run>.err` its sweep log; `pol/` the polished policies; `known-before-dp.tsv` the comparison;
-`compare.py`, `polcmp.py`, `readme_tables.py`). Cost on one cluster node (4 cores): 1.3 s per
+`compare.py`, `polcmp.py`, `readme_tables.py`; `thresh/` the threshold rerun, with its saved
+`V_time.bin` and `V_dist.bin` for `floordp --load` and its polishes in `thresh/pol/`). Cost on one cluster node (4 cores): 1.3 s per
 sweep at 0.8M states, 5.1 s at 3.2M, 10 s at 6.7M.
 
 ### 7. Exact `f32` output (a correctness fix, kept)
@@ -705,7 +717,7 @@ two rounds of warm starts from the neighbors' winners: 341 solves, 7.8 core-hour
 ## Infinite flight
 
 **Superseded in part by 6g (2026-09-26):** the backward DP's policy flies forever from rest at
-`y0 = 29.0`, with laps that gain energy from a peak of 26.7, so the threshold below is too high and
+`y0 = 29.0` and not from 28.75, with laps that gain energy from a peak of 26.7, so the threshold below is too high and
 the break-even of about 27 is the `pumps` laps', not the physics'. The rest of this section
 is about those laps.
 
