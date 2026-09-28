@@ -50,7 +50,7 @@ def main(path, out, title):
         ax.title.set_color(INK)
         ax.xaxis.label.set_color(INK2)
         ax.yaxis.label.set_color(INK2)
-    axes[0].set_ylim(-95, 5)
+    axes[0].set_ylim(5, -95)  # nose up (negative) is up the page
     axes[0].legend(frameon=False, fontsize=9, labelcolor=INK)
     fig.suptitle(f"Booster start, {title}: every rule flown closed-loop (vanilla trig, |pitch| ≤ 89)",
                  color=INK, fontsize=12)

@@ -61,7 +61,8 @@ def main(path, out):
                          label="apex within 1 block of best")
     axes[0].plot(vs, pitch, color=SERIES, lw=2, marker="o", ms=4, label="best launch pitch")
     axes[0].set(ylabel="look pitch at the booster, deg  (negative is up)", title="best launch pitch")
-    axes[0].legend(frameon=False, fontsize=9, labelcolor=INK, loc="lower right")
+    axes[0].invert_yaxis()  # nose up (negative) is up the page
+    axes[0].legend(frameon=False, fontsize=9, labelcolor=INK, loc="upper right")
     axes[1].plot(vs, apex, color=SERIES, lw=2, marker="o", ms=4)
     axes[1].set(ylabel="apex above booster, blocks", title="best achievable apex")
     axes[2].plot(vs, ticks, color=SERIES, lw=2, marker="o", ms=4)
