@@ -93,10 +93,15 @@ def refined_bests(data):
     return result
 
 
+# The energy field's extent, blocks/tick. Launches here have v_z in [0, 5] and v_y in [-0.5, 6.3].
+FIELD_VZ = (-1, 6)
+FIELD_VY = (-1, 7)
+
+
 def energy_field():
     # Same whole-degree sweep and sRGB ramp as myopic-metrics/tools/plot_field_replay.py.
-    vxlo, vxhi, vylo, vyhi = -0.5, 5.2, -3.0, 6.5
-    width, height = 420, 540
+    (vxlo, vxhi), (vylo, vyhi) = FIELD_VZ, FIELD_VY
+    width, height = 70 * (vxhi - vxlo), 70 * (vyhi - vylo)
     vz, vy = np.meshgrid(np.linspace(vxlo, vxhi, width),
                          np.linspace(vyhi, vylo, height))
     best = np.full(vy.shape, -np.inf)
@@ -173,6 +178,7 @@ figure{min-width:0;min-height:0;margin:0;display:grid;grid-template-rows:auto mi
 </main><script>
 const PACKED="__PACKED__";
 const FIELD="__FIELD__";
+const FIELD_VZ=__FIELD_VZ__, FIELD_VY=__FIELD_VY__;
 const SPEEDS=__SPEEDS__, PITCHES=__PITCHES__, BEST=__BEST__, MISSING=__MISSING__;
 (async()=>{
 const binary=Uint8Array.from(atob(PACKED),c=>c.charCodeAt(0));
@@ -188,37 +194,43 @@ function current(){return DATA[Math.round(speed*5)-1]}
 function selected(){return current().find(c=>c[0]===approach)||current()[0]}
 function summary(c,j=0){return c[1][j][0]}
 function setup(id){const canvas=$(id),r=canvas.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(r.width*d);canvas.height=Math.round(r.height*d);const ctx=canvas.getContext('2d');ctx.setTransform(d,0,0,d,0,0);ctx.clearRect(0,0,r.width,r.height);return {canvas,ctx,w:r.width,h:r.height,m:{l:49,r:11,t:10,b:35}}}
-function bounds(vals,p=.06){const v=vals.filter(Number.isFinite);if(!v.length)return [0,1];let lo=Math.min(...v),hi=Math.max(...v);if(lo===hi){lo-=1;hi+=1}return [lo-(hi-lo)*p,hi+(hi-lo)*p]}
-// A pitch axis is passed high-to-low, so nose up (negative) is up the page.
+// Round axes, as in tools/plot_floor_profiles.py: ticks on 1/2/2.5/5 steps, data domains rounded
+// out to a tick. A pitch axis is passed high-to-low, so nose up (negative) is up the page.
+function niceStep(span,n){const raw=span/n,mag=10**Math.floor(Math.log10(raw)),q=raw/mag;return (q<=1?1:q<=2?2:q<=2.5?2.5:q<=5?5:10)*mag}
+function niceMax(v){const st=niceStep(v,5);return Math.ceil(v/st-1e-9)*st}
+function bounds(vals){const v=vals.filter(Number.isFinite);if(!v.length)return [0,1];let lo=Math.min(...v),hi=Math.max(...v);if(lo===hi){lo-=1;hi+=1}const st=niceStep(hi-lo,4);return [Math.floor(lo/st+1e-9)*st,Math.ceil(hi/st-1e-9)*st]}
+function tickDigits(st){for(let k=0;k<=6;k++)if(Math.abs(st*10**k-Math.round(st*10**k))<1e-9)return k;return 6}
+function ticks(d,st){const lo=Math.min(...d),hi=Math.max(...d),out=[];for(let v=Math.ceil(lo/st-1e-9)*st;v<=hi+st*1e-9;v+=st)out.push(+v.toFixed(10));return out}
 function axes(s,xd,yd,xlabel,ylabel,opt={}){const {ctx,w,h,m}=s,X=x=>m.l+(x-xd[0])/(xd[1]-xd[0])*(w-m.l-m.r),Y=y=>h-m.b-(y-yd[0])/(yd[1]-yd[0])*(h-m.t-m.b);
 if(opt.paint)opt.paint({X,Y});
 ctx.font='11px system-ui';ctx.lineWidth=.7;ctx.strokeStyle='rgba(185,192,201,.22)';ctx.fillStyle='#b9c0c9';
-const tf=(v,d)=>{const st=Math.abs(d[1]-d[0])/4,k=Math.max(0,Math.min(3,Math.ceil(-Math.log10(st))+(st<1?1:0)));return Math.abs(v)<5e-4*Math.max(1,st)?'0':(k||Math.abs(v)>=10?v.toFixed(k):v.toFixed(1))};
-for(let i=0;i<=4;i++){let x=xd[0]+(xd[1]-xd[0])*i/4,px=X(x);ctx.beginPath();ctx.moveTo(px,m.t);ctx.lineTo(px,h-m.b);ctx.stroke();ctx.textAlign='center';ctx.fillText(tf(x,xd),px,h-m.b+15)}
-for(let i=0;i<=4;i++){let y=yd[0]+(yd[1]-yd[0])*i/4,py=Y(y);ctx.beginPath();ctx.moveTo(m.l,py);ctx.lineTo(w-m.r,py);ctx.stroke();ctx.textAlign='right';ctx.fillText(tf(y,yd),m.l-5,py+3)}
-ctx.fillStyle='#e6e9ed';ctx.textAlign='center';ctx.fillText(xlabel,(m.l+w-m.r)/2,h-4);ctx.save();ctx.translate(11,(m.t+h-m.b)/2);ctx.rotate(-Math.PI/2);ctx.fillText(ylabel,0,0);ctx.restore();if(opt.seconds){ctx.fillStyle='#b9c0c9';ctx.textAlign='right';ctx.fillText('÷20 = seconds',w-m.r-2,m.t+11)}return {X,Y};}
+const xs=opt.xstep||niceStep(Math.abs(xd[1]-xd[0]),Math.max(3,Math.floor((w-m.l-m.r)/80))),ys=opt.ystep||niceStep(Math.abs(yd[1]-yd[0]),Math.max(3,Math.floor((h-m.t-m.b)/40)));
+const fmt=(v,st)=>Math.abs(v)<1e-12?'0':v.toFixed(tickDigits(st));
+for(const x of ticks(xd,xs)){const px=X(x);ctx.beginPath();ctx.moveTo(px,m.t);ctx.lineTo(px,h-m.b);ctx.stroke();ctx.textAlign='center';ctx.fillText(fmt(x,xs),px,h-m.b+15)}
+for(const y of ticks(yd,ys)){const py=Y(y);ctx.beginPath();ctx.moveTo(m.l,py);ctx.lineTo(w-m.r,py);ctx.stroke();ctx.textAlign='right';ctx.fillText(fmt(y,ys),m.l-5,py+3)}
+ctx.fillStyle='#e6e9ed';ctx.textAlign='center';ctx.fillText(xlabel,(m.l+w-m.r)/2,h-4);ctx.save();ctx.translate(11,(m.t+h-m.b)/2);ctx.rotate(-Math.PI/2);ctx.fillText(ylabel,0,0);ctx.restore();if(opt.seconds){ctx.fillStyle='#b9c0c9';ctx.textAlign='left';ctx.fillText('÷20 = seconds',m.l+4,m.t+11)}return {X,Y};}
 function line(s,pts,sc,stroke,width=1,dash=[]){if(pts.length<2)return;const c=s.ctx;c.beginPath();pts.forEach((p,i)=>i?c.lineTo(sc.X(p[0]),sc.Y(p[1])):c.moveTo(sc.X(p[0]),sc.Y(p[1])));c.setLineDash(dash);c.strokeStyle=stroke;c.lineWidth=width;c.stroke();c.setLineDash([])}
 function dot(s,x,y,r,fill,outline){const c=s.ctx;c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fillStyle=fill;c.fill();if(outline){c.lineWidth=1.5;c.strokeStyle=outline;c.stroke()}}
 function marks(s,sc,xd,yd){const c=s.ctx;c.save();c.setLineDash([4,3]);for(const [v,name,col] of [[1.65,'goldrush','#e5bf65'],[3,'monster','#7bd9fa']]){if(v<xd[0]||v>xd[1])continue;const x=sc.X(v);c.beginPath();c.moveTo(x,sc.Y(yd[0]));c.lineTo(x,sc.Y(yd[1]));c.strokeStyle=col;c.lineWidth=1;c.stroke();c.fillStyle=col;c.font='10px system-ui';c.textAlign=v===3?'right':'left';c.fillText(name,v===3?x-3:x+3,sc.Y(yd[1])+11)}c.restore()}
 function showRuns(){const cells=current(),sel=selected(),maxT=Math.max(...cells.flatMap(c=>[0,1,2].map(j=>summary(c,j)[1]))),maxY=Math.max(...cells.map(c=>summary(c)[0])),maxZ=Math.max(...cells.map(c=>summary(c)[2]));
-const configs={field:{xd:[-.5,5.2],yd:[-3,6.5],xl:'vz, blocks/tick',yl:'vy, blocks/tick',get:(c,j)=>{let r=c[1][j][1];return r[3].map((v,i)=>[r[4][i],v])}},pitch:{xd:[0,maxT],yd:[90,-90],xl:'tick',yl:'pitch, degrees',get:(c,j)=>c[1][j][1][0].slice(0,-1).map((v,i)=>[i,v])},height:{xd:[0,maxT],yd:[0,maxY*1.05],xl:'tick',yl:'height, blocks',get:(c,j)=>c[1][j][1][1].map((v,i)=>[i,v])},path:{xd:[0,maxZ*1.05],yd:[0,maxY*1.05],xl:'distance, blocks',yl:'height, blocks',get:(c,j)=>{let r=c[1][j][1];return r[1].map((v,i)=>[r[2][i],v])}}};
-for(const [id,cfg] of Object.entries(configs)){const s=setup(id),sc=axes(s,cfg.xd,cfg.yd,cfg.xl,cfg.yl,{paint:id==='field'&&field.complete?({X,Y})=>s.ctx.drawImage(field,X(-.5),Y(6.5),X(5.2)-X(-.5),Y(-3)-Y(6.5)):null});
+const configs={field:{xd:FIELD_VZ,yd:FIELD_VY,xstep:1,ystep:1,xl:'vz, blocks/tick',yl:'vy, blocks/tick',get:(c,j)=>{let r=c[1][j][1];return r[3].map((v,i)=>[r[4][i],v])}},pitch:{xd:[0,niceMax(maxT)],yd:[90,-90],ystep:45,xl:'tick',yl:'pitch, degrees',get:(c,j)=>c[1][j][1][0].slice(0,-1).map((v,i)=>[i,v])},height:{xd:[0,niceMax(maxT)],yd:[0,niceMax(maxY)],xl:'tick',yl:'height, blocks',get:(c,j)=>c[1][j][1][1].map((v,i)=>[i,v])},path:{xd:[0,niceMax(maxZ)],yd:[0,niceMax(maxY)],xl:'distance, blocks',yl:'height, blocks',get:(c,j)=>{let r=c[1][j][1];return r[1].map((v,i)=>[r[2][i],v])}}};
+for(const [id,cfg] of Object.entries(configs)){const s=setup(id),sc=axes(s,cfg.xd,cfg.yd,cfg.xl,cfg.yl,{xstep:cfg.xstep,ystep:cfg.ystep,paint:id==='field'&&field.complete?({X,Y})=>s.ctx.drawImage(field,X(FIELD_VZ[0]),Y(FIELD_VY[1]),X(FIELD_VZ[1])-X(FIELD_VZ[0]),Y(FIELD_VY[0])-Y(FIELD_VY[1])):null});
 for(const c of cells){if(c===sel||c[0]%5!==0)continue;line(s,cfg.get(c,0),sc,color((5-c[0])/95,.35),.85)}
 if(sel){const draw=(j,col,width,dash=[])=>{let pts=cfg.get(sel,j);if(id==='field')line(s,pts,sc,'#0c0d10',width+2);line(s,pts,sc,col,width,dash)};draw(0,'#ffffff',2.2);if(id==='pitch'||id==='height'){if(dte.checked)draw(1,'#f5ae68',1.8,[5,3]);if(law.checked)draw(2,'#e67dbc',1.8,[2,3])}}
 charts[id]={s,sc,points:cells.map(c=>[c[0],cfg.get(c,0)])};}
 }
-function showAngleMetrics(){const cells=current(),best=BEST[Math.round(speed*5)-1];for(const [id,index,label] of [['apex',0,'apex, blocks'],['time',1,'ticks'],['distance',2,'distance, blocks'],['forward',3,'vz, blocks/tick']]){const s=setup(id),ys=cells.flatMap(c=>[0,1,2].map(j=>summary(c,j)[index])),yd=bounds(ys,.08),sc=axes(s,[-90,5],yd,'approach pitch, degrees',label,{seconds:id==='time'});
+function showAngleMetrics(){const cells=current(),best=BEST[Math.round(speed*5)-1];for(const [id,index,label] of [['apex',0,'apex, blocks'],['time',1,'ticks'],['distance',2,'distance, blocks'],['forward',3,'vz, blocks/tick']]){const s=setup(id),ys=cells.flatMap(c=>[0,1,2].map(j=>summary(c,j)[index])),yd=bounds(ys),sc=axes(s,[-90,5],yd,'approach pitch, degrees',label,{seconds:id==='time',xstep:15});
 for(const [j,col,on] of [[1,'#f5ae68',dte.checked],[2,'#e67dbc',law.checked]])if(on)line(s,cells.map(c=>[c[0],summary(c,j)[index]]),sc,col,1.4,[5,3]);
 line(s,cells.map(c=>[c[0],summary(c)[index]]),sc,'#86cfdf',1.7);
 for(const c of cells){const x=sc.X(c[0]),y=sc.Y(summary(c)[index]);dot(s,x,y,c[0]===approach?4:2,c[0]===approach?'#fff':color((5-c[0])/95,.95),c[0]===approach?'#0c0d10':null)}
 if(best){let c=cells.find(c=>c[0]===best[3]);if(c)dot(s,sc.X(c[0]),sc.Y(summary(c)[index]),6,'transparent','#f5e475')}
 charts[id]={s,sc,points:cells.map(c=>[c[0],[sc.X(c[0]),sc.Y(summary(c)[index])]])};}}
-function showSummaries(){for(const [id,metric,label] of [['best-pitch',0,'pitch, degrees'],['best-apex',4,'apex, blocks'],['best-time',5,'ticks']]){const s=setup(id),rows=BEST.map((b,i)=>b?[SPEEDS[i],b]:null).filter(Boolean),yd=id==='best-pitch'?[10,-95]:bounds(rows.map(r=>r[1][metric]),.1),xd=[.2,5],sc=axes(s,xd,yd,'|v|, blocks/tick',label,{seconds:id==='best-time'});
+function showSummaries(){for(const [id,metric,label] of [['best-pitch',0,'pitch, degrees'],['best-apex',4,'apex, blocks'],['best-time',5,'ticks']]){const s=setup(id),rows=BEST.map((b,i)=>b?[SPEEDS[i],b]:null).filter(Boolean),yd=id==='best-pitch'?[10,-95]:bounds(rows.map(r=>r[1][metric])),xd=[.2,5],sc=axes(s,xd,yd,'|v|, blocks/tick',label,{seconds:id==='best-time',ystep:id==='best-pitch'?30:null});
 if(id==='best-pitch'){const c=s.ctx;c.beginPath();rows.forEach(([x,b],i)=>i?c.lineTo(sc.X(x),sc.Y(b[2])):c.moveTo(sc.X(x),sc.Y(b[2])));rows.slice().reverse().forEach(([x,b])=>c.lineTo(sc.X(x),sc.Y(b[1])));c.closePath();c.fillStyle='rgba(134,207,223,.15)';c.fill()}
 marks(s,sc,xd,yd);line(s,rows.map(([x,b])=>[x,b[metric]]),sc,'#86cfdf',1.8);for(const [x,b] of rows)dot(s,sc.X(x),sc.Y(b[metric]),Math.abs(x-speed)<.01?4:2.3,Math.abs(x-speed)<.01?'#fff':'#86cfdf');charts[id]={s,sc,points:rows.map(([x,b])=>[x,[sc.X(x),sc.Y(b[metric])]])};}
 }
 function heatColor(loss,max){if(!Number.isFinite(loss))return '#33383e';if(loss<0)return '#e67dbc';const t=Math.max(0,Math.min(1,Math.log1p(Math.max(0,loss))/Math.log1p(max)));const a=[22,35,43],b=[246,182,75];return `rgb(${a.map((v,i)=>Math.round(v+(b[i]-v)*t)).join(',')})`}
-function showHeatmaps(){let max=Math.max(1,...DATA.flatMap(g=>g.flatMap(c=>[1,2].map(j=>summary(c)[0]-summary(c,j)[0]))));for(const [id,j] of [['loss-dte',1],['loss-law',2]]){const s=setup(id),xd=[.1,5.1],yd=[7.5,-92.5],sc=axes(s,xd,yd,'|v|, blocks/tick','approach pitch, degrees'),c=s.ctx;
+function showHeatmaps(){let max=Math.max(1,...DATA.flatMap(g=>g.flatMap(c=>[1,2].map(j=>summary(c)[0]-summary(c,j)[0]))));for(const [id,j] of [['loss-dte',1],['loss-law',2]]){const s=setup(id),xd=[.1,5.1],yd=[10,-95],sc=axes(s,xd,yd,'|v|, blocks/tick','approach pitch, degrees',{ystep:30}),c=s.ctx;
 for(let i=0;i<DATA.length;i++)for(const cell of DATA[i]){let x=sc.X(SPEEDS[i]-.1),x2=sc.X(SPEEDS[i]+.1),a=cell[0],y=sc.Y(a+1.6),y2=sc.Y(a-1.6);c.fillStyle=heatColor(summary(cell)[0]-summary(cell,j)[0],max);c.fillRect(x,y,x2-x,y2-y)}
 for(const v of [1.65,3]){c.strokeStyle=v===3?'#7bd9fa':'#e5bf65';c.setLineDash([3,3]);c.beginPath();c.moveTo(sc.X(v),sc.Y(yd[0]));c.lineTo(sc.X(v),sc.Y(yd[1]));c.stroke();c.setLineDash([])}
 c.strokeStyle='#fff';c.lineWidth=1.5;c.strokeRect(sc.X(speed-.1),sc.Y(approach+1.6),sc.X(speed+.1)-sc.X(speed-.1),sc.Y(approach-1.6)-sc.Y(approach+1.6));
@@ -245,6 +257,7 @@ def main():
     html = (HTML.replace("__PACKED__", packed).replace("__FIELD__", energy_field())
             .replace("__SPEEDS__", json.dumps(SPEEDS))
             .replace("__PITCHES__", json.dumps(PITCHES))
+            .replace("__FIELD_VZ__", json.dumps(FIELD_VZ)).replace("__FIELD_VY__", json.dumps(FIELD_VY))
             .replace("__BEST__", json.dumps(best))
             .replace("__MISSING__", json.dumps(missing)))
     OUT.write_text(html)
