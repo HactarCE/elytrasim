@@ -53,3 +53,17 @@ josie's todo/notes, don't edit this, tho you can include it in commits
 - for a given num_ticks and yaw_final and y_vel and z_vel, maximize x_vel, energy with vel projected onto xy
 - for a given num_ticks and vel, plot pitch, yaw, energy after holding that rot for num_ticks
 - energy grid, but for a fixed/const/uniform input yaw
+
+## aset
+
+check out the floor constraint optimizer, tho this is more about speedrunning maps, so min-time.
+
+grad ascent is good bc it's fast and has exact physics, but it's local.
+
+dp is good bc it's global and can find the global optimum, but has inexact physics. i also think it is more robust under collision, where reward is highly discontinuous for paths that touch something bc they get killed (even physically realistic relaxations where just their vel gets killed give discontinuous reward). (maybe we do some RL optimizer other than straightforward gradient descent, TODO).
+
+btw for speedrunning we'll have a human run as a seed.
+
+i want to alternate between gradient ascent (or just any local policy with non-interpolated physics) and a local dp bubble around it.
+
+for min-time, i think we should be able to eliminate time from the dp. like we need to do some backwards steps, but i kinda expect we don't need to do on the order of the length of the map.
