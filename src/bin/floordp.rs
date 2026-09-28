@@ -30,6 +30,17 @@
 //!                [--y0 1,2,..] [--fine 0.25] [--maxt 20000] [--every 50] [--out <dir>]
 //!                [--save <file>] [--load <file>]   V as raw little-endian f32, for the same grid;
 //!                                                  `--load` skips the sweeps
+//!                [--gap 10] [--map <file> --map-h 0.1,0.5,..] [--trace]
+//!
+//! `--map` writes the policy on every velocity node at each `--map-h`: the chosen pitch, as
+//! little-endian i16 quarter-degrees, then the *margin*, as f32, `h`-major then `v_y` then `v_z`.
+//! The margin is how much the choice beats the best pitch more than `--gap` degrees from it. A
+//! small margin is where the DP is nearly indifferent between two different pitches, which is
+//! where a feedback policy can flip between them tick to tick. `<file>.spec` records the
+//! layout. `--trace` writes, beside each flown policy, `<mode>_y<y0>.trace`: per tick the
+//! state, the pitch, its `r + V(s')`, and that runner-up and its margin; and
+//! `<mode>_y<y0>.q`, `r + V(s')` for every `--dp` pitch at each of the first `--trace-q 3000`
+//! ticks, little-endian f32, tick-major.
 //!
 //! Physics is `floor`'s: `mth_lut` trig and `reference` flight.
 
@@ -121,6 +132,17 @@ fn backup(g: &Grid, v: &[f32], mode: Mode, h: f64, vel: Vec3, pitch: PitchTrig) 
     (r + g.at(v, nh, nv.y, nv.z), nh, nv)
 }
 
+/// The best pitch on `ps` from `(h, vel)` and its value, and the best more than `gap` degrees
+/// from it (the runner-up) and its value; the runner-up is `None` when every pitch is within `gap`.
+fn ranked(g: &Grid, v: &[f32], mode: Mode, h: f64, vel: Vec3, ps: &[f64], ts: &[PitchTrig], gap: f64)
+          -> (usize, f64, Option<(usize, f64)>) {
+    let q: Vec<f64> = ts.iter().map(|&t| backup(g, v, mode, h, vel, t).0).collect();
+    let best = (0..q.len()).fold(0, |a, i| if q[i] > q[a] { i } else { a });
+    let alt = (0..q.len()).filter(|&i| (ps[i] - ps[best]).abs() > gap)
+        .fold(None, |a: Option<usize>, i| if a.map_or(true, |a| q[i] > q[a]) { Some(i) } else { a });
+    (best, q[best], alt.map(|i| (i, q[i])))
+}
+
 fn main() {
     set_trig_mode(TrigMode::MthLut);
     set_flight_mode(FlightMode::Reference);
@@ -198,6 +220,24 @@ fn main() {
     let fine: f64 = a.num("--fine", 0.25);
     let fp: Vec<f64> = (0..=((2.0 * lim / fine).round() as i64)).map(|i| (-lim + fine * i as f64).min(lim)).collect();
     let ft: Vec<PitchTrig> = fp.iter().map(|&p| PitchTrig::new(p as f32)).collect();
+    let gap: f64 = a.num("--gap", 10.0);
+    let trace = a.0.iter().any(|x| x == "--trace");
+    let trace_q: usize = a.num("--trace-q", 3000);
+    if let Some(f) = a.get("--map") {
+        let mh: Vec<f64> = a.get("--map-h").expect("--map needs --map-h").split(',').map(|x| x.parse().unwrap()).collect();
+        let cells: Vec<(f64, f64, f64)> = mh.iter().flat_map(|&h| (0..g.nvy).flat_map(move |j| (0..g.nvz).map(move |k| (h, j, k))))
+            .map(|(h, j, k)| (h, g.vy0 + j as f64 * g.dvy, k as f64 * g.dvz)).collect();
+        let pol: Vec<(i16, f32)> = cells.par_iter().map(|&(h, vy, vz)| {
+            let (i, q, alt) = ranked(&g, &v, mode, h, Vec3::new(0.0, vy, vz), &fp, &ft, gap);
+            ((fp[i] * 4.0).round() as i16, alt.map_or(f32::INFINITY, |(_, aq)| (q - aq) as f32))
+        }).collect();
+        let mut b: Vec<u8> = pol.iter().flat_map(|p| p.0.to_le_bytes()).collect();
+        b.extend(pol.iter().flat_map(|p| p.1.to_le_bytes()));
+        std::fs::write(f, b).unwrap();
+        std::fs::write(format!("{f}.spec"), format!("{vspec} fine {fine} gap {gap}\nnvy {} vy0 {} nvz {} dv {dv}\nmap-h {}\n",
+                                                      g.nvy, g.vy0, g.nvz, mh.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(","))).unwrap();
+        eprintln!("map: {} heights x {} x {} to {f}", mh.len(), g.nvy, g.nvz);
+    }
     let out = a.get("--out");
     if let Some(d) = out { std::fs::create_dir_all(d).unwrap() }
     let tag = match mode { Mode::Time => "time", Mode::Dist => "dist" };
@@ -212,9 +252,15 @@ fn main() {
         let mut outside = 0;
         let (mut t_exit, mut z_exit) = (f64::NAN, f64::NAN);
         let mut hs = vec![h];
+        let mut rows = vec!["t,h,vy,vz,pitch,q,alt_pitch,margin".to_string()];
+        let mut qs: Vec<u8> = Vec::new();
         for t in 0..maxt {
-            let (i, _) = ft.iter().enumerate().map(|(i, &q)| (i, backup(&g, &v, mode, h, vel, q).0))
-                .fold((0, f64::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
+            let (i, q, alt) = ranked(&g, &v, mode, h, vel, &fp, &ft, gap);
+            if trace {
+                let (ap, aq) = alt.map_or((f64::NAN, f64::NAN), |(j, aq)| (fp[j], aq));
+                rows.push(format!("{t},{h},{},{},{},{q},{ap},{}", vel.y, vel.z, fp[i], q - aq));
+                if t < trace_q { qs.extend(trig.iter().flat_map(|&tr| (backup(&g, &v, mode, h, vel, tr).0 as f32).to_le_bytes())) }
+            }
             let nv = update_fall_flying_movement_cached(vel, ft[i]);
             let nh = h + nv.y;
             p.push(fp[i]);
@@ -235,6 +281,10 @@ fn main() {
             std::fs::write(format!("{d}/{tag}_y{y0}.pitches"),
                            format!("# floordp {tag} y0 {y0} {spec} sweeps {done} fine {fine}\n# V(start) {:.4}  rise/100 {rise100:.4}  t* {t_exit:.4}  z(t*) {z_exit:.4}\n{}\n",
                                    start(&v, y0), body.join(" "))).unwrap();
+            if trace {
+                std::fs::write(format!("{d}/{tag}_y{y0}.trace"), rows.join("\n") + "\n").unwrap();
+                std::fs::write(format!("{d}/{tag}_y{y0}.q"), &qs).unwrap();
+            }
         }
     }
 }
