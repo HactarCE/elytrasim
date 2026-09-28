@@ -677,6 +677,27 @@ polished endurance t* is 1093.0, 1205.8, 1401.2, 1851.1 at 28, 28.25, 28.5, 28.7
 z(t*) is 760.8, 859.5, 1028.2, 1524.6. This is a threshold for this grid's policy,
 **not a proof**: a finer grid could lower it, as the finer grids did at 16.
 
+**The flown policy chatters, in the descents** (same grid and `V`; measured 2026-09-28 13:40 EDT on the laptop, commit 25099d2 plus `--trace`).
+Chatter here means sign flips of the first difference with both steps over 2°. None below
+`y0 = 14` (10 in range), then 11 at 16, 113 at 24 and 243 at 28 (endurance; range is similar). Polished, the
+same flights have 0-3 below 28. About 95% of the flips come while falling (`v_y < 0`), and they
+swing 10-45° between nose-down pitches from 0 to about 45. The pitches compared there are
+close: at a flip, the best pitch more than 10° from the choice is behind it by a median of
+0.04-0.07 (ticks or blocks), against 0.08-0.14 over all ticks, and every pitch from 0 to about
+50 is within a few tenths. That is far below `V`'s own error: `V(start)` is 5% over the flight at `y0 = 16` and 42% (209
+ticks) at 24, so
+interpolation noise makes the choice. On the policy map the descent runs along the edge
+between the pitch-0 region and the nose-down one, and one tick crosses it each way. That is a
+feedback policy sliding on a switching surface. The polish replaces the alternation with the
+steady pitch between them (about 28° at `y0 = 24`, ticks 60-110), and gains (499.0 to 506.4).
+`floordp --trace` writes each flight's per-tick state, choice, runner-up and the value of every
+pitch. `tools/plot_floor_dp.py` draws them, with the polish and the best earlier flight, into
+`runs/floor/fig/floor-dp.html`. Its policy map is computed in the page, at the exact height of the
+probed flight, by a JS port of the backup (`tools/floor_dp_policy.js`) reading a crop of the saved
+`V`. The build replays every traced DP tick through the port and refuses a single different
+choice: as of 2026-09-28 13:55 EDT, 63146 ticks agree, values to the bit. (`--map` writes the
+same field at fixed heights, for use outside the page.)
+
 Caveats. The policy is feedback on a grid, so the flight it gives is only as good as the grid
 near the states it visits. `V` above about `y0 = 17` is not a trustworthy estimate even at
 `dv = 0.025` (still 5-80% over and rising). What is trustworthy is every flown or polished number
@@ -685,7 +706,8 @@ here: each is a replay.
 Data: `runs/floor/v16-dp` (`<run>.txt` each run's table, `<run>/` its policies as pitch files,
 `<run>.err` its sweep log; `pol/` the polished policies; `known-before-dp.tsv` the comparison;
 `compare.py`, `polcmp.py`, `readme_tables.py`; `thresh/` the threshold rerun, with its saved
-`V_time.bin` and `V_dist.bin` for `floordp --load` and its polishes in `thresh/pol/`). Cost on one cluster node (4 cores): 1.3 s per
+`V_time.bin` and `V_dist.bin` for `floordp --load` and its polishes in `thresh/pol/`; `viz/` the
+traces and maps from that `V`). Cost on one cluster node (4 cores): 1.3 s per
 sweep at 0.8M states, 5.1 s at 3.2M, 10 s at 6.7M.
 
 ### 7. Exact `f32` output (a correctness fix, kept)

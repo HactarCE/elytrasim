@@ -1,0 +1,522 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>floor: backward DP</title>
+<div id="dp">
+  <style>
+    html, body { margin: 0; background: #14171a; }
+    #dp { --surface: #1b1f24; --fg: #e6e9ed; --dim: #b9c0c9; --muted: #7d8691; --rule: #4a525c;
+          --s-dp: #3987e5; --s-pol: #d95926; --s-best: #199e70;
+          box-sizing: border-box; color: var(--fg); background: #14171a; font: 14px system-ui, sans-serif; padding: 14px;
+          height: 100vh; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(420px, 1fr); gap: 14px; }
+    #dp * { box-sizing: border-box; }
+    #dp h1 { font-size: 19px; font-weight: 500; margin: 0 0 8px; }
+    #dp .left { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto auto 1.25fr 1.25fr .6fr .8fr; gap: 8px; }
+    #dp .right { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(300px, 1fr) auto auto minmax(0, .6fr); gap: 8px; }
+    #dp .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+    #dp .segmented { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+    #dp .segmented input { position: absolute; opacity: 0; pointer-events: none; }
+    #dp .segmented label { padding: 3px 10px; cursor: pointer; color: var(--dim); border-left: 1px solid var(--rule); }
+    #dp .segmented label:first-of-type { border-left: 0; }
+    #dp .segmented input:checked + label { background: #2b3139; color: #fff; }
+    #dp .segmented input:focus-visible + label { outline: 2px solid #fff; outline-offset: -2px; }
+    #dp input[type=range] { width: 260px; }
+    #dp .key { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); cursor: pointer; }
+    #dp .swatch { display: inline-block; width: 22px; height: 3px; background: var(--c); }
+    #dp .swatch.dashed { background: repeating-linear-gradient(90deg, var(--c) 0 6px, transparent 6px 10px); }
+    #dp button { font: 12.5px system-ui, sans-serif; color: var(--dim); background: none; border: 1px solid var(--rule); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+    #dp .readout { font-variant-numeric: tabular-nums; color: var(--dim); min-height: 2.6em; line-height: 1.3; }
+    #dp .readout b { color: var(--fg); font-weight: 500; }
+    #dp figure { margin: 0; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    #dp figcaption { margin: 0 0 3px; color: var(--dim); font-size: 12.5px; }
+    #dp canvas { display: block; width: 100%; height: 100%; min-height: 0; background: var(--surface); border: 1px solid var(--rule); }
+    #dp .time canvas { cursor: crosshair; }
+    #dp details { color: var(--dim); font-size: 12.5px; line-height: 1.4; }
+    #dp details p { margin: 4px 0 0; }
+    #dp .scroll { overflow: auto; min-height: 0; }
+    #dp table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; width: 100%; }
+    #dp th, #dp td { padding: 2px 6px; text-align: right; }
+    #dp th { color: var(--dim); font-weight: 500; position: sticky; top: 0; background: #14171a; }
+    #dp td.split, #dp th.split { border-left: 1px solid var(--rule); }
+    #dp tbody tr { cursor: pointer; }
+    #dp tbody tr:hover td { background: #1f242a; }
+    #dp tr.selected td { background: #2b3139; }
+    #dp td.none { color: var(--muted); }
+    #dp .bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+    #dp .bar canvas { width: 180px; height: 10px; border: 0; }
+    #dp .qcap { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+    /* Text that changes while scrubbing keeps a fixed height, so the panels do not move. */
+    #dp #dp-readout { height: 3.9em; min-height: 0; overflow: hidden; }
+    #dp #dp-map-cap { height: 1.35em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #dp #dp-map-read { height: 3.9em; min-height: 0; overflow: hidden; }
+    #dp #dp-map-read div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+  <section class="left">
+    <div class="row">
+      <h1>floor · backward DP</h1>
+      <span class="segmented" role="radiogroup" aria-label="objective">
+        <input type="radio" name="dp-u" id="dp-u-e" value="endurance" checked><label for="dp-u-e">endurance</label>
+        <input type="radio" name="dp-u" id="dp-u-r" value="range"><label for="dp-u-r">range</label>
+      </span>
+      <label>y0 <input id="dp-y0" type="range" min="0" step="1"></label>
+      <output id="dp-y0-out"></output>
+    </div>
+    <div class="row" id="dp-series">
+      <label class="key"><input type="checkbox" data-s="dp" checked> <span class="swatch" style="--c:var(--s-dp)"></span>DP flown (greedy on V)</label>
+      <label class="key"><input type="checkbox" data-s="pol" checked> <span class="swatch" style="--c:var(--s-pol)"></span>DP polished (grad, l2 price)</label>
+      <label class="key"><input type="checkbox" data-s="best"> <span class="swatch dashed" style="--c:var(--s-best)"></span>best before DP</label>
+      <label class="key"><input type="checkbox" id="dp-marks" checked> mark DP chatter</label>
+      <button id="dp-reset" type="button">reset zoom</button>
+      <span style="color:var(--muted);font-size:12.5px">drag on any time panel to zoom · double-click resets · hover to probe</span>
+    </div>
+    <div class="readout" id="dp-readout" aria-live="polite"></div>
+    <figure class="time"><figcaption>pitch vs tick · DP drawn with a dot per tick · ticks on top: DP chatter (a sign flip of the first difference, both steps over 2°)</figcaption><canvas id="dp-pitch" aria-label="pitch versus tick"></canvas></figure>
+    <figure class="time"><figcaption class="qcap"><span>what the DP compared · per tick, how far each pitch's r + V(s′) falls short of the flown pitch's value (brighter = smaller shortfall, so nearly as good) · dots: the flown pitch</span> <span class="bar"><span id="dp-qbar-lo"></span><canvas id="dp-qbar"></canvas><span id="dp-qbar-hi"></span></span></figcaption><canvas id="dp-q" aria-label="value deficit of each pitch per tick"></canvas></figure>
+    <figure class="time"><figcaption>DP margin · how far the choice beats the best pitch more than 10° away (log) · small = nearly indifferent between two different pitches</figcaption><canvas id="dp-margin" aria-label="DP decision margin per tick"></canvas></figure>
+    <figure class="time"><figcaption>height above the floor vs tick</figcaption><canvas id="dp-height" aria-label="height above floor versus tick"></canvas></figure>
+  </section>
+  <section class="right">
+    <div class="row">
+      <span class="segmented" role="radiogroup" aria-label="map layer">
+        <input type="radio" name="dp-m" id="dp-m-p" value="pitch" checked><label for="dp-m-p">policy pitch</label>
+        <input type="radio" name="dp-m" id="dp-m-m" value="margin"><label for="dp-m-m">margin</label>
+      </span>
+      <span class="bar"><span id="dp-bar-lo"></span><canvas id="dp-bar"></canvas><span id="dp-bar-hi"></span></span>
+    </div>
+    <div class="row">
+      <span style="color:var(--dim)">field at the height of</span>
+      <span class="segmented" role="radiogroup" aria-label="whose height the field is at">
+        <input type="radio" name="dp-f" id="dp-f-dp" value="dp" checked><label for="dp-f-dp">DP flown</label>
+        <input type="radio" name="dp-f" id="dp-f-pol" value="pol"><label for="dp-f-pol">DP polished</label>
+        <input type="radio" name="dp-f" id="dp-f-best" value="best"><label for="dp-f-best">best before DP</label>
+        <input type="radio" name="dp-f" id="dp-f-fix" value="fixed"><label for="dp-f-fix">fixed</label>
+      </span>
+      <input id="dp-fh" type="range" min="0" max="33" step="0.01" value="8" aria-label="fixed field height" style="width:160px" disabled>
+      <output id="dp-fh-out" style="color:var(--dim);font-variant-numeric:tabular-nums"></output>
+    </div>
+    <figure><figcaption id="dp-map-cap"></figcaption><canvas id="dp-map" aria-label="DP policy over velocity at one height"></canvas></figure>
+    <div class="readout" id="dp-map-read" aria-live="polite"></div>
+    <details>
+      <summary>about this figure</summary>
+      <p>The DP (<code>floordp</code>, README-floor 6g) holds the best remaining endurance or range V on a grid over (h, v<sub>y</sub>, v<sub>z</sub>): 133 heights to 33 blocks, velocity every 0.025, 1700 sweeps. The flown policy picks, each tick, the pitch on a 0.25° grid with the largest r + V(s′) and flies it exactly from rest. Polished: that flight used as the seed of <code>floor exit --method grad</code> (l2:2 price, graze). Best before DP: the best of every earlier run (known-before-dp.tsv).</p>
+      <p>The comparison panel shows, for each 1° pitch, how much less r + V(s′) it offers than the pitch flown; that deficit is in ticks (endurance) or blocks (range). V itself is optimistic by several percent above y0 ≈ 17, so deficits far smaller than that are below what the grid can resolve. The field is the DP's policy only: the polished and earlier flights are fixed pitch schedules, not feedback policies, so they have no field. It is the same argmax over a 0.25° grid, computed in this page on every velocity node at exactly the height of the chosen flight at the probed tick, by a port of <code>floordp</code>'s backup that reproduces its choice and value exactly on every traced DP tick. Each checked flight's path is drawn over it, bold within 40 ticks of the probe, with a ring at its state: white for the flight whose height the field is at, colored for the others, which are at their own heights. "fixed" holds the field at the slider's height instead. Below the map: what each flight flies at the probed tick, and what the DP policy would pick at that flight's exact state.</p>
+      <p>Flights that never land are shown for their first __TMAX__ ticks.</p>
+    </details>
+    <div class="scroll"><table id="dp-table"></table></div>
+  </section>
+  <script>
+__POLICY__
+  </script>
+  <script>
+  (() => {
+    const D = __DATA__;
+    const root = document.querySelector("#dp");
+    const css = k => getComputedStyle(root).getPropertyValue(k).trim();
+    const COL = {dp: css("--s-dp"), pol: css("--s-pol"), best: css("--s-best")};
+    const INK = {fg: css("--fg"), dim: css("--dim"), grid: "rgba(185,192,201,.2)", surface: css("--surface")};
+    const LABEL = {dp: "DP flown", pol: "DP polished", best: "best before DP"};
+    const $ = s => root.querySelector(s);
+    const slider = $("#dp-y0");
+    slider.max = D.y0s.length - 1;
+    slider.value = D.y0s.indexOf(24);
+    const show = {dp: true, pol: true, best: false};
+    let view = null, cursor = null, drag = null;
+
+    // ---- decoding -------------------------------------------------------------------------
+    const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const fromCode = c => 10 ** (D.code.lo + c / D.code.perDecade);
+    const toCode = x => Math.max(0, Math.min(255, Math.round((Math.log10(Math.max(x, 1e-300)) - D.code.lo) * D.code.perDecade)));
+    // The DP's policy, on this thread for single states and in a worker for whole fields.
+    const POLICY = {};
+    for (const key of ["endurance", "range"]) {
+      const G = D.grids[key];
+      G.V = new Float32Array(unb64(G.V).buffer);
+      POLICY[key] = makePolicy(G);
+      const m = G.map; G.rows = m.j[1] - m.j[0] + 1; G.cols = m.k[1] - m.k[0] + 1;
+    }
+    // A field: every map node (rows v_y high to low, columns v_z) at one exact height, for rows
+    // r0..r1-1.
+    function field(P, G, h, r0, r1) {
+      const n = (r1 - r0) * G.cols, pitch = new Float32Array(n), margin = new Float64Array(n), ok = new Uint8Array(n);
+      for (let r = r0; r < r1; r++) for (let c = 0; c < G.cols; c++) {
+        const j = G.map.j[1] - r, k = G.map.k[0] + c, x = P.ranked(h, G.vy0 + j * G.dv, k * G.dv), i = (r - r0) * G.cols + c;
+        pitch[i] = x.pitch; margin[i] = x.margin; ok[i] = x.ok ? 1 : 0;
+      }
+      return {pitch, margin, ok};
+    }
+    // Fields are computed by a pool of workers, each taking a band of rows; the newest request
+    // wins, and the page keeps showing the last finished field until its replacement is ready.
+    const fields = new Map(), last = {};  // "key|h" -> field; utility -> the last one drawn
+    const pool = [];
+    let job = null, wanted = null;
+    try {
+      const src = `${makePolicy.toString()}\n${field.toString()}\nconst P = {}, G = {};\n` +
+        `onmessage = e => { const m = e.data; if (m.grids) { for (const k in m.grids) { G[k] = m.grids[k]; P[k] = makePolicy(G[k]); } return; }\n` +
+        `  const f = field(P[m.key], G[m.key], m.h, m.r0, m.r1); postMessage({id: m.id, part: m.part, ...f}, [f.pitch.buffer, f.margin.buffer, f.ok.buffer]); };`;
+      const url = URL.createObjectURL(new Blob([src], {type: "text/javascript"}));
+      const W = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+      for (let w = 0; w < W; w++) {
+        const wk = new Worker(url);
+        wk.postMessage({grids: D.grids});
+        wk.onmessage = e => {
+          const m = e.data;
+          if (!job || m.id !== job.id) return;
+          job.parts[m.part] = m;
+          if (--job.left) return;
+          const G = D.grids[job.key], n = G.rows * G.cols;
+          const f = {pitch: new Float32Array(n), margin: new Float64Array(n), ok: new Uint8Array(n)};
+          let off = 0;
+          for (const part of job.parts) { f.pitch.set(part.pitch, off); f.margin.set(part.margin, off); f.ok.set(part.ok, off); off += part.pitch.length; }
+          fields.set(job.id, f);
+          if (fields.size > 400) fields.delete(fields.keys().next().value);
+          job = null;
+          if (wanted) { const w2 = wanted; wanted = null; request(w2.key, w2.h); }
+          drawMap(flight());
+        };
+        pool.push(wk);
+      }
+    } catch (e) { pool.length = 0; }
+    // The field at (key, h) if computed; otherwise ask for it and return null.
+    function request(key, h) {
+      const id = `${key}|${h}`;
+      if (fields.has(id)) return fields.get(id);
+      const G = D.grids[key];
+      if (!pool.length) { const f = field(POLICY[key], G, h, 0, G.rows); fields.set(id, f); return f; }
+      if (job && job.id === id) return null;
+      if (job) { wanted = {key, h}; return null; }
+      const W = pool.length, band = Math.ceil(G.rows / W);
+      job = {id, key, left: W, parts: new Array(W)};
+      pool.forEach((wk, part) => wk.postMessage({id, key, h, part, r0: Math.min(G.rows, part * band), r1: Math.min(G.rows, (part + 1) * band)}));
+      return null;
+    }
+    // ---- color ramps ------------------------------------------------------------------------
+    const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    function ramp(stops) {  // stops: [[t, "#rrggbb"], ...] with t rising 0..1
+      const s = stops.map(([t, h]) => [t, hex(h)]);
+      return t => {
+        t = Math.max(0, Math.min(1, t));
+        let i = 0; while (i < s.length - 2 && t > s[i + 1][0]) i++;
+        const [t0, a] = s[i], [t1, b] = s[i + 1], f = (t - t0) / (t1 - t0 || 1);
+        return a.map((v, k) => Math.round(v + (b[k] - v) * f));
+      };
+    }
+    // Closeness to the choice: sequential blue, dark (far) to light (near).
+    const blue = ramp([[0, "#1b1f24"], [.2, "#104281"], [.45, "#256abf"], [.7, "#5598e7"], [.88, "#9ec5f4"], [1, "#e6f0fd"]]);
+    // Indifference (small margin): sequential orange, second sequential context.
+    const orange = ramp([[0, "#1b1f24"], [.35, "#7a2e10"], [.65, "#d95926"], [.85, "#f09a72"], [1, "#fbdccb"]]);
+    // Pitch: diverging, nose up (negative) blue, nose down red, gray at 0.
+    const blueArm = ramp([[0, "#383835"], [.5, "#256abf"], [1, "#9ec5f4"]]);
+    const redArm = ramp([[0, "#383835"], [.5, "#b8332f"], [1, "#f2a3a0"]]);
+    const PITCH_SPAN = 60;
+    const pitchColor = p => p < 0 ? blueArm(-p / PITCH_SPAN) : redArm(p / PITCH_SPAN);
+    // log10 deficit 1 (far) .. -4 (near); log10 margin 0 (decisive) .. -4 (indifferent).
+    const Q_HI = 1, Q_LO = -4, M_HI = 0, M_LO = -4;
+    const qLut = Array.from({length: 256}, (_, c) => blue((Q_HI - Math.log10(fromCode(c))) / (Q_HI - Q_LO)));
+
+    // ---- per-flight caches ------------------------------------------------------------------
+    const util = () => root.querySelector("input[name=dp-u]:checked").value;
+    const flight = () => D.flights[util()][+slider.value];
+    const qCanvas = new Map();
+    function qImage(F) {
+      if (qCanvas.has(F)) return qCanvas.get(F);
+      const entry = {canvas: null};
+      qCanvas.set(F, entry);
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+        const x = c.getContext("2d"); x.drawImage(img, 0, 0);
+        const d = x.getImageData(0, 0, c.width, c.height);
+        for (let i = 0; i < d.data.length; i += 4) { const rgb = qLut[d.data[i]]; d.data[i] = rgb[0]; d.data[i + 1] = rgb[1]; d.data[i + 2] = rgb[2]; d.data[i + 3] = 255; }
+        x.putImageData(d, 0, 0); entry.canvas = c; draw();
+      };
+      img.src = "data:image/png;base64," + F.dp.q;
+      return entry;
+    }
+    function chatterTicks(p) {
+      const out = [];
+      for (let i = 1; i + 1 < p.length; i++) {
+        const a = p[i] - p[i - 1], b = p[i + 1] - p[i];
+        if (a * b < 0 && Math.abs(a) > 2 && Math.abs(b) > 2) out.push(i);
+      }
+      return out;
+    }
+
+    // ---- plotting primitives ----------------------------------------------------------------
+    const M = {l: 54, r: 12, t: 10, b: 24};
+    function setup(canvas) {
+      const r = canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+      canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+      const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return {ctx, w: r.width, h: r.height};
+    }
+    function niceStep(span, n) {
+      const raw = span / n, mag = 10 ** Math.floor(Math.log10(raw)), q = raw / mag;
+      return (q <= 1 ? 1 : q <= 2 ? 2 : q <= 2.5 ? 2.5 : q <= 5 ? 5 : 10) * mag;
+    }
+    function frame(s, xd, yd, {xlabel = "", ylabel = "", ylog = false, ysteps = null, xn = 8} = {}) {
+      const {ctx, w, h} = s;
+      const X = x => M.l + (x - xd[0]) / (xd[1] - xd[0]) * (w - M.l - M.r);
+      const Yv = y => ylog ? Math.log10(y) : y;
+      const Y = y => M.t + (Yv(y) - yd[0]) / (yd[1] - yd[0]) * (h - M.t - M.b);  // yd[0] at top
+      ctx.font = "11.5px system-ui"; ctx.lineWidth = 1;
+      const xs = niceStep(xd[1] - xd[0], xn);
+      for (let x = Math.ceil(xd[0] / xs) * xs; x <= xd[1] + 1e-9; x += xs) {
+        ctx.strokeStyle = INK.grid; ctx.beginPath(); ctx.moveTo(X(x), M.t); ctx.lineTo(X(x), h - M.b); ctx.stroke();
+        ctx.fillStyle = INK.dim; ctx.textAlign = "center"; ctx.fillText(+x.toFixed(6), X(x), h - M.b + 14);
+      }
+      for (const y of ysteps) {
+        const py = M.t + (y - yd[0]) / (yd[1] - yd[0]) * (h - M.t - M.b);
+        ctx.strokeStyle = INK.grid; ctx.beginPath(); ctx.moveTo(M.l, py); ctx.lineTo(w - M.r, py); ctx.stroke();
+        ctx.fillStyle = INK.dim; ctx.textAlign = "right"; ctx.fillText(ylog ? `1e${y}` : +y.toFixed(6), M.l - 5, py + 4);
+      }
+      if (ylabel) { ctx.save(); ctx.translate(12, (M.t + h - M.b) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.fillStyle = INK.fg; ctx.fillText(ylabel, 0, 0); ctx.restore(); }
+      if (xlabel) { ctx.fillStyle = INK.fg; ctx.textAlign = "right"; ctx.fillText(xlabel, w - M.r, h - 3); }
+      return {X, Y, clip() { ctx.save(); ctx.beginPath(); ctx.rect(M.l, M.t, w - M.l - M.r, h - M.t - M.b); ctx.clip(); }, unclip() { ctx.restore(); }};
+    }
+    function path(ctx, pts, color, width, dash = [], alpha = 1) {
+      ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash); ctx.lineJoin = "round";
+      ctx.beginPath(); let up = true;
+      for (const p of pts) { if (!p) { up = true; continue; } if (up) { ctx.moveTo(p[0], p[1]); up = false; } else ctx.lineTo(p[0], p[1]); }
+      ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    function dots(ctx, pts, color, r) {
+      ctx.fillStyle = color;
+      for (const p of pts) if (p) { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 2 * Math.PI); ctx.fill(); }
+    }
+    function crosshair(s, sc) {
+      if (cursor === null) return;
+      const x = sc.X(cursor); if (x < M.l || x > s.w - M.r) return;
+      s.ctx.strokeStyle = "rgba(230,233,237,.55)"; s.ctx.lineWidth = 1; s.ctx.beginPath(); s.ctx.moveTo(x, M.t); s.ctx.lineTo(x, s.h - M.b); s.ctx.stroke();
+    }
+    function band(s, sc) {
+      if (!drag || drag.t1 === null) return;
+      const a = sc.X(Math.min(drag.t0, drag.t1)), b = sc.X(Math.max(drag.t0, drag.t1));
+      s.ctx.fillStyle = "rgba(230,233,237,.12)"; s.ctx.fillRect(a, M.t, b - a, s.h - M.t - M.b);
+    }
+    const series = F => ["best", "pol", "dp"].filter(k => show[k] && F[k]);
+    const pitchOf = (F, k) => F[k].pitch;
+    const visibleT = (n) => [Math.max(0, Math.floor(view[0])), Math.min(n - 1, Math.ceil(view[1]))];
+
+    // ---- panels -----------------------------------------------------------------------------
+    function drawPitch(F) {
+      const s = setup($("#dp-pitch"));
+      let lo = 0, hi = 0;
+      for (const k of series(F)) { const p = pitchOf(F, k), [a, b] = visibleT(p.length); for (let i = a; i <= b; i++) if (p[i] !== null) { lo = Math.min(lo, p[i]); hi = Math.max(hi, p[i]); } }
+      const st = niceStep(hi - lo || 10, 5), yd = [Math.floor(lo / st) * st - st * .1, Math.ceil(hi / st) * st + st * .1];
+      const ys = []; for (let y = Math.ceil(yd[0] / st) * st; y <= yd[1]; y += st) ys.push(y);
+      const sc = frame(s, view, yd, {ylabel: "pitch, °", ysteps: ys});
+      sc.clip();
+      const pxPerTick = (s.w - M.l - M.r) / (view[1] - view[0]);
+      for (const k of series(F)) {
+        const p = pitchOf(F, k), [a, b] = visibleT(p.length), pts = [];
+        for (let i = a; i <= b; i++) pts.push(p[i] === null ? null : [sc.X(i), sc.Y(p[i])]);
+        path(s.ctx, pts, COL[k], k === "dp" ? 1.2 : 1.8, k === "best" ? [6, 4] : [], k === "dp" ? .8 : .95);
+        if (k === "dp" && pxPerTick > 2.5) dots(s.ctx, pts, COL.dp, Math.min(3, pxPerTick / 3));
+      }
+      if (show.dp && $("#dp-marks").checked) {
+        s.ctx.strokeStyle = COL.dp; s.ctx.lineWidth = 1.5;
+        for (const i of chatterTicks(F.dp.pitch)) { if (i < view[0] || i > view[1]) continue; const x = sc.X(i); s.ctx.beginPath(); s.ctx.moveTo(x, M.t); s.ctx.lineTo(x, M.t + 7); s.ctx.stroke(); }
+      }
+      band(s, sc); crosshair(s, sc); sc.unclip();
+    }
+    function drawQ(F) {
+      const s = setup($("#dp-q")), P = D.qpitch;
+      const sc = frame(s, view, [P[0] - .5, P[1] + .5], {ylabel: "pitch, °", ysteps: [-80, -60, -40, -20, 0, 20, 40, 60, 80]});
+      sc.clip();
+      const e = qImage(F);
+      if (e.canvas) {
+        const t0 = Math.max(0, view[0] - .5), t1 = Math.min(e.canvas.width, view[1] + .5);
+        s.ctx.imageSmoothingEnabled = false;
+        s.ctx.drawImage(e.canvas, t0, 0, t1 - t0, e.canvas.height, sc.X(t0 - .5), sc.Y(P[0] - .5), sc.X(t1 - .5) - sc.X(t0 - .5), sc.Y(P[1] + .5) - sc.Y(P[0] - .5));
+      }
+      const p = F.dp.pitch, [a, b] = visibleT(p.length), pts = [];
+      for (let i = a; i <= b; i++) pts.push([sc.X(i), sc.Y(p[i])]);
+      const pxPerTick = (s.w - M.l - M.r) / (view[1] - view[0]);
+      dots(s.ctx, pts, "#ffffff", Math.max(.9, Math.min(2.5, pxPerTick / 4)));
+      band(s, sc); crosshair(s, sc); sc.unclip();
+      const bs = setup($("#dp-qbar")), N = 180;
+      for (let i = 0; i < N; i++) { const rgb = blue(i / (N - 1)); bs.ctx.fillStyle = `rgb(${rgb})`; bs.ctx.fillRect(i * bs.w / N, 0, bs.w / N + 1, bs.h); }
+      const unit = util() === "range" ? "blocks" : "ticks";
+      $("#dp-qbar-lo").textContent = `short by ≥ 1e${Q_HI} ${unit}`;
+      $("#dp-qbar-hi").textContent = `≤ 1e${Q_LO}`;
+    }
+    function drawMargin(F) {
+      const s = setup($("#dp-margin")), yd = [1, -5];
+      const sc = frame(s, view, yd, {ylog: true, ysteps: [0, -2, -4], ylabel: "margin"});
+      sc.clip();
+      const m = F.dp.margin, [a, b] = visibleT(m.length), pts = [];
+      for (let i = a; i <= b; i++) pts.push(m[i] === null ? null : [sc.X(i), sc.Y(Math.max(m[i], 1e-5))]);
+      path(s.ctx, pts, COL.dp, 1, [], .45);
+      const pxPerTick = (s.w - M.l - M.r) / (view[1] - view[0]);
+      if (pxPerTick > 2.5) dots(s.ctx, pts, COL.dp, 1.6);
+      band(s, sc); crosshair(s, sc); sc.unclip();
+    }
+    function drawHeight(F) {
+      const s = setup($("#dp-height"));
+      let hi = 1;
+      for (const k of series(F)) { const h = F[k].h, [a, b] = visibleT(h.length); for (let i = a; i <= b; i++) hi = Math.max(hi, h[i]); }
+      const st = niceStep(hi, 4), top = Math.ceil(hi / st) * st, ys = []; for (let y = 0; y <= top; y += st) ys.push(y);
+      const sc = frame(s, view, [top, -top * .04], {ylabel: "h, blocks", ysteps: ys, xlabel: "tick"});
+      sc.clip();
+      s.ctx.strokeStyle = "rgba(230,233,237,.6)"; s.ctx.setLineDash([5, 4]); s.ctx.beginPath(); s.ctx.moveTo(M.l, sc.Y(0)); s.ctx.lineTo(s.w - M.r, sc.Y(0)); s.ctx.stroke(); s.ctx.setLineDash([]);
+      for (const k of series(F)) {
+        const h = F[k].h, [a, b] = visibleT(h.length), pts = [];
+        for (let i = a; i <= b; i++) pts.push([sc.X(i), sc.Y(h[i])]);
+        path(s.ctx, pts, COL[k], k === "dp" ? 1.4 : 1.8, k === "best" ? [6, 4] : [], .95);
+      }
+      band(s, sc); crosshair(s, sc); sc.unclip();
+    }
+    let mapProbe = null, followedH = null;
+    // The probed tick, and the flight whose state there sets the field's height: the chosen one
+    // if it is checked and has that tick, else the first that does.
+    function mapState(F) {
+      const t = cursor === null ? 0 : Math.max(0, Math.round(cursor));
+      const pref = root.querySelector("input[name=dp-f]:checked").value;
+      if (pref === "fixed") return {t, k: null, h: +$("#dp-fh").value, G: D.grids[util()], key: util(), fixed: true};
+      const has = k => show[k] && F[k] && t < F[k].h.length;
+      const k = [pref, "dp", "pol", "best"].find(has) ?? null;
+      return {t, k, h: k ? F[k].h[t] : null, G: D.grids[util()], key: util()};
+    }
+    function drawMap(F) {
+      const s = setup($("#dp-map")), {t, k, h, G, key, fixed} = mapState(F), layer = root.querySelector("input[name=dp-m]:checked").value;
+      const dv = G.dv, vzLo = G.map.k[0] * dv, vzHi = G.map.k[1] * dv, vyLo = G.vy0 + G.map.j[0] * dv, vyHi = G.vy0 + G.map.j[1] * dv;
+      const xd = [vzLo - dv / 2, vzHi + dv / 2], yd = [vyHi + dv / 2, vyLo - dv / 2];
+      const sc = frame(s, xd, yd, {xlabel: "v_z, blocks/tick", ylabel: "v_y, blocks/tick", ysteps: [-.75, -.5, -.25, 0, .25, .5, .75, 1], xn: 8});
+      const fresh = h === null ? null : request(key, h), f = fresh || last[key] || null;
+      if (fresh) last[key] = {...fresh, h, k, t};
+      if (!fixed && h !== null) followedH = h;
+      sc.clip();
+      if (f) {
+        const img = new ImageData(G.cols, G.rows);
+        for (let i = 0; i < f.pitch.length; i++) {
+          const rgb = !f.ok[i] ? [42, 46, 51] : layer === "pitch" ? pitchColor(f.pitch[i]) : orange((M_HI - Math.log10(f.margin[i])) / (M_HI - M_LO));
+          img.data[4 * i] = rgb[0]; img.data[4 * i + 1] = rgb[1]; img.data[4 * i + 2] = rgb[2]; img.data[4 * i + 3] = 255;
+        }
+        const c = document.createElement("canvas"); c.width = G.cols; c.height = G.rows; c.getContext("2d").putImageData(img, 0, 0);
+        s.ctx.imageSmoothingEnabled = false;
+        s.ctx.drawImage(c, sc.X(xd[0]), sc.Y(yd[0]), sc.X(xd[1]) - sc.X(xd[0]), sc.Y(yd[1]) - sc.Y(yd[0]));
+      }
+      // Each checked flight in the zoomed window, on a dark halo so it reads on either arm of
+      // the field; bold within 40 ticks of the probe, and a ring at the probed state.
+      for (const kk of series(F).filter(x => F[x].vz)) {
+        const R = F[kk], [a, b] = visibleT(R.vz.length), all = [], near = [];
+        for (let i = a; i <= b; i++) { const p = [sc.X(R.vz[i]), sc.Y(R.vy[i])]; all.push(p); if (Math.abs(i - t) <= 40) near.push(p); }
+        path(s.ctx, all, "#14171a", 2.6, [], .5); path(s.ctx, all, COL[kk], 1, [], .6);
+        path(s.ctx, near, "#14171a", 4, [], .9); path(s.ctx, near, COL[kk], 2, [], 1);
+        if (t < R.vz.length) {
+          const x = sc.X(R.vz[t]), y = sc.Y(R.vy[t]);
+          s.ctx.strokeStyle = "#14171a"; s.ctx.lineWidth = 4.5; s.ctx.beginPath(); s.ctx.arc(x, y, 6.5, 0, 2 * Math.PI); s.ctx.stroke();
+          s.ctx.strokeStyle = kk === k ? "#ffffff" : COL[kk]; s.ctx.lineWidth = 2; s.ctx.beginPath(); s.ctx.arc(x, y, 6.5, 0, 2 * Math.PI); s.ctx.stroke();
+        }
+      }
+      if (f && mapProbe) {
+        const r = Math.round((vyHi - mapProbe.vy) / dv), c = Math.round((mapProbe.vz - vzLo) / dv);
+        if (r >= 0 && r < G.rows && c >= 0 && c < G.cols) {
+          const i = r * G.cols + c, m = f.margin[i];
+          s.ctx.fillStyle = "rgba(20,23,26,.88)"; s.ctx.fillRect(M.l + 6, M.t + 6, 290, 20);
+          s.ctx.fillStyle = INK.fg; s.ctx.textAlign = "left";
+          s.ctx.fillText(`v (${(vyHi - r * dv).toFixed(3)}, ${(vzLo + c * dv).toFixed(3)}) · pitch ${f.pitch[i]}° · margin ${Number.isFinite(m) ? m.toPrecision(2) : "–"}`, M.l + 12, M.t + 20);
+        }
+      }
+      sc.unclip();
+      $("#dp-map-cap").textContent = h === null ? "no checked flight has this tick"
+        : fresh ? `DP policy at h = ${h.toFixed(4)} · ${fixed ? "fixed height" : `${LABEL[k]}'s height at tick ${t}`}`
+        : `computing h = ${h.toFixed(4)}… showing ${f ? `h = ${f.h.toFixed(4)}` : "nothing yet"}`;
+      // What each flight flies at t, and what the DP policy picks at its exact state: always one
+      // line per series, so the block keeps its height.
+      const unit = key === "range" ? "blocks" : "ticks", P = POLICY[key];
+      $("#dp-map-read").innerHTML = ["dp", "pol", "best"].map(x => {
+        const R = F[x], sw = `<span class="swatch" style="--c:${COL[x]}"></span> <b>${LABEL[x]}</b>`;
+        if (!R) return `<div>${sw} none at this y0</div>`;
+        if (!show[x]) return `<div>${sw} hidden</div>`;
+        if (t >= R.h.length || R.pitch[t] == null) return `<div>${sw} has exited by tick ${t}</div>`;
+        const r = P.ranked(R.h[t], R.vy[t], R.vz[t]), m = r.margin;
+        const pol = r.ok ? `DP policy there ${r.pitch}° (runner-up ${r.alt ?? "–"}° at margin ${Number.isFinite(m) ? m.toPrecision(2) : "–"} ${unit})` : "outside the V crop";
+        return `<div>${sw} ${fixed ? `h ${R.h[t].toFixed(2)} · ` : ""}flies ${R.pitch[t].toFixed(2)}° · ${pol}</div>`;
+      }).join("");
+      // Color bar.
+      const bar = $("#dp-bar"), bs = setup(bar), N = 180;
+      for (let i = 0; i < N; i++) {
+        const fr = i / (N - 1), rgb = layer === "pitch" ? pitchColor(-PITCH_SPAN + 2 * PITCH_SPAN * fr) : orange(fr);
+        bs.ctx.fillStyle = `rgb(${rgb})`; bs.ctx.fillRect(i * bs.w / N, 0, bs.w / N + 1, bs.h);
+      }
+      $("#dp-bar-lo").textContent = layer === "pitch" ? `−${PITCH_SPAN}° nose up` : `margin ≥ 1e${M_HI}`;
+      $("#dp-bar-hi").textContent = layer === "pitch" ? `+${PITCH_SPAN}° nose down` : `≤ 1e${M_LO}`;
+    }
+    const fmtU = (F, k) => { const r = F[k]; if (!r) return "–"; const v = util() === "range" ? r.z_exit : r.t_exit; return v === null ? "no exit" : v.toFixed(1); };
+    function drawTable() {
+      const u = util(), cur = +slider.value;
+      let html = `<thead><tr><th>y0</th><th class="split">${u === "range" ? "z(t*)" : "t*"} best</th><th>DP flown</th><th>DP polished</th><th class="split">chatter best</th><th>DP flown</th><th>DP polished</th><th class="split">rough DP flown</th><th>DP polished</th></tr></thead><tbody>`;
+      D.flights[u].forEach((F, i) => {
+        const c = k => F[k] ? `<td>${F[k].chatter}</td>` : `<td class="none">–</td>`;
+        html += `<tr data-i="${i}" class="${i === cur ? "selected" : ""}"><td>${F.y0}</td><td class="split">${fmtU(F, "best")}</td><td>${fmtU(F, "dp")}</td><td>${fmtU(F, "pol")}</td><td class="split${F.best ? "" : " none"}">${F.best ? F.best.chatter : "–"}</td>${c("dp")}${c("pol")}<td class="split">${F.dp.rough.toFixed(0)}</td><td>${F.pol ? F.pol.rough.toFixed(0) : "–"}</td></tr>`;
+      });
+      $("#dp-table").innerHTML = html + "</tbody>";
+    }
+    function readout(F) {
+      const u = util(), unit = u === "range" ? "blocks" : "ticks";
+      const summary = ["dp", "pol", "best"].map(k => F[k] ? `<b>${LABEL[k]}</b> ${u === "range" ? "z" : "t*"} ${fmtU(F, k)}, chatter ${F[k].chatter}` : `<b>${LABEL[k]}</b> none`).join(" · ");
+      let probe = "hover a time panel to probe a tick";
+      if (cursor !== null) {
+        const t = Math.round(cursor), d = F.dp;
+        if (t >= 0 && t < d.pitch.length) {
+          const m = d.margin[t];
+          probe = `tick <b>${t}</b> · h ${d.h[t].toFixed(3)} · v (${d.vy[t].toFixed(3)}, ${d.vz[t].toFixed(3)}) · DP pitch <b>${d.pitch[t]}°</b>, runner-up >10° away ${d.alt[t] ?? "–"}° at margin ${m === null ? "–" : m.toPrecision(2)} ${unit}` +
+            ["pol", "best"].filter(k => F[k] && F[k].pitch[t] != null).map(k => ` · ${LABEL[k]} ${F[k].pitch[t].toFixed(2)}°`).join("");
+        }
+      }
+      const trunc = F.dp.ticks > D.tmax ? ` · showing the first ${D.tmax} of ${F.dp.ticks} ticks` : "";
+      $("#dp-readout").innerHTML = `${summary}${trunc}<br>${probe}`;
+    }
+    function draw() {
+      const F = flight();
+      $("#dp-y0-out").textContent = `${F.y0}`;
+      drawPitch(F); drawQ(F); drawMargin(F); drawHeight(F); drawMap(F); readout(F);
+    }
+    function fullView() {
+      const F = flight(), n = Math.max(...series(F).map(k => F[k].pitch.length), F.dp.pitch.length);
+      view = [0, n - 1];
+    }
+
+    // ---- interaction ------------------------------------------------------------------------
+    const toTick = (canvas, ev) => { const r = canvas.getBoundingClientRect(); return view[0] + (ev.clientX - r.left - M.l) / (r.width - M.l - M.r) * (view[1] - view[0]); };
+    for (const c of root.querySelectorAll(".time canvas")) {
+      c.addEventListener("mousemove", ev => {
+        cursor = Math.max(view[0], Math.min(view[1], toTick(c, ev)));
+        if (drag) drag.t1 = cursor;
+        draw();
+      });
+      c.addEventListener("mousedown", ev => { drag = {t0: toTick(c, ev), t1: null}; });
+      c.addEventListener("dblclick", () => { fullView(); draw(); });
+    }
+    window.addEventListener("mouseup", () => {
+      if (drag && drag.t1 !== null && Math.abs(drag.t1 - drag.t0) > 2) view = [Math.max(0, Math.min(drag.t0, drag.t1)), Math.max(drag.t0, drag.t1)];
+      drag = null; draw();
+    });
+    $("#dp-map").addEventListener("mousemove", ev => {
+      const c = $("#dp-map"), r = c.getBoundingClientRect(), G = D.grids[util()], dv = G.dv;
+      const vzLo = G.map.k[0] * dv, vzHi = G.map.k[1] * dv, vyLo = G.vy0 + G.map.j[0] * dv, vyHi = G.vy0 + G.map.j[1] * dv;
+      const fx = (ev.clientX - r.left - M.l) / (r.width - M.l - M.r), fy = (ev.clientY - r.top - M.t) / (r.height - M.t - M.b);
+      mapProbe = {vz: vzLo - dv / 2 + fx * (vzHi - vzLo + dv), vy: vyHi + dv / 2 - fy * (vyHi - vyLo + dv)};
+      drawMap(flight());
+    });
+    $("#dp-map").addEventListener("mouseleave", () => { mapProbe = null; drawMap(flight()); });
+    $("#dp-reset").addEventListener("click", () => { fullView(); draw(); });
+    $("#dp-series").addEventListener("change", ev => { const s = ev.target.dataset.s; if (s) show[s] = ev.target.checked; draw(); });
+    slider.addEventListener("input", () => { cursor = null; fullView(); drawTable(); draw(); });
+    for (const r of root.querySelectorAll("input[name=dp-u]")) r.addEventListener("change", () => { cursor = null; fullView(); drawTable(); draw(); });
+    for (const r of root.querySelectorAll("input[name=dp-m]")) r.addEventListener("change", draw);
+    // Switching to "fixed" starts from the height the field was just at.
+    for (const r of root.querySelectorAll("input[name=dp-f]")) r.addEventListener("change", () => {
+      const fixed = r.value === "fixed" && r.checked;
+      $("#dp-fh").disabled = !$("#dp-f-fix").checked;
+      if (fixed && followedH !== null) $("#dp-fh").value = followedH.toFixed(2);
+      $("#dp-fh-out").textContent = $("#dp-f-fix").checked ? `h = ${(+$("#dp-fh").value).toFixed(2)}` : "";
+      draw();
+    });
+    $("#dp-fh").addEventListener("input", () => { $("#dp-fh-out").textContent = `h = ${(+$("#dp-fh").value).toFixed(2)}`; drawMap(flight()); });
+    $("#dp-table").addEventListener("click", ev => { const tr = ev.target.closest("tr[data-i]"); if (!tr) return; slider.value = tr.dataset.i; cursor = null; fullView(); drawTable(); draw(); });
+    window.addEventListener("resize", draw);
+    fullView(); drawTable(); draw();
+  })();
+  </script>
+</div>
