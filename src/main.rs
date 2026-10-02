@@ -16,6 +16,12 @@ const REPLAY_PITCHES: &[f32] = replay_pitches::REPLAY_PITCHES_300;
 
 const PINK: egui::Color32 = egui::Color32::from_rgb(252, 3, 198);
 
+const FIELD_ZERO: egui::Color32 = egui::Color32::from_rgb(0x0C, 0x0D, 0x10);
+const FIELD_POS: egui::Color32 = egui::Color32::from_rgb(0x9E, 0x36, 0x92);
+const FIELD_NEG: egui::Color32 = egui::Color32::from_rgb(0x4A, 0x70, 0xA8);
+
+const ARROW_COLOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(140, 140, 140, 140);
+
 fn main() -> eframe::Result {
     #[cfg(false)]
     {
@@ -43,7 +49,8 @@ fn main() -> eframe::Result {
 
     let mut mag_scale = 0.04;
     let mut arrow_scale = 0.6;
-    let mut arrow_thickness = 3.;
+    // as a fraction of a cell, like arrow_scale
+    let mut arrow_thickness = 0.05;
 
     let mut fixed_rot = Rot::new(0., 0.);
 
@@ -79,6 +86,10 @@ fn main() -> eframe::Result {
     // of the immediate grid, so it's lazy too
     let mut direction_preserving_pitches = Grid::<Vec<Pitch>>(Box::new([]));
     let mut direction_preserving_computed_for: Option<GridMeta> = None;
+
+    let mut field_texture: Option<egui::TextureHandle> = None;
+    let mut cached_field_key: Option<FieldKey> = None;
+
     // let (mut deep_optimal_pitches, mut deep_optimal_energies) =
     //     energy_grid::new_grid_immediate_optimal_pitch(&grid_meta);
     // let mut deep_optim = DeepOptim::new(grid_meta.clone());
@@ -153,7 +164,7 @@ fn main() -> eframe::Result {
 
                             ui.label("Arrow Thickness");
                             ui.add(
-                                egui::Slider::new(&mut arrow_thickness, 0.0..=5.0)
+                                egui::Slider::new(&mut arrow_thickness, 0.0..=0.5)
                                     .clamping(egui::SliderClamping::Never),
                             );
 
@@ -614,20 +625,13 @@ fn main() -> eframe::Result {
                 let step = grid_meta.egui_step(rect);
 
                 let color_of_delta_energy = |delta_energy: DeltaTotalEnergy| {
-                    // fade to slightly different purples to show off 0
-                    if delta_energy >= 0. {
-                        egui::Color32::lerp_to_gamma(
-                            &egui::Color32::from_rgb(130, 0, 100),
-                            egui::Color32::RED,
-                            (delta_energy / mag_scale) as f32,
-                        )
+                    let end = if delta_energy >= 0. {
+                        FIELD_POS
                     } else {
-                        egui::Color32::lerp_to_gamma(
-                            &egui::Color32::from_rgb(100, 0, 130),
-                            egui::Color32::BLUE,
-                            (-delta_energy / mag_scale) as f32,
-                        )
-                    }
+                        FIELD_NEG
+                    };
+                    let mag = delta_energy.abs();
+                    egui::Color32::lerp_to_gamma(&FIELD_ZERO, end, (mag / (mag + mag_scale)) as f32)
                 };
 
                 let color_of_total_energy = |total_energy: TotalEnergy| {
@@ -663,6 +667,70 @@ fn main() -> eframe::Result {
                     direction_preserving_computed_for = Some(grid_meta.clone());
                 }
 
+                // color the background by the delta energy the arrows show
+                let actual_field_key = FieldKey {
+                    grid_meta: grid_meta.clone(),
+                    draw_arrow_type,
+                    mag_scale,
+                    fixed_pitch: fixed_rot.x,
+                    held_ticks,
+                    dp_tick,
+                };
+                if cached_field_key.as_ref() != Some(&actual_field_key) {
+                    let pixels = (0..grid_meta.height)
+                        .flat_map(|row| (0..grid_meta.width).map(move |col| (row, col)))
+                        .map(|(row, col)| match draw_arrow_type {
+                            DrawArrowType::FixedDeltaVel => color_of_delta_energy(
+                                energy_grid::delta_total_energy_for_vel_at_pitch(
+                                    grid_meta.row_col_usize_to_vel((row, col)),
+                                    fixed_rot.x,
+                                ),
+                            ),
+                            DrawArrowType::ImmediateOptimalDeltaTE
+                            | DrawArrowType::ImmediateOptimalDeltaVel
+                            | DrawArrowType::DirectionPreservingPitch => {
+                                color_of_delta_energy(immediate_optimal_energies.0[row][col])
+                            }
+                            DrawArrowType::HeldOptimalDeltaTE
+                            | DrawArrowType::HeldOptimalDeltaVel => {
+                                color_of_delta_energy(held_optimal_energies.0[row][col])
+                            }
+                            DrawArrowType::DeepOptimalPitch => {
+                                let Vel3 {
+                                    x: _,
+                                    y: y_vel,
+                                    z: z_vel,
+                                } = grid_meta.row_col_usize_to_vel((row, col));
+                                let key_query = DPKey::from_yz_vel(y_vel, z_vel);
+                                let DPValue { goodness, .. } = dp.get(dp_tick, key_query);
+                                color_of_delta_goodness(
+                                    goodness - key_query.to_state().total_energy(),
+                                )
+                            }
+                            DrawArrowType::DeepOptimalDeltaVel => FIELD_ZERO,
+                        })
+                        .collect();
+                    field_texture = Some(ui.ctx().load_texture(
+                        "energy field",
+                        egui::ColorImage::new([grid_meta.width, grid_meta.height], pixels),
+                        egui::TextureOptions::LINEAR,
+                    ));
+                    cached_field_key = Some(actual_field_key);
+                }
+                if let Some(field_texture) = &field_texture {
+                    // cells are centered on their sample, so the image starts half a cell out
+                    let min = rect.left_top() - egui::Vec2::splat(step / 2.);
+                    ui.painter_at(rect).image(
+                        field_texture.id(),
+                        egui::Rect::from_min_size(
+                            min,
+                            egui::vec2(grid_meta.width as f32, grid_meta.height as f32) * step,
+                        ),
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1., 1.)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
                 for (row, line) in grid_meta.rects(rect).enumerate() {
                     for (col, cell_rect) in line.enumerate() {
                         let init_vel = grid_meta.row_col_usize_to_vel((row, col));
@@ -677,11 +745,6 @@ fn main() -> eframe::Result {
                             let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
                             new_state.vel - init_state.vel
                         };
-                        let get_immediate_energy_color = |pitch: f32| {
-                            let new_state = init_state.ticked(Rot { x: pitch, y: 0. });
-                            let delta_energy = new_state.total_energy() - init_state.total_energy();
-                            color_of_delta_energy(delta_energy)
-                        };
 
                         match draw_arrow_type {
                             DrawArrowType::FixedDeltaVel => {
@@ -692,11 +755,10 @@ fn main() -> eframe::Result {
                                 //     new_state.total_energy() - init_state.total_energy();
                                 // let color = color_of_energy(delta_energy);
                                 let delta_vel = get_delta_vel(fixed_rot.x);
-                                let color = get_immediate_energy_color(fixed_rot.x);
                                 ui.painter().arrow(
                                     cen,
                                     delta_vel.yz_to_egui_vec2().normalized() * arrow_scale * step,
-                                    egui::Stroke::new(0.2 * step, color),
+                                    egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                 );
                             }
                             DrawArrowType::ImmediateOptimalDeltaTE => {
@@ -707,13 +769,12 @@ fn main() -> eframe::Result {
                                 // let delta_energy =
                                 //     new_state.total_energy() - init_state.total_energy();
                                 // let color = color_of_energy(delta_energy);
-                                let color = get_immediate_energy_color(pitch);
                                 ui.painter().arrow(
                                     cen,
                                     egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
                                         * arrow_scale
                                         * step,
-                                    egui::Stroke::new(0.2 * step, color),
+                                    egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                 );
                             }
                             DrawArrowType::ImmediateOptimalDeltaVel => {
@@ -726,14 +787,13 @@ fn main() -> eframe::Result {
                                 //     new_state.total_energy() - init_state.total_energy();
                                 // let color = color_of_energy(delta_energy);
                                 let delta_vel = get_delta_vel(pitch);
-                                let color = get_immediate_energy_color(pitch);
                                 ui.painter().arrow(
                                     cen,
                                     egui::vec2(delta_vel.z as f32, -delta_vel.y as f32)
                                         .normalized()
                                         * arrow_scale
                                         * step,
-                                    egui::Stroke::new(0.2 * step, color),
+                                    egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                 );
                             }
                             DrawArrowType::HeldOptimalDeltaTE => {
@@ -741,14 +801,12 @@ fn main() -> eframe::Result {
                                 // when held for `held_ticks` ticks
                                 // (colored by the mean per tick delta energy)
                                 let pitch = held_optimal_pitches.0[row][col];
-                                let color =
-                                    color_of_delta_energy(held_optimal_energies.0[row][col]);
                                 ui.painter().arrow(
                                     cen,
                                     egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
                                         * arrow_scale
                                         * step,
-                                    egui::Stroke::new(0.2 * step, color),
+                                    egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                 );
                             }
                             DrawArrowType::HeldOptimalDeltaVel => {
@@ -762,12 +820,10 @@ fn main() -> eframe::Result {
                                     final_state = final_state.ticked(rot);
                                 }
                                 let delta_vel = final_state.vel - init_state.vel;
-                                let color =
-                                    color_of_delta_energy(held_optimal_energies.0[row][col]);
                                 ui.painter().arrow(
                                     cen,
                                     delta_vel.yz_to_egui_vec2().normalized() * arrow_scale * step,
-                                    egui::Stroke::new(0.2 * step, color),
+                                    egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                 );
                             }
                             // DrawArrowType::DeepOptimalPitch => {
@@ -801,13 +857,12 @@ fn main() -> eframe::Result {
                                 // every pitch which keeps the velocity direction fixed
                                 // (colored by delta energy, like everything else)
                                 for &pitch in &direction_preserving_pitches.0[row][col] {
-                                    let color = get_immediate_energy_color(pitch);
                                     ui.painter().arrow(
                                         cen,
                                         egui::Vec2::angled(pitch * std::f32::consts::PI / 180.)
                                             * arrow_scale
                                             * step,
-                                        egui::Stroke::new(0.2 * step, color),
+                                        egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                     );
                                 }
                             }
@@ -839,13 +894,10 @@ fn main() -> eframe::Result {
                                 } = grid_meta.row_col_usize_to_vel((row, col));
                                 let key_query = DPKey::from_yz_vel(y_vel, z_vel);
                                 // let key_representative = key_query.to_representative();
-                                let DPValue { pitch, goodness } = dp.get(dp_tick, key_query);
+                                let DPValue { pitch, .. } = dp.get(dp_tick, key_query);
                                 // let color = color_of_goodness(goodness);
                                 // let color =
                                 //     color_of_delta_goodness(goodness - key.base_case().goodness);
-                                let color = color_of_delta_goodness(
-                                    goodness - key_query.to_state().total_energy(),
-                                );
                                 // let color = color_of_delta_goodness(
                                 //     goodness - key_representative.0.to_state().total_energy(),
                                 // );
@@ -868,7 +920,7 @@ fn main() -> eframe::Result {
                                         pitch.unwrap_or(-180.0) * std::f32::consts::PI / 180.,
                                     ) * arrow_scale
                                         * step,
-                                    egui::Stroke::new(0.2 * step, color),
+                                    egui::Stroke::new(arrow_thickness * step, ARROW_COLOR),
                                 );
                             }
                             // DrawArrowType::DeepOptimalPitch => {
@@ -1138,8 +1190,19 @@ pub fn lerp_state(a: &State, b: &State, t: f64) -> State {
     }
 }
 
+/// everything the energy field background is computed from
 #[derive(Debug, PartialEq)]
-/// everything is colored by delta energy
+struct FieldKey {
+    grid_meta: GridMeta,
+    draw_arrow_type: DrawArrowType,
+    mag_scale: f64,
+    fixed_pitch: Pitch,
+    held_ticks: usize,
+    dp_tick: usize,
+}
+
+/// the background is colored by delta energy
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum DrawArrowType {
     // don't actually do this because it's just arrows pointing in the same direction
     // /// draw the pitch for the global fixed pitch

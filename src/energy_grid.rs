@@ -1037,7 +1037,7 @@ pub fn new_grid_immediate_optimal_pitch(meta: &GridMeta) -> (Grid<Pitch>, Grid<D
     (pitches, energies)
 }
 
-fn delta_total_energy_for_vel_at_pitch(vel: Vel3, pitch: Pitch) -> DeltaTotalEnergy {
+pub fn delta_total_energy_for_vel_at_pitch(vel: Vel3, pitch: Pitch) -> DeltaTotalEnergy {
     let state = State {
         pos: Vec3::ZERO,
         vel,
