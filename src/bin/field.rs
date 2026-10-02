@@ -30,7 +30,6 @@ use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::Parser;
-use clap_derive::Parser;
 use rayon::prelude::*;
 
 const GRAVITY: f64 = 0.08;

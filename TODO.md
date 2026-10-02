@@ -44,7 +44,7 @@ josie's todo/notes, don't edit this, tho you can include it in commits
     - A ramp that should start a tick later, or bend, has to move many ticks together, so a one-pitch-at-a-time search advances it by slivers.
 - how to do a pump over a min barrier st you exit as fast as possible
 - use clap
-- gain markers for when we have a huge about of vel for monster. this is ood for the lookahead 20 marker.
+- optimize phase shifts of cyclic cycles
 
 ## turning experiments
 
