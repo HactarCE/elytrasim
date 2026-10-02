@@ -1842,7 +1842,7 @@ pub fn commit_hash() -> &'static str { env!("ELYTRASIM_COMMIT") }
 
 // ---------------------------------------------------------------- seeding a cell
 
-/// The best-scoring constants for each dive rule, as tuned by `myopic policy opt <rule>`
+/// The best-scoring constants for each dive rule, as tuned by `myopic policy <rule> --opt`
 /// against the 300-tick limit cycle. `Leak` is the strongest of the four (95.9% of the optimal
 /// cycle) and so is the default seed.
 ///

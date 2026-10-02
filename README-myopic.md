@@ -2,8 +2,8 @@
 
 Which one-tick-ish rules does the global optimum agree with, phase by phase?
 
-Run things with `cargo run --release --bin myopic -- <subcommand>`; the subcommands are
-documented at the top of `src/bin/myopic.rs`. Everything is measured against `sim`'s physics
+Run things with `cargo run --release --bin myopic -- <subcommand>`; `myopic --help` lists the
+subcommands. Everything is measured against `sim`'s physics
 with yaw pinned to zero, so the state is just `(v_y, v_z)` plus height.
 
 > **Units note.** Energies are now in **blocks** — `KE = |v|^2/(2g)`, `PE = y` exactly — so the
@@ -107,7 +107,7 @@ lookahead but with a different answer: the lookahead that lands exactly on the d
 all, the rest stepping over it), against ~20 in the gain phase thirty ticks later. One `n` does
 not serve both.
 
-Flying it costs nothing. `myopic policy opt leak vzpeak` swaps the tuned `vy_flick = -0.260` for
+Flying it costs nothing. `myopic policy leak --opt --vzpeak` swaps the tuned `vy_flick = -0.260` for
 the rule and retunes everything else: **1.38572 b/s, 96.7% of the optimal cycle**, against
 **1.37824 b/s, 96.2%** for the tuned threshold — better, on one fewer tuned scalar.
 
@@ -180,7 +180,7 @@ state. Looking for an invariant there was the wrong search.
 
 ### Both ends, on the whole steady corpus
 
-`myopic adjoint <profile> dump` solves `mu` with no free parameters (periodicity closes it) and
+`myopic adjoint <profile> --dump` solves `mu` with no free parameters (periodicity closes it) and
 prints it per tick. Across **all 1233 periodic cycles** of `runs/steady/nlamsweep`, `lambda -2..7`,
 `n 150..450`, against the ticks the optimum actually enters and leaves the hold:
 
@@ -397,7 +397,7 @@ neither climb nor sink (`|Δy| < 1` block over the whole cycle, all at `λ` 3–
 0.06–0.12°.
 
 **The price and the lookahead turn out to be the same knob**, which is why adding one cannot buy
-anything the other did not already have. `myopic djn <profile> equiv` matches each `ΔJ` lookahead to
+anything the other did not already have. `myopic djn <profile> --equiv` matches each `ΔJ` lookahead to
 the `ΔTE` lookahead whose pitches are closest and reports what is left over. On `n0400_lamP4`
 (`λ = 4`, `w = 0.261`):
 
@@ -420,7 +420,7 @@ parameters are called. Raising `w` and shortening `n` both raise that ratio. A h
 not literally a one-tick maximization of `mu.f`, so this is the reading the measurement supports
 rather than a derivation of it; what the measurement establishes on its own is the half-degree.
 
-Run the knob the other way and it says the same thing. `myopic djn <profile> wsweep` re-scores the
+Run the knob the other way and it says the same thing. `myopic djn <profile> --wsweep` re-scores the
 rule at a grid of *its own* `λ`, independent of the cycle's, and reports the best lookahead and RMS
 at each. The best lookahead walks monotonically down as the rule's price goes up — 25 at `λ_rule` =
 −12 to 17 at +12 — and the RMS has a shallow interior minimum that **does not sit at the cycle's own
@@ -460,14 +460,14 @@ the real `mu`. On the climbing arc the real `mu` can be written down. Once it is
 away and one number takes its place — a number the climb cannot derive, because it is what the
 *dive* will pay for what the climb hands over.
 
-`myopic gain <file> [w] [bvp] [dump]` measures everything here;
+`myopic gain <file> [w] [--bvp] [--dump]` measures everything here;
 `python3 tools/gain_phase.py runs/steady/nlamsweep` runs it across the corpus. The polished family
 is the reference cycle tiled three times, re-polished at each `w`, cut apex-to-apex and re-closed:
 
     myopic polish tiled900.txt 40 <w> > p900.txt        # tiled900 = REPLAY_PITCHES_300 x3
     myopic cyclecut p900.txt > cut.txt
     cargo run --release --example wobble -- cut.txt 0 > cyc.pitches
-    myopic gain cyc.pitches <w> bvp
+    myopic gain cyc.pitches <w> --bvp
 
 Pass `w` to `gain` explicitly: a profile header's own `w` is derived from its `lambda`, so a
 hand-written header cannot carry it.
@@ -601,7 +601,7 @@ Put together: the gain phase is exactly the climb's own optimal-control problem 
 choose pitches until the apex, maximizing `Σ(v_y + w·v_z)` plus `mu(apex)·v(apex)`.** No lookahead
 constant; the horizon is where the down-to-forward branch switches on, which the candidate
 trajectory locates itself, just as the hold's stopping rule is located by `v_z` peaking.
-`myopic gain <file> bvp` solves it by forward-backward sweep at every tick of the climb and scores
+`myopic gain <file> --bvp` solves it by forward-backward sweep at every tick of the climb and scores
 the first pitch against the cycle's own:
 
 | terminal price at the apex | RMS, ° | median, ° | max, ° |
@@ -777,13 +777,13 @@ and 0.320 are read off those two cycles, not derived.
 
     tools/gainlaw_refs.sh runs/gainlaw n0256_lamP0 n0372_lamP4     # ~30 s of one core each
     tools/gainlaw_refs.sh runs/gainlaw table
-    myopic --trig mth_lut --flight algebraic gainlaw runs/gainlaw/n0372_lamP4.cyc 0.2606 limit=85 k=0.76
+    myopic --trig mth_lut --flight algebraic gainlaw runs/gainlaw/n0372_lamP4.cyc 0.2606 --limit 85 --k 0.76
 
 ## Flying only the bugs
 
-`myopic policy opt` wires the four rules together with state-triggered switches, a pitch rate
+`myopic policy --opt` wires the four rules together with state-triggered switches, a pitch rate
 limit, and eight tuned scalars. It reaches **1.375 b/s, 96% of the optimal cycle**, in 299 ticks
-against 300, with every phase's energy budget within 0.11. `policy opt leak vzpeak` drops one of
+against 300, with every phase's energy budget within 0.11. `policy leak --opt --vzpeak` drops one of
 those scalars for the parameter-free stopping rule and does better still, 1.386 b/s — see the
 snap section.
 
@@ -793,7 +793,7 @@ optimum switches at −0.259. It also settled on `k ≈ 0.055` for the dive leak
 third rediscovery at the time and was not — `k` is nearly unidentified, and the leak turned out to
 be an entry correction rather than a rule.
 
-Performance is far less sensitive to the lookahead than the pitch fit is (`NGAIN=<n> myopic policy opt`):
+Performance is far less sensitive to the lookahead than the pitch fit is (`myopic policy --opt --ngain <n>`):
 
 | n | 1 | 2 | 4 | 8 | 12 | 16 | 20 | 24 | 32 |
 |---|---|---|---|---|----|----|----|----|----|

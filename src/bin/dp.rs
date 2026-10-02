@@ -9,6 +9,8 @@ use elytrasim::sim::{
     FlightMode, GRAVITY, Rot, TrigMode, Vec3, flight_mode, set_flight_mode, set_trig_mode,
     trig_mode,
 };
+use clap::Parser;
+use clap_derive::Parser;
 use rayon::prelude::*;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -66,106 +68,53 @@ impl Grid {
     }
 }
 
+/// Finite-horizon DP over (v_y, v_z) for the unregularized objective; writes `value.csv` and the
+/// flown policy from each probe into `--out`.
+#[derive(Parser)]
+#[command(allow_negative_numbers = true)]
 struct Args {
+    /// Horizon, ticks.
+    #[arg(long = "n")]
     horizon: usize,
+    #[arg(long)]
     lambda: f64,
+    #[arg(long, default_value_t = TrigMode::MthLut)]
     trig: TrigMode,
+    #[arg(long, default_value_t = FlightMode::Reference)]
     flight: FlightMode,
+    /// Largest |pitch|, degrees.
+    #[arg(long, default_value_t = 85.0)]
     limit: f64,
+    #[arg(long, default_value_t = 0.5)]
     pitch_step: f64,
-    grid: Grid,
+    #[arg(long, default_value_t = -4.5)]
+    vy_lo: f64,
+    #[arg(long, default_value_t = 1.5)]
+    vy_hi: f64,
+    #[arg(long, default_value_t = -1.0)]
+    vz_lo: f64,
+    #[arg(long, default_value_t = 4.5)]
+    vz_hi: f64,
+    /// Nodes per velocity axis.
+    #[arg(long = "grid", default_value_t = 513)]
+    grid_n: usize,
+    #[arg(long, default_value = "dp-out")]
     out: PathBuf,
+    /// Start velocities to fly the policy from, `vy:vz,...`.
+    #[arg(long = "probe", value_delimiter = ',', value_parser = parse_probe, allow_hyphen_values = true,
+          default_value = "0:0")]
     probes: Vec<(f64, f64)>,
 }
 
-fn usage() -> &'static str {
-    "usage: dp --n <horizon> --lambda <l> [--trig mth_lut] [--flight algebraic] [--limit 85] \
-     [--pitch-step 0.5] [--vy-lo -4.5 --vy-hi 1.5 --vz-lo -1.0 --vz-hi 4.5] \
-     [--grid 513] [--out dp-out] [--probe vy:vz,...]"
-}
-
-fn parse_num<T: std::str::FromStr>(flag: &str, value: &str) -> T
-where
-    T::Err: std::fmt::Display,
-{
-    value
-        .parse()
-        .unwrap_or_else(|e| panic!("bad {flag} value {value:?}: {e}"))
+fn parse_probe(point: &str) -> Result<(f64, f64), String> {
+    let (vy, vz) = point.split_once(':').ok_or_else(|| format!("want vy:vz, got {point:?}"))?;
+    let num = |x: &str| x.parse::<f64>().map_err(|e| format!("{x:?}: {e}"));
+    Ok((num(vy)?, num(vz)?))
 }
 
 impl Args {
-    fn parse() -> Self {
-        let raw: Vec<String> = std::env::args().skip(1).collect();
-        if raw.iter().any(|s| s == "-h" || s == "--help") {
-            println!("{}", usage());
-            std::process::exit(0);
-        }
-        let mut n = None;
-        let mut lambda = None;
-        let mut trig = TrigMode::MthLut;
-        let mut flight = FlightMode::Reference;
-        let mut limit = 85.0;
-        let mut pitch_step = 0.5;
-        let (mut vy_lo, mut vy_hi) = (-4.5, 1.5);
-        let (mut vz_lo, mut vz_hi) = (-1.0, 4.5);
-        let mut grid = 513usize;
-        let mut out = PathBuf::from("dp-out");
-        let mut probes = vec![(0.0, 0.0)];
-
-        let mut i = 0;
-        while i < raw.len() {
-            let flag = raw[i].as_str();
-            let value = raw
-                .get(i + 1)
-                .unwrap_or_else(|| panic!("{flag} needs a value"));
-            match flag {
-                "--n" => n = Some(parse_num(flag, value)),
-                "--lambda" => lambda = Some(parse_num(flag, value)),
-                "--trig" => trig = value.parse().unwrap_or_else(|e: String| panic!("{e}")),
-                "--flight" => flight = value.parse().unwrap_or_else(|e: String| panic!("{e}")),
-                "--limit" => limit = parse_num(flag, value),
-                "--pitch-step" => pitch_step = parse_num(flag, value),
-                "--vy-lo" => vy_lo = parse_num(flag, value),
-                "--vy-hi" => vy_hi = parse_num(flag, value),
-                "--vz-lo" => vz_lo = parse_num(flag, value),
-                "--vz-hi" => vz_hi = parse_num(flag, value),
-                "--grid" => grid = parse_num(flag, value),
-                "--out" => out = PathBuf::from(value),
-                "--probe" => {
-                    probes = value
-                        .split(',')
-                        .map(|point| {
-                            let (vy, vz) = point.split_once(':').unwrap_or_else(|| {
-                                panic!("--probe wants vy:vz,..., got {point:?}")
-                            });
-                            (parse_num("--probe vy", vy), parse_num("--probe vz", vz))
-                        })
-                        .collect();
-                }
-                _ => panic!("unknown option {flag:?}\n{}", usage()),
-            }
-            i += 2;
-        }
-
-        let args = Self {
-            horizon: n.unwrap_or_else(|| panic!("--n is required\n{}", usage())),
-            lambda: lambda.unwrap_or_else(|| panic!("--lambda is required\n{}", usage())),
-            trig,
-            flight,
-            limit,
-            pitch_step,
-            grid: Grid {
-                n: grid,
-                vy_lo,
-                vy_hi,
-                vz_lo,
-                vz_hi,
-            },
-            out,
-            probes,
-        };
-        args.validate();
-        args
+    fn grid(&self) -> Grid {
+        Grid { n: self.grid_n, vy_lo: self.vy_lo, vy_hi: self.vy_hi, vz_lo: self.vz_lo, vz_hi: self.vz_hi }
     }
 
     fn validate(&self) {
@@ -179,20 +128,20 @@ impl Args {
             self.pitch_step.is_finite() && self.pitch_step > 0.0,
             "--pitch-step must be positive"
         );
-        assert!(self.grid.n >= 2, "--grid must be at least 2");
+        assert!(self.grid_n >= 2, "--grid must be at least 2");
         assert!(
-            self.grid.vy_lo.is_finite()
-                && self.grid.vy_hi.is_finite()
-                && self.grid.vz_lo.is_finite()
-                && self.grid.vz_hi.is_finite(),
+            self.grid().vy_lo.is_finite()
+                && self.grid().vy_hi.is_finite()
+                && self.grid().vz_lo.is_finite()
+                && self.grid().vz_hi.is_finite(),
             "velocity bounds must be finite"
         );
         assert!(
-            self.grid.vy_lo < self.grid.vy_hi,
+            self.grid().vy_lo < self.grid().vy_hi,
             "--vy-lo must be below --vy-hi"
         );
         assert!(
-            self.grid.vz_lo < self.grid.vz_hi,
+            self.grid().vz_lo < self.grid().vz_hi,
             "--vz-lo must be below --vz-hi"
         );
         assert!(
@@ -205,7 +154,7 @@ impl Args {
                 "probe velocities must be finite"
             );
             assert!(
-                self.grid.contains(vy, vz),
+                self.grid().contains(vy, vz),
                 "probe ({vy}, {vz}) lies outside the velocity grid"
             );
         }
@@ -391,6 +340,8 @@ fn rollout_policy(
 
 fn main() {
     let args = Args::parse();
+    args.validate();
+    let grid = args.grid();
     set_trig_mode(args.trig);
     set_flight_mode(args.flight);
     let pitch_values = controls(args.limit, args.pitch_step);
@@ -398,14 +349,14 @@ fn main() {
         pitch_values.len() <= u16::MAX as usize + 1,
         "too many controls for the u16 policy representation"
     );
-    let states = args.grid.states();
+    let states = grid.states();
     let (transition_bytes, policy_bytes, value_bytes) =
         allocation_bytes(states, pitch_values.len(), args.horizon);
     let total_bytes = transition_bytes + policy_bytes + value_bytes;
     eprintln!(
         "dp: grid {}x{} ({} states), {} controls, n {}, trig {}, flight {}",
-        args.grid.n,
-        args.grid.n,
+        grid.n,
+        grid.n,
         states,
         pitch_values.len(),
         args.horizon,
@@ -434,15 +385,15 @@ fn main() {
 
     let w = w_of_lambda(args.lambda);
     let precompute_start = Instant::now();
-    let (transitions, boundary) = build_transitions(args.grid, &pitch_values, w);
+    let (transitions, boundary) = build_transitions(grid, &pitch_values, w);
     let precompute_secs = precompute_start.elapsed().as_secs_f64();
     eprintln!("transition precompute: {precompute_secs:.3}s");
 
     let mut previous: Vec<f64> = (0..states)
         .into_par_iter()
         .map(|state| {
-            let vy = args.grid.vy(state / args.grid.n);
-            let vz = args.grid.vz(state % args.grid.n);
+            let vy = grid.vy(state / grid.n);
+            let vz = grid.vz(state % grid.n);
             (vy * vy + vz * vz) * 0.5 / GRAVITY
         })
         .collect();
@@ -461,7 +412,7 @@ fn main() {
                 let mut best = f64::NEG_INFINITY;
                 let mut best_control = 0usize;
                 for (control, tr) in row.iter().enumerate() {
-                    let candidate = tr.reward as f64 + bilinear(&previous, args.grid.n, tr.y, tr.z);
+                    let candidate = tr.reward as f64 + bilinear(&previous, grid.n, tr.y, tr.z);
                     if candidate > best {
                         best = candidate;
                         best_control = control;
@@ -474,7 +425,7 @@ fn main() {
             writeln!(
                 csv,
                 "{k},{vy:.10},{vz:.10},{:.12}",
-                value_at(&current, args.grid, vy, vz)
+                value_at(&current, grid, vy, vz)
             )
             .unwrap();
         }
@@ -488,9 +439,9 @@ fn main() {
     );
 
     for &(vy, vz) in &args.probes {
-        let predicted = value_at(&previous, args.grid, vy, vz);
+        let predicted = value_at(&previous, grid, vy, vz);
         let (schedule, grid_oob, exact_oob, path_oy, path_oz) =
-            rollout_policy((vy, vz), args.horizon, args.grid, &pitch_values, &policy);
+            rollout_policy((vy, vz), args.horizon, grid, &pitch_values, &policy);
         let filename = format!("dp_n{}_vy{vy:+.6}_vz{vz:+.6}.pitches", args.horizon);
         let path = args.out.join(filename);
         write_schedule(&path, &schedule);

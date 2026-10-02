@@ -25,7 +25,7 @@ mkdir -p "$OUT"
 w_of() { awk '/^# w /{print $3}' "$1"; }
 if [ "${1:-}" = table ]; then
     for f in "$OUT"/*.cyc; do
-        ./target/release/myopic --trig mth_lut --flight algebraic gainlaw "$f" "$(w_of "$f")" limit=85
+        ./target/release/myopic --trig mth_lut --flight algebraic gainlaw "$f" "$(w_of "$f")" --limit 85
     done
     exit 0
 fi

@@ -71,7 +71,7 @@ def switch_report(root):
         if bb is None:
             continue
         start, out = bb
-        txt = subprocess.run(["./target/release/myopic", "adjoint", path, "dump"],
+        txt = subprocess.run(["./target/release/myopic", "adjoint", path, "--dump"],
                              capture_output=True, text=True).stdout
         if "not a closed cycle" in txt or "singular" in txt:
             continue          # the periodic adjoint needs a cycle that closes

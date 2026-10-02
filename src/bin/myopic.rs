@@ -41,42 +41,7 @@
 //! Everything here is measured against `sim`'s physics with yaw pinned to zero, so the whole
 //! problem lives in the (v_y, v_z) plane. See README-myopic.md for the numbers.
 //!
-//! Subcommands:
-//!   profiles                             cycle closure and climb rate of the built-in profiles
-//!   eq                                   terminal-glide table, and the fastest steady glide
-//!   eqrate                               steady glide maximizing the objective rate, per w
-//!   glide    [step] [lo] [hi]             steady-glide curves vs pitch, as CSV
-//!   crit                                 the three critical points of the steady glide, both sides
-//!   rising   [frontier|pitch|clock|tradeoff|down|all]
-//!                                        when forward speed can rise at all, and what a rise
-//!                                        costs; see docs/rising.md
-//!   polish   <file> [passes] [w]         coordinate-ascent polish of a schedule; maximizes TE + w*z
-//!   cycle    <file> <off>                per-tick dump: pitch, gamma, and each rule's answer
-//!   score    <file> <off> <lo> <hi>      RMS pitch error of a menu of rules, per phase
-//!   probe    <file> <off> <lo> <hi>      implied lookahead n*(t) through the gain phase
-//!   family   <file> <tag>                auto-detect the phases and summarize the fit
-//!   floor    <file> <tag>                fit the dive's first-order gamma decay and its asymptote
-//!   prices   <file> <tag>                shadow prices from the optimum, and the glide they pick
-//!   gprofile <file> <tag>                flight-path angle at ten points through the dive
-//!   gain     <file> [w] [bvp] [dump]     the climbing arc: the two costate clocks, the closed-form
-//!                                        stationary pitch, the countdown two pitches read out,
-//!                                        and with `bvp` the climb-to-apex rule's own pitches
-//!   gainlaw  <file> [w] [k=<x>] [limit=<deg>] [dump]
-//!                                        the search-free gain law on a closed cycle: the constant
-//!                                        read off the optimum's climb, and the law flown
-//!                                        closed-loop against argmax dTE over 20 ticks
-//!   adjoint  <file> [w] [dump]           solve the periodic price vector and test the one-tick
-//!                                        rule; a sweep profile supplies its own v0 and w
-//!   sweepn   <file> <off> <lo> <hi> <N>  argmax pitch for every lookahead 1..N, per tick
-//!   djn      <file> [nmax] [w=<x>] [limit=<deg>] [dump|wsweep|equiv]
-//!                                        the gain phase's lookahead rule at a price on distance:
-//!                                        argmax `dJ = dTE + w*dz` against argmax `dTE`, both
-//!                                        held `n` ticks, scored on the profile's own climb
-//!   rules    <file> <vy0> <vz0> <N>       pointwise rules for an arbitrary initial velocity
-//!   policy   [opt] [leak|floor|hold] [vzpeak]
-//!                                        fly the four bugs; NGAIN=<n> sets the gain lookahead,
-//!                                        and `vzpeak` swaps the tuned snap->flick threshold for
-//!                                        the parameter-free "forward speed has peaked" rule
+//! `myopic --help` lists the subcommands and `myopic <subcommand> --help` their arguments.
 //!
 //! `--trig libm|mth_lut` picks the trig implementation for any subcommand. `mth_lut` is
 //! Minecraft's own 65536-entry sine table; `libm` (the default) is the platform's, which is
@@ -86,9 +51,181 @@
 //! A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of
 //! the cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
 
+use clap::Parser;
+use clap_derive::{Parser, Subcommand};
 use elytrasim::opt::*;
 use elytrasim::sim::*;
 use rayon::prelude::*;
+
+/// Which myopic metrics the globally optimal climb cycle agrees with, phase by phase.
+///
+/// A schedule file is whitespace-separated pitches in degrees. `<off>` is the tick offset of the
+/// cycle to read, so a 3x-tiled 900-tick flight is read horizon-free at offset 300.
+#[derive(Parser)]
+struct Cli {
+    /// Trig route, anywhere on the line: `libm` (the default) or `mth_lut`.
+    #[arg(long, global = true)]
+    trig: Option<TrigMode>,
+    /// Flight kernel, anywhere on the line: `reference` or `algebraic`.
+    #[arg(long, global = true)]
+    flight: Option<FlightMode>,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Cycle closure and climb rate of the built-in profiles.
+    Profiles,
+    /// Terminal-glide table, and the fastest steady glide.
+    Eq,
+    /// Steady glide maximizing the objective rate, per w.
+    Eqrate {
+        /// Also print the equilibrium locus as CSV, and stop there.
+        #[arg(long)]
+        locus: bool,
+    },
+    /// Steady-glide curves vs pitch, as CSV.
+    #[command(allow_negative_numbers = true)]
+    Glide {
+        #[arg(default_value_t = 0.05)]
+        step: f64,
+        #[arg(default_value_t = -90.0)]
+        lo: f64,
+        #[arg(default_value_t = 90.0)]
+        hi: f64,
+    },
+    /// The three critical points of the steady glide, both sides.
+    Crit,
+    /// When forward speed can rise at all, and what a rise costs; see docs/rising.md.
+    Rising {
+        #[arg(default_value = "all", value_parser = ["frontier", "pitch", "clock", "tradeoff", "down", "all"])]
+        part: String,
+    },
+    /// Coordinate-ascent polish of a schedule; maximizes TE + w*z.
+    #[command(allow_negative_numbers = true)]
+    Polish {
+        path: String,
+        #[arg(default_value_t = 40)]
+        passes: usize,
+        #[arg(default_value_t = 0.0)]
+        w: f64,
+    },
+    /// Per-tick dump: pitch, gamma, and each rule's answer.
+    Cycle { path: String, off: usize },
+    /// RMS pitch error of a menu of rules, per phase.
+    Score { path: String, off: usize, lo: usize, hi: usize },
+    /// Implied lookahead n*(t) through the gain phase.
+    Probe { path: String, off: usize, lo: usize, hi: usize },
+    /// Auto-detect the phases and summarize the fit.
+    Family { path: String, tag: String },
+    /// Fit the dive's first-order gamma decay and its asymptote.
+    Floor { path: String, tag: String },
+    /// Shadow prices from the optimum, and the glide they pick.
+    Prices { path: String, tag: String },
+    /// Flight-path angle at ten points through the dive.
+    Gprofile { path: String, tag: String },
+    /// The one-tick sensitivity of `sens`, one side at a time.
+    #[command(allow_negative_numbers = true)]
+    Sides { path: String, delta: f64 },
+    /// Sweep the dive's leak rate `k`, with the other constants fixed and then re-tuned.
+    Ksweep,
+    /// Hand the first T ticks of every dive to the optimum, then let each rule take over.
+    Prefix { path: String },
+    /// What a pitch error at one tick costs the cycle, re-converged, in blocks per second.
+    #[command(allow_negative_numbers = true)]
+    Sens {
+        path: String,
+        delta: f64,
+        /// Per-tick CSV.
+        #[arg(long)]
+        dump: bool,
+    },
+    /// One tick, spelled out: how next tick's velocity swings with pitch, and where the price sits.
+    Swing { path: String, t: usize },
+    /// Print one cycle of a schedule: the middle of a 3x tiling, or the policy's limit cycle.
+    Cyclecut { path: String },
+    /// Is the price vector's consistency special to the optimum? `amp` perturbs a control.
+    #[command(allow_negative_numbers = true)]
+    Consist { path: String, amp: f64 },
+    /// How sharply the one-tick score picks out the optimum's pitch.
+    Singular { path: String },
+    /// The climbing arc: the two costate clocks, the closed-form stationary pitch, the countdown
+    /// two pitches read out, and with `--bvp` the climb-to-apex rule's own pitches.
+    #[command(allow_negative_numbers = true)]
+    Gain {
+        path: String,
+        w: Option<f64>,
+        #[arg(long)]
+        bvp: bool,
+        #[arg(long)]
+        dump: bool,
+    },
+    /// The search-free gain law on a closed cycle: the constant read off the optimum's climb, and
+    /// the law flown closed-loop against argmax dTE over 20 ticks.
+    #[command(allow_negative_numbers = true)]
+    Gainlaw {
+        path: String,
+        w: Option<f64>,
+        /// Fly this K instead of the one read off the optimum.
+        #[arg(long)]
+        k: Option<f64>,
+        /// Pitch limit, degrees.
+        #[arg(long)]
+        limit: Option<f64>,
+        #[arg(long)]
+        dump: bool,
+    },
+    /// Solve the periodic price vector and test the one-tick rule; a sweep profile supplies its
+    /// own v0 and w.
+    #[command(allow_negative_numbers = true)]
+    Adjoint {
+        path: String,
+        w: Option<f64>,
+        #[arg(long)]
+        dump: bool,
+    },
+    /// Argmax pitch for every lookahead 1..N, per tick.
+    Sweepn { path: String, off: usize, lo: usize, hi: usize, nmax: usize },
+    /// The gain phase's lookahead rule at a price on distance: argmax `dJ = dTE + w*dz` against
+    /// argmax `dTE`, both held `n` ticks, scored on the profile's own climb.
+    #[command(allow_negative_numbers = true)]
+    Djn {
+        path: String,
+        #[arg(default_value_t = 48)]
+        nmax: usize,
+        /// Override the profile's own w. A flag, not a positional: a bare number there reads as
+        /// the lookahead.
+        #[arg(long)]
+        w: Option<f64>,
+        #[arg(long)]
+        limit: Option<f64>,
+        #[arg(long)]
+        dump: bool,
+        #[arg(long)]
+        wsweep: bool,
+        #[arg(long)]
+        equiv: bool,
+    },
+    /// Pointwise rules for an arbitrary initial velocity.
+    #[command(allow_negative_numbers = true)]
+    Rules { path: String, vy0: f64, vz0: f64, nmax: usize },
+    /// Fly the four bugs.
+    Policy {
+        #[arg(default_value = "leak", value_parser = ["leak", "floor", "hold", "target"])]
+        dive: String,
+        /// Tune the shared constants first.
+        #[arg(long)]
+        opt: bool,
+        /// Swap the tuned snap->flick threshold for the parameter-free "forward speed has
+        /// peaked" rule.
+        #[arg(long)]
+        vzpeak: bool,
+        /// The gain lookahead.
+        #[arg(long, default_value_t = 20)]
+        ngain: usize,
+    },
+}
 
 // ---------------------------------------------------------------- subcommands
 
@@ -634,7 +771,7 @@ fn cmd_rising(part: &str) {
     }
 }
 
-fn cmd_eqrate() {
+fn cmd_eqrate(locus: bool) {
     // TE is in blocks, so potential energy is exactly height and v_y carries weight 1.
     const G: f64 = 1.0;
     // The locus is a curve in the (v_z, v_y) plane parameterized by pitch. Build it once;
@@ -680,7 +817,7 @@ fn cmd_eqrate() {
         println!("{w:>7.4} {p:>8.3} {:>10.5} {:>10.5} {:>9.5} {:>9.4} {:>12.6} {g_obs:>9.2}",
                  e.y, e.z, e.length(), gamma(e), G * e.y + w * e.z);
     }
-    if std::env::args().any(|a| a == "locus") {
+    if locus {
         println!("\npitch,eq_vy,eq_vz,speed,gamma");
         for i in 0..=3600 { let p = -90.0 + 0.05 * i as f64; let e = equilibrium(p);
             println!("{p:.2},{:.6},{:.6},{:.6},{:.4}", e.y, e.z, e.length(), gamma(e)) }
@@ -834,7 +971,7 @@ fn cmd_gprofile(path: &str, tag: &str) {
 /// tangency at each of the N ticks is a separate falsifiable prediction, unlike reading `mu` off
 /// the optimum's own pitch, which is stationary by construction. Reported as the gap in degrees
 /// between the optimum's pitch and the argmax of the score.
-fn cmd_adjoint(path: &str, w: Option<f64>) {
+fn cmd_adjoint(path: &str, w: Option<f64>, dump: bool) {
     // A sweep profile states its own starting velocity and price. Replaying it from the
     // built-in `V0` instead is simply a different flight -- the cycle does not close and every
     // number below is of something else -- so read the header where there is one, and fall back
@@ -893,7 +1030,7 @@ fn cmd_adjoint(path: &str, w: Option<f64>) {
                                   hi - lo, rms(&err[lo..hi]), err[lo..hi].iter().fold(0.0f64, |m, x| m.max(x.abs()))) }
         }
     }
-    if std::env::args().any(|a| a == "dump") {
+    if dump {
         println!("t,pitch,vy,vz,gamma,mu_y,mu_z,ratio,gap");
         for t in 0..n {
             println!("{t},{:.4},{:.6},{:.6},{:.4},{:.6},{:.6},{:.6},{:.4}", ps[t], st[t].vel.y, st[t].vel.z,
@@ -1085,7 +1222,7 @@ fn cmd_djn(path: &str, w_over: Option<f64>, lim_over: Option<f64>, nmax: usize,
 ///
 /// Only the flick has neither. So the gain phase's pitch, which is `gain_pitch(v_z, mu)`, needs
 /// exactly two non-local numbers: the apex (which its own trajectory sets) and `kappa =
-/// mu_z(apex)`, the price the dive will pay for the forward speed it is handed. `gain bvp`
+/// mu_z(apex)`, the price the dive will pay for the forward speed it is handed. `gain --bvp`
 /// scores the rule that follows -- maximize `sum (v_y + w v_z)` to the apex plus `kappa v_z`
 /// there -- against the cycle's own pitches.
 fn cmd_gain(path: &str, w: Option<f64>, bvp: bool, dump: bool) {
@@ -1246,7 +1383,7 @@ pub fn gain_bvp(s: &State, w: f64, mu_t: (f64, f64), p_init: f64, cap: usize) ->
 /// of the cycle's own `J` and the accounting is the same for every rule. `phi` is the law read
 /// backwards off the optimum's own pitches; its being flat through the body is the claim.
 ///
-/// `k=<x>` flies a `k` of your choosing alongside `gain_law_k(w)`, which is how a marker built for
+/// `--k <x>` flies a `k` of your choosing alongside `gain_law_k(w)`, which is how a marker built for
 /// one objective is scored on another's cycle. `v_c`, where the optimum's pitch first returns to
 /// 0, is the cycle's own number: the row that uses it is an oracle for the end, not a rule.
 fn cmd_gainlaw(path: &str, w: Option<f64>, k_over: Option<f64>, lim_over: Option<f64>, dump: bool) {
@@ -1385,7 +1522,7 @@ fn cmd_singular(path: &str) {
 /// operational version: nudge one tick's pitch, let the schedule re-converge to its own limit
 /// cycle, and read the change in climb rate. Answers "does the pitch at this tick matter", in
 /// blocks per second, with no theory in between.
-fn cmd_sens(path: &str, delta: f64) {
+fn cmd_sens(path: &str, delta: f64, dump: bool) {
     let base = read_pitches(path);
     let n = base.len();
     let rate = |ps: &[f64]| -> f64 {
@@ -1423,7 +1560,7 @@ fn cmd_sens(path: &str, delta: f64) {
     let t_gain = (t_snap..n).find(|&t| st[t].vel.y > 0.0).unwrap_or(t_snap);
     let t_gend = (t_gain + 10..n).find(|&t| base[t] > 0.0).unwrap_or(n);
     show("dive", 20, t_snap); show("snap+flick", t_snap, t_gain); show("gain", t_gain, t_gend);
-    if std::env::args().any(|a| a == "dump") {
+    if dump {
         println!("t,pitch,gamma,cost");
         for t in 0..n { println!("{t},{:.4},{:.3},{:.6e}", base[t], gamma(st[t].vel), cost[t]) }
     }
@@ -1690,10 +1827,9 @@ fn cmd_ksweep() {
 }
 
 
-fn cmd_policy(optimize: bool, dive: Dive, vzpeak: bool) {
+fn cmd_policy(optimize: bool, dive: Dive, vzpeak: bool, ng: usize) {
     let ticks = 1500;
-    let ng: usize = std::env::var("NGAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
-    // the shared constants, as tuned by `policy opt <rule>` for each dive rule in turn
+    // the shared constants, as tuned by `policy <rule> --opt` for each dive rule in turn
     let mut par = match dive {
         Dive::Leak => P { g_star: 17.73, k: 0.055, s_switch: 2.40, vy_flick: -0.260,
                           s_exit: 0.21, slew: 12.7, p_push: 23.0, p_flick: -88.5, n_gain: ng, dive },
@@ -1702,11 +1838,11 @@ fn cmd_policy(optimize: bool, dive: Dive, vzpeak: bool) {
         Dive::Hold => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.127, vy_flick: -0.260,
                           s_exit: 0.29, slew: 8.34, p_push: 47.0, p_flick: -41.51, n_gain: ng, dive },
         // steer straight at the derived floor rather than holding what you have; wants its own
-        // constants, so `policy opt target` before reading anything into its score
+        // constants, so `policy target --opt` before reading anything into its score
         Dive::Target => P { g_star: f64::NAN, k: f64::NAN, s_switch: 2.177, vy_flick: -0.2685,
                             s_exit: 0.45, slew: 12.92, p_push: 24.01, p_flick: -79.44, n_gain: ng, dive },
     };
-    // the stopping rule under test: `vzpeak` drops the tuned threshold for `opt::vz_peaked`
+    // the stopping rule under test: `--vzpeak` drops the tuned threshold for `opt::vz_peaked`
     if vzpeak { par.vy_flick = f64::NAN }
     if optimize {
         // g_star and k exist only for the leaking dive; the others are shared
@@ -1747,79 +1883,43 @@ fn cmd_policy(optimize: bool, dive: Dive, vzpeak: bool) {
 }
 
 fn main() {
-    let mut a: Vec<String> = std::env::args().collect();
-    // --trig <libm|mth_lut> anywhere in the line, stripped before positional parsing
-    if let Some(i) = a.iter().position(|x| x == "--trig") {
-        set_trig_mode(a.get(i + 1).unwrap_or_else(|| panic!("--trig needs a mode"))
-                       .parse().unwrap_or_else(|e| panic!("{e}")));
-        a.drain(i..=i + 1);
-    }
-    if let Some(i) = a.iter().position(|x| x == "--flight") {
-        set_flight_mode(a.get(i + 1).unwrap_or_else(|| panic!("--flight needs a mode"))
-                        .parse().unwrap_or_else(|e| panic!("{e}")));
-        a.drain(i..=i + 1);
-    }
-    let a = a;
-    let n = |i: usize| a[i].parse().unwrap();
-    match a.get(1).map(String::as_str) {
-        Some("profiles") => cmd_profiles(),
-        Some("eq") => cmd_eq(),
-        Some("eqrate") => cmd_eqrate(),
-        Some("glide") => cmd_glide(a.get(2).map_or(0.05, |s| s.parse().unwrap()),
-                                   a.get(3).map_or(-90.0, |s| s.parse().unwrap()),
-                                   a.get(4).map_or(90.0, |s| s.parse().unwrap())),
-        Some("crit") => cmd_crit(),
-        Some("rising") => cmd_rising(a.get(2).map_or("all", String::as_str)),
-        Some("polish") => cmd_polish(&a[2], a.get(3).map_or(40, |s| s.parse().unwrap()),
-                                     a.get(4).map_or(0.0, |s| s.parse().unwrap())),
-        Some("cycle") => cmd_cycle(&a[2], n(3)),
-        Some("score") => cmd_score(&a[2], n(3), n(4), n(5)),
-        Some("probe") => cmd_probe(&a[2], n(3), n(4), n(5)),
-        Some("family") => cmd_family(&a[2], &a[3]),
-        Some("floor") => cmd_floor(&a[2], &a[3]),
-        Some("prices") => cmd_prices(&a[2], &a[3]),
-        Some("gprofile") => cmd_gprofile(&a[2], &a[3]),
-        Some("sides") => cmd_sides(&a[2], a[3].parse().unwrap()),
-        Some("ksweep") => cmd_ksweep(),
-        Some("prefix") => cmd_prefix(&a[2]),
-        Some("sens") => cmd_sens(&a[2], a[3].parse().unwrap()),
-        Some("swing") => cmd_swing(&a[2], n(3)),
-        Some("cyclecut") => cmd_cyclecut(&a[2]),
-        Some("consist") => cmd_consist(&a[2], a[3].parse().unwrap()),
-        Some("singular") => cmd_singular(&a[2]),
-        Some("gain") => cmd_gain(&a[2], a.get(3).filter(|s| !matches!(s.as_str(), "bvp"|"dump"))
-                                      .map(|s| s.parse().unwrap()),
-                                  a.iter().any(|x| x == "bvp"), a.iter().any(|x| x == "dump")),
-        Some("gainlaw") => cmd_gainlaw(&a[2],
-                                       a.get(3).filter(|s| *s != "dump" && !s.contains('='))
-                                               .map(|s| s.parse().unwrap()),
-                                       a.iter().find_map(|x| x.strip_prefix("k=")).map(|s| s.parse().unwrap()),
-                                       a.iter().find_map(|x| x.strip_prefix("limit=")).map(|s| s.parse().unwrap()),
-                                       a.iter().any(|x| x == "dump")),
-        Some("adjoint") => cmd_adjoint(&a[2], a.get(3).filter(|s| *s != "dump")
-                                                   .map(|s| s.parse().unwrap())),
-        Some("sweepn") => cmd_sweepn(&a[2], n(3), n(4), n(5), n(6)),
-        // `w=<x>` is a named override rather than a positional: the whole point of the
-        // subcommand is the profile's own `w`, and a bare number there reads as the lookahead.
-        Some("djn") => cmd_djn(&a[2],
-                               a.iter().find_map(|x| x.strip_prefix("w=")).map(|s| s.parse().unwrap()),
-                               a.iter().find_map(|x| x.strip_prefix("limit=")).map(|s| s.parse().unwrap()),
-                               a.get(3).filter(|s| *s != "dump" && *s != "wsweep" && *s != "equiv"
-                                                && !s.starts_with("w=") && !s.starts_with("limit="))
-                                       .map_or(48, |s| s.parse().unwrap()),
-                               a.iter().any(|x| x == "dump"),
-                               a.iter().any(|x| x == "wsweep"),
-                               a.iter().any(|x| x == "equiv")),
-        Some("rules") => cmd_rules(&a[2], a[3].parse().unwrap(), a[4].parse().unwrap(), n(5)),
-        Some("policy") => cmd_policy(a.iter().any(|x| x == "opt"),
-                                     match a.iter().find(|x| ["leak", "floor", "hold", "target"].contains(&x.as_str())) {
-                                         Some(x) if x == "floor" => Dive::Floor,
-                                         Some(x) if x == "hold" => Dive::Hold,
-                                         Some(x) if x == "target" => Dive::Target,
-                                         _ => Dive::Leak,
-                                     },
-                                     a.iter().any(|x| x == "vzpeak")),
-        _ => eprintln!("{}", "usage: myopic <profiles|eq|eqrate|glide|crit|polish|cycle|score|probe|family|floor|prices|gprofile|gain|gainlaw|adjoint|singular|consist|cyclecut|sens|swing|prefix|sweepn|djn|rules|policy> ...\n\
-                              see the module docs at the top of src/bin/myopic.rs"),
+    let cli = Cli::parse();
+    if let Some(t) = cli.trig { set_trig_mode(t) }
+    if let Some(f) = cli.flight { set_flight_mode(f) }
+    match cli.cmd {
+        Cmd::Profiles => cmd_profiles(),
+        Cmd::Eq => cmd_eq(),
+        Cmd::Eqrate { locus } => cmd_eqrate(locus),
+        Cmd::Glide { step, lo, hi } => cmd_glide(step, lo, hi),
+        Cmd::Crit => cmd_crit(),
+        Cmd::Rising { part } => cmd_rising(&part),
+        Cmd::Polish { path, passes, w } => cmd_polish(&path, passes, w),
+        Cmd::Cycle { path, off } => cmd_cycle(&path, off),
+        Cmd::Score { path, off, lo, hi } => cmd_score(&path, off, lo, hi),
+        Cmd::Probe { path, off, lo, hi } => cmd_probe(&path, off, lo, hi),
+        Cmd::Family { path, tag } => cmd_family(&path, &tag),
+        Cmd::Floor { path, tag } => cmd_floor(&path, &tag),
+        Cmd::Prices { path, tag } => cmd_prices(&path, &tag),
+        Cmd::Gprofile { path, tag } => cmd_gprofile(&path, &tag),
+        Cmd::Sides { path, delta } => cmd_sides(&path, delta),
+        Cmd::Ksweep => cmd_ksweep(),
+        Cmd::Prefix { path } => cmd_prefix(&path),
+        Cmd::Sens { path, delta, dump } => cmd_sens(&path, delta, dump),
+        Cmd::Swing { path, t } => cmd_swing(&path, t),
+        Cmd::Cyclecut { path } => cmd_cyclecut(&path),
+        Cmd::Consist { path, amp } => cmd_consist(&path, amp),
+        Cmd::Singular { path } => cmd_singular(&path),
+        Cmd::Gain { path, w, bvp, dump } => cmd_gain(&path, w, bvp, dump),
+        Cmd::Gainlaw { path, w, k, limit, dump } => cmd_gainlaw(&path, w, k, limit, dump),
+        Cmd::Adjoint { path, w, dump } => cmd_adjoint(&path, w, dump),
+        Cmd::Sweepn { path, off, lo, hi, nmax } => cmd_sweepn(&path, off, lo, hi, nmax),
+        Cmd::Djn { path, nmax, w, limit, dump, wsweep, equiv } =>
+            cmd_djn(&path, w, limit, nmax, dump, wsweep, equiv),
+        Cmd::Rules { path, vy0, vz0, nmax } => cmd_rules(&path, vy0, vz0, nmax),
+        Cmd::Policy { dive, opt, vzpeak, ngain } => {
+            let dive = match dive.as_str() { "floor" => Dive::Floor, "hold" => Dive::Hold,
+                                             "target" => Dive::Target, _ => Dive::Leak };
+            cmd_policy(opt, dive, vzpeak, ngain)
+        }
     }
 }

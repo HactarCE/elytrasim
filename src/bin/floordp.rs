@@ -25,12 +25,9 @@
 //! `r + V(s')` over a fine grid, flown in the exact simulator from rest at `y0` -- is the check:
 //! its `t*` or `z(t*)` is a real flight's.
 //!
-//! Usage: floordp --mode time|dist [--hmax 34] [--nh 137] [--gamma 1] [--vymin -3] [--vymax 2] [--vzmax 3]
-//!                [--dv 0.05] [--dp 1] [--sweeps 400] [--tol 1e-4] [--cap 1e5]
-//!                [--y0 1,2,..] [--fine 0.25] [--maxt 20000] [--every 50] [--out <dir>]
-//!                [--save <file>] [--load <file>]   V as raw little-endian f32, for the same grid;
-//!                                                  `--load` skips the sweeps
-//!                [--gap 10] [--map <file> --map-h 0.1,0.5,..] [--trace]
+//! Usage: `floordp --mode time|dist [--y0 1,2,..] [--out <dir>] ...`; `floordp --help` has every
+//! option. `--save <file>`/`--load <file>` keep V as raw little-endian f32, and `--load` skips
+//! the sweeps.
 //!
 //! `--map` writes the policy on every velocity node at each `--map-h`: the chosen pitch, as
 //! little-endian i16 quarter-degrees, then the *margin*, as f32, `h`-major then `v_y` then `v_z`.
@@ -44,23 +41,88 @@
 //!
 //! Physics is `floor`'s: `mth_lut` trig and `reference` flight.
 
+use clap::Parser;
+use clap_derive::{Parser, ValueEnum};
 use elytrasim::sim::*;
 use rayon::prelude::*;
 
-struct Args(Vec<String>);
-
-impl Args {
-    fn get(&self, k: &str) -> Option<&str> {
-        self.0.iter().position(|a| a == k).and_then(|i| self.0.get(i + 1)).map(String::as_str)
-    }
-    fn num<T: std::str::FromStr>(&self, k: &str, d: T) -> T where T::Err: std::fmt::Debug {
-        self.get(k).map_or(d, |v| v.parse().unwrap_or_else(|e| panic!("bad {k}: {e:?}")))
-    }
+/// Backward DP over (h, v_y, v_z) for flight over a floor, and its policy flown from rest.
+#[derive(Parser)]
+#[command(allow_negative_numbers = true)]
+struct Args {
+    /// Endurance (`time`) or range (`dist`).
+    #[arg(long, value_enum, default_value_t = Mode::Time)]
+    mode: Mode,
+    /// Top of the height grid, blocks above the floor.
+    #[arg(long, default_value_t = 34.0)]
+    hmax: f64,
+    /// Height-node spacing exponent; above 1 packs nodes toward the floor.
+    #[arg(long, default_value_t = 1.0)]
+    gamma: f64,
+    /// Height nodes.
+    #[arg(long, default_value_t = 137)]
+    nh: usize,
+    /// Velocity node spacing, blocks/tick, on both axes.
+    #[arg(long, default_value_t = 0.05)]
+    dv: f64,
+    #[arg(long, default_value_t = -3.0)]
+    vymin: f64,
+    #[arg(long, default_value_t = 2.0)]
+    vymax: f64,
+    #[arg(long, default_value_t = 3.0)]
+    vzmax: f64,
+    /// Pitch step of the backup, degrees; must divide 170.
+    #[arg(long, default_value_t = 1.0)]
+    dp: f64,
+    #[arg(long, default_value_t = 400)]
+    sweeps: usize,
+    /// Stop once no start state's value rises more than this in a sweep.
+    #[arg(long, default_value_t = 1e-4)]
+    tol: f64,
+    /// Values are clipped here; a state that reaches it flies forever.
+    #[arg(long, default_value_t = 1e5)]
+    cap: f64,
+    /// Start heights to fly the policy from (default 1..=32).
+    #[arg(long, value_delimiter = ',')]
+    y0: Vec<f64>,
+    /// Write V (and `<file>.spec`) after the sweeps.
+    #[arg(long)]
+    save: Option<String>,
+    /// Read V saved for the same grid and mode, and skip the sweeps.
+    #[arg(long)]
+    load: Option<String>,
+    /// Report progress every this many sweeps.
+    #[arg(long, default_value_t = 50)]
+    every: usize,
+    /// Pitch step of the flown policy, degrees.
+    #[arg(long, default_value_t = 0.25)]
+    fine: f64,
+    /// Degrees from the best pitch that a runner-up must be.
+    #[arg(long, default_value_t = 10.0)]
+    gap: f64,
+    /// Write `<mode>_y<y0>.trace` and `.q` beside each flown policy (needs `--out`).
+    #[arg(long)]
+    trace: bool,
+    /// Ticks of `.q` to write under `--trace`.
+    #[arg(long, default_value_t = 3000)]
+    trace_q: usize,
+    /// Write the policy map here (see the module docs).
+    #[arg(long, requires = "map_h")]
+    map: Option<String>,
+    /// Heights the map is taken at.
+    #[arg(long, value_delimiter = ',')]
+    map_h: Vec<f64>,
+    /// Longest flight of the policy, ticks.
+    #[arg(long, default_value_t = 20000)]
+    maxt: usize,
+    /// Directory for the flown pitches.
+    #[arg(long)]
+    out: Option<String>,
 }
 
 const HBINS: usize = 4096;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
 enum Mode { Time, Dist }
 
 /// A grid over `(h, v_y, v_z)`, node `(i, j, k)` at `(hmax (i / (nh-1))^gamma, vy0 + j dvy,
@@ -146,27 +208,17 @@ fn ranked(g: &Grid, v: &[f32], mode: Mode, h: f64, vel: Vec3, ps: &[f64], ts: &[
 fn main() {
     set_trig_mode(TrigMode::MthLut);
     set_flight_mode(FlightMode::Reference);
-    let a = Args(std::env::args().collect());
-    let mode = match a.get("--mode").unwrap_or("time") { "time" => Mode::Time, "dist" => Mode::Dist, m => panic!("bad --mode {m}") };
-    let hmax: f64 = a.num("--hmax", 34.0);
-    let gamma: f64 = a.num("--gamma", 1.0);
-    let nh: usize = a.num("--nh", 137);
-    let dv: f64 = a.num("--dv", 0.05);
-    let (vymin, vymax, vzmax): (f64, f64, f64) = (a.num("--vymin", -3.0), a.num("--vymax", 2.0), a.num("--vzmax", 3.0));
+    let a = Args::parse();
+    let Args { mode, hmax, gamma, nh, dv, vymin, vymax, vzmax, dp, tol, cap, every, fine, gap, trace, trace_q, maxt, .. } = a;
     // `v_y = 0` and `v_z = 0` are nodes, so the start state from rest is one.
     let jy0 = (-vymin / dv).round() as usize;
     let g = Grid::new(hmax, gamma, nh, -(jy0 as f64) * dv, dv, jy0 + (vymax / dv).round() as usize + 1,
                       dv, (vzmax / dv).round() as usize + 1);
-    let dp: f64 = a.num("--dp", 1.0);
     let lim = 85.0;
     assert!(((2.0 * lim / dp).round() * dp - 2.0 * lim).abs() < 1e-9, "--dp {dp} does not divide 170: +85 would be left out");
     let pitches: Vec<f64> = (0..=((2.0 * lim / dp).round() as i64)).map(|i| (-lim + dp * i as f64).min(lim)).collect();
     let trig: Vec<PitchTrig> = pitches.iter().map(|&p| PitchTrig::new(p as f32)).collect();
-    let sweeps: usize = a.num("--sweeps", 400);
-    let tol: f64 = a.num("--tol", 1e-4);
-    let cap: f64 = a.num("--cap", 1e5);
-    let y0s: Vec<f64> = a.get("--y0").map_or((1..=32).map(|y| y as f64).collect(),
-                                              |s| s.split(',').map(|x| x.parse().unwrap()).collect());
+    let y0s: Vec<f64> = if a.y0.is_empty() { (1..=32).map(|y| y as f64).collect() } else { a.y0.clone() };
     assert!(y0s.iter().all(|&y| y <= hmax), "a --y0 above --hmax {hmax} would read V clamped to the grid's top");
     eprintln!("grid {} x {} x {} = {} states (gamma {gamma}: dh {:.4} at the floor, {:.3} at the top; dv {dv}; h 0..{hmax}, v_y {:.2}..{vymax}, v_z 0..{vzmax}); {} pitches",
               g.nh, g.nvy, g.nvz, g.len(), g.h(1), hmax - g.h(nh - 2), g.vy0, trig.len());
@@ -176,17 +228,16 @@ fn main() {
     let vspec = format!("{} grid {}x{}x{} hmax {hmax} gamma {gamma} vy {} dv {dv} dp {dp}",
                         match mode { Mode::Time => "time", Mode::Dist => "dist" }, g.nh, g.nvy, g.nvz, g.vy0);
     let mut v = vec![0.0f32; g.len()];
-    if let Some(f) = a.get("--load") {
+    if let Some(f) = &a.load {
         let saved = std::fs::read_to_string(format!("{f}.spec")).unwrap_or_else(|e| panic!("{f}.spec: {e}"));
         assert_eq!(saved.trim(), vspec, "{f} was saved for another grid or mode");
         let b = std::fs::read(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         assert_eq!(b.len(), 4 * g.len(), "{f} is not a V for this grid");
         v = b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
     }
-    let sweeps = if a.get("--load").is_some() { 0 } else { sweeps };
+    let sweeps = if a.load.is_some() { 0 } else { a.sweeps };
     let clock = std::time::Instant::now();
     let start = |v: &[f32], y0: f64| g.at(v, y0, 0.0, 0.0);
-    let every: usize = a.num("--every", 50);
     let mut done = 0;
     // The start values 100 sweeps back: a start still rising at the end flies longer than the
     // sweeps, or forever.
@@ -212,19 +263,15 @@ fn main() {
         if rise < tol { break }
     }
 
-    if let Some(f) = a.get("--save") {
+    if let Some(f) = &a.save {
         std::fs::write(f, v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
         std::fs::write(format!("{f}.spec"), format!("{vspec}\n")).unwrap();
     }
     // The policy, flown exactly from rest.
-    let fine: f64 = a.num("--fine", 0.25);
     let fp: Vec<f64> = (0..=((2.0 * lim / fine).round() as i64)).map(|i| (-lim + fine * i as f64).min(lim)).collect();
     let ft: Vec<PitchTrig> = fp.iter().map(|&p| PitchTrig::new(p as f32)).collect();
-    let gap: f64 = a.num("--gap", 10.0);
-    let trace = a.0.iter().any(|x| x == "--trace");
-    let trace_q: usize = a.num("--trace-q", 3000);
-    if let Some(f) = a.get("--map") {
-        let mh: Vec<f64> = a.get("--map-h").expect("--map needs --map-h").split(',').map(|x| x.parse().unwrap()).collect();
+    if let Some(f) = &a.map {
+        let mh = &a.map_h;
         let cells: Vec<(f64, f64, f64)> = mh.iter().flat_map(|&h| (0..g.nvy).flat_map(move |j| (0..g.nvz).map(move |k| (h, j, k))))
             .map(|(h, j, k)| (h, g.vy0 + j as f64 * g.dvy, k as f64 * g.dvz)).collect();
         let pol: Vec<(i16, f32)> = cells.par_iter().map(|&(h, vy, vz)| {
@@ -238,13 +285,12 @@ fn main() {
                                                       g.nvy, g.vy0, g.nvz, mh.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(","))).unwrap();
         eprintln!("map: {} heights x {} x {} to {f}", mh.len(), g.nvy, g.nvz);
     }
-    let out = a.get("--out");
+    let out = a.out.as_deref();
     if let Some(d) = out { std::fs::create_dir_all(d).unwrap() }
     let tag = match mode { Mode::Time => "time", Mode::Dist => "dist" };
     let spec = format!("grid {}x{}x{} hmax {hmax} gamma {gamma} dv {dv} dp {dp}", g.nh, g.nvy, g.nvz);
     println!("# floordp {tag}: {spec}; {done} sweeps; policy on a {fine}-degree grid");
     println!("{:>5} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}", "y0", "V(start)", "rise/100", "t*", "z(t*)", "outside", "dips<1");
-    let maxt: usize = a.num("--maxt", 20000);
     for (yi, &y0) in y0s.iter().enumerate() {
         let rise100 = start(&v, y0) - back.front().map_or(f64::NAN, |b| b[yi]);
         let (mut h, mut vel, mut z) = (y0, Vec3::ZERO, 0.0);

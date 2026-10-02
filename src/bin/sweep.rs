@@ -10,7 +10,9 @@
 //!   verify  <file>...               re-certify profiles against their own headers
 //!   bench   [--n <n>]               seconds per pass and per profile, cold and warm
 //!   pilot   [--out <dir>]           the coarse grid: axis bounds, strides, seed quality
-//!   run     --out <dir> [--shard vy=<i>,vz=<j>]      the full sweep
+//!   run     --out <dir> [--shard <i>,..]       the full sweep (shards index --vys x --vzs, vy-major)
+//!
+//! `sweep <subcommand> --help` lists every option; what follows is what they mean.
 //!
 //! Cell options: --n, --lambda, --vy, --vz, --passes, --tol, --trig, --flight, --init <file>
 //!   --flick-at <tick> restricts the first tick at or below --flick-pitch <deg> (default -80).
@@ -46,63 +48,230 @@
 
 use elytrasim::opt::*;
 use elytrasim::sim::*;
+use clap::Parser;
+use clap_derive::{Parser, Subcommand};
 use rayon::prelude::*;
 use std::time::Instant;
 
 // ---------------------------------------------------------------- argument plumbing
 
-struct Args(Vec<String>);
+#[derive(Parser)]
+struct Cli {
+    /// Trig route; anywhere on the line. Unset keeps the library default.
+    #[arg(long, global = true)]
+    trig: Option<TrigMode>,
+    /// Flight kernel; anywhere on the line. Unset keeps the library default.
+    #[arg(long, global = true)]
+    flight: Option<FlightMode>,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
 
-impl Args {
-    fn new() -> Args { Args(std::env::args().collect()) }
-    fn get(&self, k: &str) -> Option<&str> {
-        self.0.iter().position(|a| a == k).and_then(|i| self.0.get(i + 1)).map(String::as_str)
+#[derive(Subcommand)]
+enum Cmd {
+    /// Solve one cell and print or write it.
+    #[command(allow_negative_numbers = true)]
+    Polish {
+        #[command(flatten)]
+        cell: Cell,
+        #[command(flatten)]
+        polish: Polish,
+        #[arg(long, default_value_t = 200)]
+        passes: usize,
+        /// Seed: a profile or a bare pitch list, stretched to `--n`; default is the policy seed.
+        #[arg(long)]
+        init: Option<String>,
+        /// Median-filter width applied to the seed before polishing.
+        #[arg(long, default_value_t = 1)]
+        premedian: usize,
+        /// Box-filter width applied to the seed after the median.
+        #[arg(long, default_value_t = 1)]
+        presmooth: usize,
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Re-certify profiles against their own headers.
+    Verify {
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Seconds per pass and per profile, cold and warm.
+    #[command(allow_negative_numbers = true)]
+    Bench {
+        #[command(flatten)]
+        cell: Cell,
+        /// Passes per timed block.
+        #[arg(long, default_value_t = 10)]
+        every: usize,
+        #[arg(long, default_value_t = 80)]
+        passes: usize,
+    },
+    /// The coarse grid: axis bounds, strides, seed quality.
+    #[command(allow_negative_numbers = true)]
+    Pilot {
+        #[arg(long, default_value = "sweep-pilot")]
+        out: String,
+        #[arg(long, default_value_t = 60)]
+        passes: usize,
+        #[arg(long, value_delimiter = ',', default_value = "100,200,300,400,500")]
+        ns: Vec<usize>,
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true, default_value = "-2,-1,-0.5,0,0.5,1,2")]
+        lams: Vec<f64>,
+        /// Explicit `vy:vz` points; overrides the --vys x --vzs product.
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true, value_parser = parse_vel)]
+        vels: Vec<(f64, f64)>,
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true, default_value = "0,0.1,0.2")]
+        vys: Vec<f64>,
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true, default_value = "0,0.1,0.2")]
+        vzs: Vec<f64>,
+    },
+    /// The full sweep.
+    #[command(allow_negative_numbers = true)]
+    Run {
+        #[command(flatten)]
+        grid: GridArgs,
+        #[command(flatten)]
+        polish: Polish,
+        #[arg(long, default_value_t = 200)]
+        passes: usize,
+        #[arg(long, default_value = "sweep")]
+        out: String,
+        /// Re-solve cells that already have a file.
+        #[arg(long)]
+        force: bool,
+        /// Seed for the anchor cell of every shard.
+        #[arg(long)]
+        anchor: Option<String>,
+        /// Shard indices to run, into the --vys x --vzs product (vy-major); default all.
+        #[arg(long, value_delimiter = ',')]
+        shard: Vec<usize>,
+    },
+    /// The physics fingerprint, route and commit.
+    Fingerprint,
+    /// Per-tick residuals of one profile, and their structure.
+    Residuals { file: String },
+    /// The shape of each profile's schedule.
+    Structure {
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+}
+
+fn parse_vel(p: &str) -> Result<(f64, f64), String> {
+    let (y, z) = p.split_once(':').ok_or_else(|| format!("want vy:vz, got {p:?}"))?;
+    let num = |x: &str| x.parse::<f64>().map_err(|e| format!("{x:?}: {e}"));
+    Ok((num(y)?, num(z)?))
+}
+
+/// One cell's objective.
+#[derive(clap_derive::Args)]
+struct Cell {
+    #[arg(long, default_value_t = 300)]
+    n: usize,
+    #[arg(long, default_value_t = 0.0)]
+    lambda: f64,
+    /// Initial v_y. Zero, not the reference cycle's start: (0.167467, 0.200887) is the velocity
+    /// REPLAY_PITCHES_300 happens to close on, which makes it special for that one profile and
+    /// for nothing else.
+    #[arg(long, default_value_t = 0.0)]
+    vy: f64,
+    #[arg(long, default_value_t = 0.0)]
+    vz: f64,
+}
+
+impl Cell {
+    fn obj(&self) -> Objective {
+        Objective { v0: Vec3::new(0.0, self.vy, self.vz), n: self.n, lambda: self.lambda }
     }
-    fn num<T: std::str::FromStr>(&self, k: &str, d: T) -> T where T::Err: std::fmt::Debug {
-        self.get(k).map_or(d, |v| v.parse().unwrap_or_else(|e| panic!("bad {k}: {e:?}")))
-    }
-    /// A bare presence flag, taking no value.
-    fn has(&self, k: &str) -> bool { self.0.iter().any(|a| a == k) }
-    fn cell(&self) -> Objective {
-        Objective {
-            // Zero, not the reference cycle's start: (0.167467, 0.200887) is the velocity
-            // REPLAY_PITCHES_300 happens to close on, which makes it special for that one
-            // profile and for nothing else.
-            v0: Vec3::new(0.0, self.num("--vy", 0.0), self.num("--vz", 0.0)),
-            n: self.num("--n", 300usize),
-            lambda: self.num("--lambda", 0.0),
-        }
-    }
-    fn opts(&self) -> PolishOpts {
+}
+
+/// The polish's settings; the module docs say what each means.
+#[derive(clap_derive::Args)]
+struct Polish {
+    #[arg(long, default_value_t = PolishOpts::default().tol)]
+    tol: f64,
+    #[arg(long, default_value_t = PolishOpts::default().block)]
+    block: usize,
+    #[arg(long, default_value_t = PolishOpts::default().lag1_floor)]
+    lag1_floor: f64,
+    /// Re-solve v0 to the schedule's own fixed point after every pass.
+    #[arg(long)]
+    steady: bool,
+    #[arg(long, default_value_t = 0.0)]
+    mu: f64,
+    /// l1|l2:<d>|huber:<d>, the shape `--mu` prices.
+    #[arg(long, default_value = DEFAULT_PENALTY, value_parser = PriceShape::parse)]
+    penalty: PriceShape,
+    #[arg(long, default_value_t = 0.0)]
+    mu_tv: f64,
+    #[arg(long, default_value_t = f64::INFINITY)]
+    cap: f64,
+    #[arg(long, default_value_t = f64::INFINITY)]
+    slew_cap: f64,
+    #[arg(long, default_value_t = 90.0)]
+    limit: f64,
+    /// Restrict the first tick at or below --flick-pitch to this tick.
+    #[arg(long)]
+    flick_at: Option<usize>,
+    #[arg(long, default_value_t = -80.0)]
+    flick_pitch: f64,
+    #[arg(long, default_value_t = 0.0)]
+    jitter: f64,
+    #[arg(long, default_value_t = 8)]
+    draws: usize,
+    #[arg(long)]
+    fixed_draws: bool,
+    #[arg(long, default_value_t = Jitter::default().seed)]
+    seed: u64,
+}
+
+impl Polish {
+    fn opts(&self, passes: usize) -> PolishOpts {
         PolishOpts {
-            max_passes: self.num("--passes", 200usize),
-            tol: self.num("--tol", PolishOpts::default().tol),
-            block: self.num("--block", PolishOpts::default().block),
-            lag1_floor: self.num("--lag1-floor", PolishOpts::default().lag1_floor),
+            max_passes: passes,
+            tol: self.tol,
+            block: self.block,
+            lag1_floor: self.lag1_floor,
             // Off unless asked: the single-cycle problem is the simpler object and is still
             // the one most questions are about. `--vy/--vz` then seed the fixed-point
             // iteration rather than naming the answer; see `solve`.
-            steady: self.has("--steady"),
+            steady: self.steady,
             rough: Rough {
-                mu: self.num("--mu", 0.0),
-                shape: PriceShape::parse(self.get("--penalty").unwrap_or(DEFAULT_PENALTY)).unwrap_or_else(|e| panic!("--penalty: {e}")),
-                mu_tv: self.num("--mu-tv", 0.0),
-                cap: self.num("--cap", f64::INFINITY),
-                slew_cap: self.num("--slew-cap", f64::INFINITY),
-                limit: self.num("--limit", 90.0),
-                flick_at: self.get("--flick-at").map(|v| v.parse()
-                    .unwrap_or_else(|e| panic!("bad --flick-at: {e:?}"))),
-                flick_pitch: self.num("--flick-pitch", -80.0),
+                mu: self.mu,
+                shape: self.penalty,
+                mu_tv: self.mu_tv,
+                cap: self.cap,
+                slew_cap: self.slew_cap,
+                limit: self.limit,
+                flick_at: self.flick_at,
+                flick_pitch: self.flick_pitch,
             },
             jitter: Jitter {
-                sigma: self.num("--jitter", 0.0),
-                draws: self.num("--draws", 8usize),
-                resample: !self.0.iter().any(|x| x == "--fixed-draws"),
-                seed: self.num("--seed", Jitter::default().seed),
+                sigma: self.jitter,
+                draws: self.draws,
+                resample: !self.fixed_draws,
+                seed: self.seed,
             },
             ..Default::default()
         }
     }
+}
+
+/// The full sweep's axes; each defaults to the grid in `Grid::from`.
+#[derive(clap_derive::Args)]
+struct GridArgs {
+    /// Default 100..=500 by 10.
+    #[arg(long, value_delimiter = ',')]
+    ns: Vec<usize>,
+    /// Default -1..=1 by 0.05.
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+    lams: Vec<f64>,
+    /// Default 0..=0.2 by 0.02.
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+    vys: Vec<f64>,
+    /// Default 0..=0.2 by 0.02.
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+    vzs: Vec<f64>,
 }
 
 /// Where a cell's file lives. The path names the coordinates that *determine* the answer.
@@ -171,9 +340,9 @@ fn require_physics(p: &Profile, what: &str) {
     }
 }
 
-fn cmd_polish_cell(a: &Args) {
-    let obj = a.cell();
-    let init = match a.get("--init") {
+fn cmd_polish_cell(obj: Objective, opts: PolishOpts, init: Option<&str>, premedian: usize, presmooth: usize,
+                   out: Option<&str>) {
+    let init = match init {
         Some(f) => {
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
             let parsed = Profile::parse(&text);
@@ -187,10 +356,10 @@ fn cmd_polish_cell(a: &Args) {
     };
     // Project before polishing. A relaxed (chattering) solution has to be locally averaged
     // before a roughness price can improve it -- see `smooth_box`.
-    let init = smooth_median(&init, a.num("--premedian", 1usize));
-    let init = smooth_box(&init, a.num("--presmooth", 1usize));
+    let init = smooth_median(&init, premedian);
+    let init = smooth_box(&init, presmooth);
     let t = Instant::now();
-    let (p, r) = solve(&obj, &init, a.opts());
+    let (p, r) = solve(&obj, &init, opts);
     eprintln!("n {:>4}  lambda {:+.4}  v0 ({:.6}, {:.6})  J {:.6}  residual {:.2e}  \
 lag1 {:+.3}  TV {:.0}  curv_l1 {:.0}  curv_max {:.0}  {} passes{}  {:.1}s",
               obj.n, obj.lambda, p.obj.v0.y, p.obj.v0.z, p.obj.eval(&p.pitches), p.residual,
@@ -198,7 +367,7 @@ lag1 {:+.3}  TV {:.0}  curv_l1 {:.0}  curv_max {:.0}  {} passes{}  {:.1}s",
               curvature_max(&p.pitches),
               p.passes, if r.stopped_degenerate { " (stopped: degenerate)" } else { "" },
               t.elapsed().as_secs_f64());
-    match a.get("--out") {
+    match out {
         Some(f) => write_profile(f, &p),
         None => print!("{}", p.to_string()),
     }
@@ -227,10 +396,7 @@ fn cmd_verify(files: &[String]) {
 
 // ---------------------------------------------------------------- cost
 
-fn cmd_bench(a: &Args) {
-    let obj = a.cell();
-    let step = a.num("--every", 10usize);
-    let total = a.num("--passes", 80usize);
+fn cmd_bench(obj: Objective, step: usize, total: usize) {
     eprintln!("trig {}  flight {}  n {}  lambda {:+.4}  v0 ({:.4}, {:.4})",
               trig_mode(), flight_mode(), obj.n, obj.lambda, obj.v0.y, obj.v0.z);
 
@@ -260,32 +426,17 @@ fn cmd_bench(a: &Args) {
 
 // ---------------------------------------------------------------- the coarse sweep
 
-fn cmd_pilot(a: &Args) {
-    let dir = a.get("--out").unwrap_or("sweep-pilot").to_string();
-    let passes = a.num("--passes", 60usize);
-    let ns: Vec<usize> = a.get("--ns").map_or(vec![100, 200, 300, 400, 500],
-        |s| s.split(',').map(|x| x.parse().unwrap()).collect());
-    let lams: Vec<f64> = a.get("--lams").map_or(vec![-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0],
-        |s| s.split(',').map(|x| x.parse().unwrap()).collect());
+fn cmd_pilot(dir: &str, passes: usize, ns: &[usize], lams: &[f64], vels: &[(f64, f64)], vys: &[f64],
+             vzs: &[f64]) {
     // --vels gives explicit (vy:vz) points; --vys/--vzs give their outer product. The critical
     // points of the velocity box are its four corners, its center, and the reference operating
     // point, which is not a corner and is the only one with a known answer.
-    let vels: Vec<(f64, f64)> = match a.get("--vels") {
-        Some(s) => s.split(',').map(|p| {
-            let (y, z) = p.split_once(':').unwrap_or_else(|| panic!("--vels wants vy:vz, got {p:?}"));
-            (y.parse().unwrap(), z.parse().unwrap())
-        }).collect(),
-        None => {
-            let f = |k: &str| -> Vec<f64> {
-                a.get(k).map_or(vec![0.0, 0.1, 0.2], |s| s.split(',').map(|x| x.parse().unwrap()).collect())
-            };
-            let (vys, vzs) = (f("--vys"), f("--vzs"));
-            vys.iter().flat_map(|&y| vzs.iter().map(move |&z| (y, z))).collect()
-        }
-    };
+    let vels: Vec<(f64, f64)> = if vels.is_empty() {
+        vys.iter().flat_map(|&y| vzs.iter().map(move |&z| (y, z))).collect()
+    } else { vels.to_vec() };
 
     let mut cells: Vec<Objective> = vec![];
-    for &n in &ns { for &lambda in &lams { for &(vy, vz) in &vels {
+    for &n in ns { for &lambda in lams { for &(vy, vz) in &vels {
         cells.push(Objective { v0: Vec3::new(0.0, vy, vz), n, lambda });
     }}}
     eprintln!("pilot: {} cells, {passes} passes each, trig {}, flight {}",
@@ -306,7 +457,7 @@ fn cmd_pilot(a: &Args) {
         }
         let st = obj.replay(&p.pitches);
         let sn = st.last().unwrap();
-        write_profile(&cell_path(&dir, obj, false), &p);
+        write_profile(&cell_path(dir, obj, false), &p);
         format!("{:>5} {:>8.3} {:>8.4} {:>8.4} {j_seed:>10.4} {:>10.4} {:>9.3} {:>9.2} {:>10.2e} {:>10.2e} {:>8}",
                 obj.n, obj.lambda, obj.v0.y, obj.v0.z, obj.eval(&p.pitches),
                 sn.pos.y, sn.pos.z, p.residual, (sn.vel - obj.v0).length(), p.passes)
@@ -321,16 +472,13 @@ fn cmd_pilot(a: &Args) {
 struct Grid { ns: Vec<usize>, lams: Vec<f64>, vys: Vec<f64>, vzs: Vec<f64> }
 
 impl Grid {
-    fn from(a: &Args) -> Grid {
-        let f = |k: &str, d: Vec<f64>| -> Vec<f64> {
-            a.get(k).map_or(d, |s| s.split(',').map(|x| x.parse().unwrap()).collect())
-        };
+    fn from(a: &GridArgs) -> Grid {
+        let or = |v: &[f64], d: Vec<f64>| if v.is_empty() { d } else { v.to_vec() };
         Grid {
-            ns: a.get("--ns").map_or((100..=500).step_by(10).collect(),
-                |s| s.split(',').map(|x| x.parse().unwrap()).collect()),
-            lams: f("--lams", (-20..=20).map(|i| i as f64 * 0.05).collect()),
-            vys: f("--vys", (0..=10).map(|i| i as f64 * 0.02).collect()),
-            vzs: f("--vzs", (0..=10).map(|i| i as f64 * 0.02).collect()),
+            ns: if a.ns.is_empty() { (100..=500).step_by(10).collect() } else { a.ns.clone() },
+            lams: or(&a.lams, (-20..=20).map(|i| i as f64 * 0.05).collect()),
+            vys: or(&a.vys, (0..=10).map(|i| i as f64 * 0.02).collect()),
+            vzs: or(&a.vzs, (0..=10).map(|i| i as f64 * 0.02).collect()),
         }
     }
     /// Index of the value nearest `x`, for placing the anchor.
@@ -485,12 +633,8 @@ fn write_manifest(dir: &str, g: &Grid, opts: PolishOpts) {
     std::fs::write(format!("{dir}/manifest.json"), text).unwrap();
 }
 
-fn cmd_run(a: &Args) {
-    let dir = a.get("--out").unwrap_or("sweep").to_string();
-    let g = Grid::from(a);
-    let opts = a.opts();
-    let force = a.0.iter().any(|x| x == "--force");
-    let anchor: Option<Vec<f64>> = a.get("--anchor").map(|f| {
+fn cmd_run(dir: &str, g: Grid, opts: PolishOpts, force: bool, anchor: Option<&str>, shard: &[usize]) {
+    let anchor: Option<Vec<f64>> = anchor.map(|f| {
         let t = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         let parsed = Profile::parse(&t);
         // The anchor propagates to every cell in the shard, so this one is worth stopping for
@@ -504,9 +648,8 @@ fn cmd_run(a: &Args) {
     // A shard is one (vy0, vz0) cell, so it is a directory and an independent job.
     let mut shards: Vec<(f64, f64)> = vec![];
     for &vy in &g.vys { for &vz in &g.vzs { shards.push((vy, vz)) } }
-    if let Some(sel) = a.get("--shard") {
-        let pick: Vec<usize> = sel.split(',').map(|x| x.parse().unwrap()).collect();
-        shards = pick.iter().map(|&i| shards[i]).collect();
+    if !shard.is_empty() {
+        shards = shard.iter().map(|&i| shards[i]).collect();
     }
     // Under `--steady` `v0` is an output, so the (vy0, vz0) axis is not a grid axis: every
     // shard would solve the same problems and race to write the same files. Refuse rather than
@@ -517,13 +660,13 @@ fn cmd_run(a: &Args) {
                 --vys/--vzs pair; it seeds the fixed-point iteration and little else.",
                shards.len())
     }
-    write_manifest(&dir, &g, opts);
+    write_manifest(dir, &g, opts);
     eprintln!("sweep: {} shards x {} cells, {} passes, trig {}, flight {}, commit {}",
               shards.len(), g.ns.len() * g.lams.len(), opts.max_passes, trig_mode(),
               flight_mode(), commit_hash());
     let t0 = Instant::now();
     let totals: Vec<(usize, usize)> = shards.par_iter()
-        .map(|&(vy, vz)| run_shard(&dir, &g, vy, vz, opts, force, anchor.as_deref())).collect();
+        .map(|&(vy, vz)| run_shard(dir, &g, vy, vz, opts, force, anchor.as_deref())).collect();
     let (d, s): (usize, usize) = totals.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
     eprintln!("sweep: {d} solved, {s} resumed, {:.0}s", t0.elapsed().as_secs_f64());
 }
@@ -536,24 +679,20 @@ fn cmd_fingerprint() {
 // ---------------------------------------------------------------- main
 
 fn main() {
-    let mut a = Args::new();
-    if let Some(i) = a.0.iter().position(|x| x == "--trig") {
-        set_trig_mode(a.0[i + 1].parse().unwrap_or_else(|e: String| panic!("{e}")));
-        a.0.drain(i..=i + 1);
-    }
-    if let Some(i) = a.0.iter().position(|x| x == "--flight") {
-        set_flight_mode(a.0[i + 1].parse().unwrap_or_else(|e: String| panic!("{e}")));
-        a.0.drain(i..=i + 1);
-    }
-    match a.0.get(1).map(String::as_str) {
-        Some("polish") => cmd_polish_cell(&a),
-        Some("verify") => cmd_verify(&a.0[2..].iter().filter(|s| !s.starts_with("--")).cloned().collect::<Vec<_>>()),
-        Some("bench") => cmd_bench(&a),
-        Some("pilot") => cmd_pilot(&a),
-        Some("run") => cmd_run(&a),
-        Some("fingerprint") => cmd_fingerprint(),
-        Some("residuals") => {
-            let f = &a.0[2];
+    let cli = Cli::parse();
+    if let Some(t) = cli.trig { set_trig_mode(t) }
+    if let Some(f) = cli.flight { set_flight_mode(f) }
+    match cli.cmd {
+        Cmd::Polish { cell, polish, passes, init, premedian, presmooth, out } =>
+            cmd_polish_cell(cell.obj(), polish.opts(passes), init.as_deref(), premedian, presmooth, out.as_deref()),
+        Cmd::Verify { files } => cmd_verify(&files),
+        Cmd::Bench { cell, every, passes } => cmd_bench(cell.obj(), every, passes),
+        Cmd::Pilot { out, passes, ns, lams, vels, vys, vzs } => cmd_pilot(&out, passes, &ns, &lams, &vels, &vys, &vzs),
+        Cmd::Run { grid, polish, passes, out, force, anchor, shard } =>
+            cmd_run(&out, Grid::from(&grid), polish.opts(passes), force, anchor.as_deref(), &shard),
+        Cmd::Fingerprint => cmd_fingerprint(),
+        Cmd::Residuals { file } => {
+            let f = &file;
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
             let pr = Profile::parse(&text).unwrap_or_else(|e| panic!("{f}: {e}"));
             set_trig_mode(pr.trig);
@@ -589,8 +728,8 @@ fn main() {
                 println!("{t},{:.5},{d:+.5},{g:.3e}", pr.pitches[t]);
             }
         }
-        Some("structure") => {
-            for f in a.0[2..].iter().filter(|s| !s.starts_with("--")) {
+        Cmd::Structure { files } => {
+            for f in &files {
                 let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
                 let ps = Profile::parse(&text).map(|p| p.pitches).unwrap_or_else(|_|
                     text.lines().flat_map(|l| l.split('#').next().unwrap_or("").split_whitespace())
@@ -601,7 +740,5 @@ fn main() {
                          sh.pitch_min, sh.pitch_max, sh.flat_ticks);
             }
         }
-        _ => eprintln!("{}", "usage: sweep <polish|verify|bench|pilot|run|structure|residuals|fingerprint> ...\n\
-                             see the module docs at the top of src/bin/sweep.rs"),
     }
 }

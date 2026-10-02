@@ -6,26 +6,11 @@
 //! usual `J = TE(s_n) + w*z_n` less the floor's price (see `Floor` in `opt.rs`); `J` only picks
 //! which feasible schedule to hand the next horizon, and feasibility is read off the replay.
 //!
-//! Subcommands:
-//!   probe                          constant-pitch baselines: glides, and ticks to the floor
-//!   solve  --y0 <h> --n <n> [--init <spec>] [--out <file>]
-//!   safety --y0 <h> --n <n> [--init <spec>]   max soft-min clearance: is this horizon feasible?
-//!   endure --y0 <h> [--nmax <n>] [--misses <k>] [--out <file>]   the longest feasible horizon
-//!   depth  --file <pitches> [--vy --vz]   how far a schedule dips below its start
-//!   laps   --file <pitches> --y0 <h>   every dip and peak of the clearance before the exit, and
-//!                                  the energy above the floor there: does a pump gain per lap?
-//!   exit   --y0 <h> [--mode time|dist] [--n <cap>] [--nmax <cap>] [--init <spec>] [--ke <c>] [--shift]
-//!          [--bubble <margin>,<weight>] [--shrink <r>] [--penalty l1|l2:<d>|huber:<d>]
-//!          [--moves tick,box:<k>:..,ramp,shift] [--method tick|grad|grad+tick]
-//!          [--iters <n>] [--mem <m>] [--max-step <deg>] [--c1 <c>] [--graze <blocks>,..|off]
-//!          [--anneal <k>]
-//!          [--after <file>]   (with `pumps`) keep <file> to its last apex, then fly the K laps
-//!                                  the interpolated first exit; the cap doubles while the
-//!                                  answer survives it. `--method grad` is `ascend_grad`,
-//!                                  gradient ascent on the exit score; the default is `ascend`
+//! Subcommands: `probe` (constant-pitch baselines), `solve` (one horizon), `safety` (is a horizon
+//! feasible?), `endure` (the longest feasible horizon), `depth` and `laps` (read a schedule), and
+//! `exit` (first-exit ascent: the interpolated exit time or distance). `floor <cmd> --help` has the
+//! options.
 //!
-//! Common options: --vy, --vz (initial velocity, default 0), --lambda (default 0),
-//!   --margin, --weight, --wall (the floor's price), --mu, --limit, --passes, --tol.
 //! An init spec is `hold:<p>`, `pump:<p_down>,<k>,<p_up>` (p_down for k ticks, then p_up),
 //! `tile:<file>` (a cycle repeated), or a pitch file (last pitch repeated). `exit` also takes
 //! `minipump[:<d>[,<k>]]`, see `minipump`, and `pumps:<K>[,<key>=<v>..]`, a K-climb
@@ -37,37 +22,199 @@
 
 use elytrasim::opt::*;
 use elytrasim::sim::*;
+use clap::Parser;
+use clap_derive::{Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
 
-struct Args(Vec<String>);
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
 
-impl Args {
-    fn new() -> Args { Args(std::env::args().collect()) }
-    fn get(&self, k: &str) -> Option<&str> {
-        self.0.iter().position(|a| a == k).and_then(|i| self.0.get(i + 1)).map(String::as_str)
-    }
-    fn num<T: std::str::FromStr>(&self, k: &str, d: T) -> T where T::Err: std::fmt::Debug {
-        self.get(k).map_or(d, |v| v.parse().unwrap_or_else(|e| panic!("bad {k}: {e:?}")))
-    }
+#[derive(Subcommand)]
+enum Cmd {
+    /// Constant-pitch baselines: glides, and ticks to the floor.
+    Probe,
+    /// Polish one horizon.
+    #[command(allow_negative_numbers = true)]
+    Solve {
+        #[command(flatten)]
+        c: Common,
+        #[arg(long, default_value_t = 40)]
+        n: usize,
+        #[arg(long, default_value = "hold:-13")]
+        init: String,
+        #[arg(long, default_value_t = 200)]
+        passes: usize,
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Max soft-min clearance: is this horizon feasible?
+    #[command(allow_negative_numbers = true)]
+    Safety {
+        #[command(flatten)]
+        c: Common,
+        #[arg(long, default_value_t = 40)]
+        n: usize,
+        #[arg(long, default_value = "hold:-13")]
+        init: String,
+        #[arg(long, default_value_t = 200)]
+        passes: usize,
+    },
+    /// The longest feasible horizon.
+    #[command(allow_negative_numbers = true)]
+    Endure {
+        #[command(flatten)]
+        c: Common,
+        #[arg(long, default_value_t = 200)]
+        passes: usize,
+        #[arg(long, default_value_t = 150)]
+        nmax: usize,
+        /// Stop after this many infeasible horizons in a row.
+        #[arg(long, default_value_t = 3)]
+        misses: usize,
+        /// Bubble shrink stages after the first polish; see `polish_annealed`.
+        #[arg(long, default_value_t = 0)]
+        anneal: usize,
+        /// Factor on margin and weight per anneal stage.
+        #[arg(long, default_value_t = 0.3)]
+        shrink: f64,
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// How far a schedule dips below its start, from `--vy/--vz`.
+    #[command(allow_negative_numbers = true)]
+    Depth {
+        #[command(flatten)]
+        c: Common,
+        #[arg(long)]
+        file: String,
+        /// Also print every this many ticks.
+        #[arg(long)]
+        every: Option<usize>,
+    },
+    /// Every dip and peak of the clearance before the exit, and the energy above the floor
+    /// there: does a pump gain per lap?
+    #[command(allow_negative_numbers = true)]
+    Laps {
+        #[command(flatten)]
+        c: Common,
+        #[arg(long)]
+        file: String,
+    },
+    /// First-exit ascent on the interpolated exit; the cap doubles while the answer survives it.
+    #[command(allow_negative_numbers = true)]
+    Exit(ExitArgs),
+}
+
+/// The objective, the floor's price and the polish's settings, shared by the subcommands.
+#[derive(clap_derive::Args)]
+struct Common {
+    /// Initial v_y, blocks/tick.
+    #[arg(long, default_value_t = 0.0)]
+    vy: f64,
+    /// Initial v_z, blocks/tick.
+    #[arg(long, default_value_t = 0.0)]
+    vz: f64,
+    #[arg(long, default_value_t = 0.0)]
+    lambda: f64,
+    /// Start height above the floor, blocks.
+    #[arg(long, default_value_t = 4.0)]
+    y0: f64,
+    #[arg(long, default_value_t = Floor::default().margin)]
+    margin: f64,
+    #[arg(long, default_value_t = Floor::default().weight)]
+    weight: f64,
+    #[arg(long, default_value_t = Floor::default().wall)]
+    wall: f64,
+    /// Roughness price.
+    #[arg(long, default_value_t = 1e-4)]
+    mu: f64,
+    /// Largest |pitch|, degrees.
+    #[arg(long, default_value_t = 85.0)]
+    limit: f64,
+    #[arg(long, default_value_t = 1e-3)]
+    tol: f64,
+}
+
+impl Common {
     fn obj(&self, n: usize) -> Objective {
-        Objective { v0: Vec3::new(0.0, self.num("--vy", 0.0), self.num("--vz", 0.0)),
-                    n, lambda: self.num("--lambda", 0.0) }
+        Objective { v0: Vec3::new(0.0, self.vy, self.vz), n, lambda: self.lambda }
     }
     fn floor(&self) -> Floor {
-        let d = Floor::default();
-        Floor { depth: self.num("--y0", 4.0), margin: self.num("--margin", d.margin),
-                weight: self.num("--weight", d.weight), wall: self.num("--wall", d.wall) }
+        Floor { depth: self.y0, margin: self.margin, weight: self.weight, wall: self.wall }
     }
-    fn opts(&self) -> PolishOpts {
+    fn opts(&self, passes: usize) -> PolishOpts {
         PolishOpts {
-            max_passes: self.num("--passes", 200usize),
-            tol: self.num("--tol", 1e-3),
-            rough: Rough { mu: self.num("--mu", 1e-4), limit: self.num("--limit", 85.0),
-                           ..Default::default() },
+            max_passes: passes,
+            tol: self.tol,
+            rough: Rough { mu: self.mu, limit: self.limit, ..Default::default() },
             floor: self.floor(),
             ..Default::default()
         }
     }
+}
+
+#[derive(clap_derive::Args)]
+struct ExitArgs {
+    #[command(flatten)]
+    c: Common,
+    /// The first cap, ticks.
+    #[arg(long, default_value_t = 1200)]
+    n: usize,
+    /// The largest cap, ticks.
+    #[arg(long, default_value_t = 4800)]
+    nmax: usize,
+    #[arg(long, value_enum, default_value_t = Exit::Time)]
+    mode: Exit,
+    /// An init spec (module docs), or `minipump[:<d>[,<k>]]` or `pumps:<K>[,<key>=<v>..]`.
+    #[arg(long, default_value = "hold:-13")]
+    init: String,
+    /// With `pumps`: keep this schedule to its last apex, then fly the K laps.
+    #[arg(long)]
+    after: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    passes: usize,
+    /// Weight on kinetic energy at the exit.
+    #[arg(long, default_value_t = 0.0)]
+    ke: f64,
+    /// margin,weight: blocks, and blocks of energy per tick at contact.
+    #[arg(long, value_delimiter = ',', num_args = 1, default_value = "1,0")]
+    bubble: Vec<f64>,
+    /// Multiplies both bubble terms: under `tick`, after every pass, across cap doublings;
+    /// under `grad`, once per stall stage, restarting at every cap.
+    #[arg(long, default_value_t = 1.0)]
+    shrink: f64,
+    /// l1|l2:<d>|huber:<d>, the shape `--mu` prices.
+    #[arg(long, default_value = DEFAULT_PENALTY)]
+    penalty: String,
+    /// Which sweeps a pass makes, in order: `tick,box:3:9,ramp,shift`.
+    #[arg(long)]
+    moves: Option<String>,
+    /// Shorthand for `--moves tick,shift`.
+    #[arg(long, conflicts_with = "moves")]
+    shift: bool,
+    /// `tick`: `ascend`. `grad`: `ascend_grad`. `grad+tick`: `ascend_grad`, then `ascend` from its
+    /// answer at every cap.
+    #[arg(long, default_value = "tick", value_parser = ["tick", "grad", "grad+tick"])]
+    method: String,
+    #[arg(long, default_value_t = 2000)]
+    iters: usize,
+    #[arg(long, default_value_t = 10)]
+    mem: usize,
+    #[arg(long, default_value_t = 5.0)]
+    max_step: f64,
+    #[arg(long, default_value_t = 1e-4)]
+    c1: f64,
+    /// Dip-projection margins, or `off` for no dip projection and no rejection rule.
+    #[arg(long, default_value = "1e-2,3e-3,1e-3")]
+    graze: String,
+    /// Bubble shrink stages for `grad`.
+    #[arg(long, default_value_t = 0)]
+    anneal: usize,
+    #[arg(long)]
+    out: Option<String>,
 }
 
 fn init(spec: &str, n: usize) -> Vec<f64> {
@@ -177,11 +324,10 @@ const COLD: &[&str] = &["hold:-13", "hold:0", "pump:30,6,-20", "pump:60,4,-30"];
 /// next horizon. A horizon nobody made feasible goes to `safety` before it counts as a miss, and
 /// the walk stops after `--misses` consecutive misses. A miss is evidence, not proof: the inner
 /// search is local.
-fn endure(a: &Args) {
+fn endure(a: &Common, passes: usize, nmax: usize, misses_max: usize, anneal: usize, shrink: f64,
+          out: Option<&str>) {
     let floor = a.floor();
-    let opts = a.opts();
-    let nmax: usize = a.num("--nmax", 150);
-    let misses_max: usize = a.num("--misses", 3);
+    let opts = a.opts(passes);
     let (n0, q0) = best_hold(&a.obj(1), &floor, opts.rough.limit);
     let mut best: Option<(usize, Vec<f64>)> = None;
     let mut far: Option<(usize, Vec<f64>, f64)> = None;         // the feasible horizon reaching furthest
@@ -195,7 +341,7 @@ fn endure(a: &Args) {
         let mut found: Option<(String, Vec<f64>, f64)> = None;
         let mut near: Vec<(String, Vec<f64>)> = Vec::new();
         for (tag, s) in starts {
-            let p = polish_annealed(a, &obj, &s);
+            let p = polish_annealed(opts, anneal, shrink, &obj, &s);
             let st = obj.replay(&p);
             // Compared on `J` alone once feasible: the stages ran at different bubbles, so their
             // priced objectives are not on one scale, and feasibility is already settled.
@@ -241,7 +387,7 @@ fn endure(a: &Args) {
         opts.rough.mu, opts.rough.limit, f.clearance, f.z, fmt_pitches(&p));
     let (fn_, fp, fz) = far.unwrap();
     let text = format!("{text}# furthest: {fn_} ticks, z {fz:.4}\n{}\n", fmt_pitches(&fp));
-    match a.get("--out") {
+    match out {
         Some(o) => { std::fs::write(o, &text).unwrap();
                      print!("{}", text.lines().filter(|l| l.starts_with('#')).collect::<Vec<_>>().join("\n") + "\n") }
         None => print!("{text}"),
@@ -257,15 +403,14 @@ fn endure(a: &Args) {
 /// the distance reached is set by the ratio of `weight` to `lambda`, not by `lambda`. Annealing is
 /// the interior-point schedule: each stage starts from a schedule the previous one kept off the
 /// floor, so it only has to give up margin, never find it.
-fn polish_annealed(a: &Args, obj: &Objective, init: &[f64]) -> Vec<f64> {
-    let mut opts = a.opts();
-    let (stages, shrink): (usize, f64) = (a.num("--anneal", 0), a.num("--shrink", 0.3));
+fn polish_annealed(mut opts: PolishOpts, stages: usize, shrink: f64, obj: &Objective, init: &[f64]) -> Vec<f64> {
+    let floor = opts.floor;
     let mut p = polish(obj, init, opts).pitches;
     for _ in 0..stages {
         opts.floor.margin *= shrink;
         opts.floor.weight *= shrink;
         let q = polish(obj, &p, opts).pitches;
-        if a.floor().clearance(&obj.replay(&q)) >= 0.0 { p = q } else { break }
+        if floor.clearance(&obj.replay(&q)) >= 0.0 { p = q } else { break }
     }
     p
 }
@@ -284,7 +429,7 @@ const BEST_GLIDE: f64 = 10.10;   // blocks of z per block of height, at pitch 0
 
 /// What a first-exit schedule is scored on. Every variant reads only the replay up to the first
 /// state under the floor, so the schedule's later ticks are dead and the horizon is just a cap.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
 enum Exit {
     /// The fractional tick at which the replay crosses the floor.
     Time,
@@ -1084,15 +1229,15 @@ fn fit_pumps(obj: &Objective, depth: f64, mode: Exit, spec: &str, prefix: &[f64]
 /// that binds decides the answer. The ascent returns after the first pass whose schedule
 /// outlasts the cap, and the doubled one starts from that schedule. Doubling is a heuristic, not a bound -- a pump that gains
 /// energy survives every cap, and says so in the header.
-fn exit_cmd(a: &Args) {
+fn exit_cmd(e: &ExitArgs) {
+    let a = &e.c;
     // Dead ticks cost one replay each, not a search, so a cap far past the exit is nearly free;
     // what costs is the live flight, quadratically.
-    let mut n: usize = a.num("--n", 1200);
-    let nmax: usize = a.num("--nmax", 4800);
-    let depth = a.num("--y0", 4.0);
-    let mode = match a.get("--mode").unwrap_or("time") { "time" => Exit::Time, "dist" => Exit::Dist,
-                                                         m => panic!("bad --mode {m}") };
-    let spec = a.get("--init").unwrap_or("hold:-13");
+    let mut n = e.n;
+    let nmax = e.nmax;
+    let depth = a.y0;
+    let mode = e.mode;
+    let spec = e.init.as_str();
     let mut seed_note = String::new();
     let mut p = if let Some(r) = spec.strip_prefix("pumps:") {
         // Fitted and flown on the largest cap, and the ascent starts at the first doubling of `--n`
@@ -1102,7 +1247,7 @@ fn exit_cmd(a: &Args) {
         // `--after <file>`: continue that schedule from its last apex (the last tick whose `v_y`
         // turns negative before its exit) with K more laps -- a continuation in laps, since the
         // seed's own fixed-parameter laps lose energy and stop after a few.
-        let prefix = a.get("--after").map_or(vec![], |f| {
+        let prefix = e.after.as_ref().map_or(vec![], |f| {
             let x = read_pitches(f);
             let st = a.obj(x.len()).replay(&x);
             let end = live_end(&st, depth);
@@ -1110,7 +1255,7 @@ fn exit_cmd(a: &Args) {
             x[..apex].to_vec()
         });
         let (q, p, sc) = fit_pumps(&a.obj(nmax), depth, mode, r, &prefix);
-        if let Some(f) = a.get("--after") { seed_note = format!("  after {f} ({} ticks)", prefix.len()) }
+        if let Some(f) = &e.after { seed_note = format!("  after {f} ({} ticks)", prefix.len()) }
         let live = Floor { depth, ..Default::default() }.survived(&a.obj(nmax).replay(&p));
         while n < nmax && live >= n { n = (2 * n).min(nmax) }
         seed_note = format!("{seed_note}  seed {} seed score {sc:.4}", q.show());
@@ -1125,45 +1270,34 @@ fn exit_cmd(a: &Args) {
             None => init(spec, n),
         }
     };
-    let passes = a.num("--passes", 100usize);
-    let ke = a.num("--ke", 0.0);
-    // `--bubble margin,weight` (blocks, blocks of energy per tick at contact). `--shrink r`
-    // multiplies both by `r`: under `--method tick`, after every pass, across cap doublings;
-    // under `grad`, once per stall stage (`GradOpts`), restarting at every cap as the graze does.
-    let mut bub = a.get("--bubble").map_or((1.0, 0.0), |v| {
-        let w: Vec<f64> = v.split(',').map(|x| x.parse().unwrap()).collect();
-        (w[0], w[1])
-    });
-    let shrink = a.num("--shrink", 1.0);
+    let passes = e.passes;
+    let ke = e.ke;
+    // `--shrink` is applied to the bubble once per stall stage under `grad` (`GradOpts`).
+    assert!(e.bubble.len() == 2, "--bubble wants margin,weight");
+    let mut bub = (e.bubble[0], e.bubble[1]);
+    let shrink = e.shrink;
     let bub0 = bub;
-    let pen_spec = a.get("--penalty").unwrap_or(DEFAULT_PENALTY);
+    let pen_spec = e.penalty.as_str();
     let shape = PriceShape::parse(pen_spec).unwrap_or_else(|e| panic!("--penalty: {e}"));
-    // `--moves tick,box:3:9,ramp,shift`: which sweeps a pass makes, in order. `--shift` is
-    // `tick,shift`.
-    let mv_spec = a.get("--moves").map(str::to_string)
-        .unwrap_or(if a.0.iter().any(|x| x == "--shift") { "tick,shift".into() } else { "tick".into() });
+    let mv_spec = e.moves.clone()
+        .unwrap_or(if e.shift { "tick,shift".into() } else { "tick".into() });
     let tick = mv_spec.split(',').any(|m| m == "tick");
     let moves: Vec<Move> = mv_spec.split(',').filter(|m| *m != "tick").flat_map(Move::parse).collect();
-    // `--method tick` (default): `ascend`. `grad`: `ascend_grad`. `grad+tick`: `ascend_grad`,
-    // then `ascend` from its answer at every cap.
-    let method = a.get("--method").unwrap_or("tick");
-    let (grad, coord) = match method { "tick" => (false, true), "grad" => (true, false), "grad+tick" => (true, true),
-                                       m => panic!("bad --method {m}: tick, grad or grad+tick") };
+    let method = e.method.as_str();
+    let (grad, coord) = match method { "tick" => (false, true), "grad" => (true, false), _ => (true, true) };
     if grad {
         // The gradient does not differentiate a multi-pitch move, so refuse them rather than
         // quietly optimize something else.
-        if !coord && (a.get("--moves").is_some() || a.0.iter().any(|x| x == "--shift")) {
+        if !coord && (e.moves.is_some() || e.shift) {
             panic!("--moves/--shift: --method grad makes no moves; use grad+tick")
         }
     }
-    // `--graze off`: no dip projection and no rejection rule (the bubble alone, or nothing).
-    let graze = a.get("--graze").unwrap_or("1e-2,3e-3,1e-3");
-    let go = GradOpts { iters: a.num("--iters", 2000), mem: a.num("--mem", 10), max_step: a.num("--max-step", 5.0),
-                        c1: a.num("--c1", 1e-4),
+    let graze = e.graze.as_str();
+    let go = GradOpts { iters: e.iters, mem: e.mem, max_step: e.max_step, c1: e.c1,
                         margins: if graze == "off" { vec![] } else { graze.split(',').map(|x| x.parse().expect("--graze")).collect() },
-                        bub, shrink, stages: a.num("--anneal", 0usize) + 1 };
+                        bub, shrink, stages: e.anneal + 1 };
     let clock = std::time::Instant::now();
-    let rough = Rough { shape, ..a.opts().rough };
+    let rough = Rough { shape, ..a.opts(passes).rough };
     let mut used = Vec::new();
     // The bubble the gradient's last stage scored with.
     let mut gbub = bub;
@@ -1179,7 +1313,7 @@ fn exit_cmd(a: &Args) {
         }
         let sc = if coord {
             let (r, s, k) = ascend(&obj, depth, &q, mode, ke, rough, passes,
-                                   a.num("--tol", 1e-3), n < nmax, tick, &moves, &mut bub, shrink);
+                                   a.tol, n < nmax, tick, &moves, &mut bub, shrink);
             q = r;
             tag = if tag.is_empty() { format!("{k}") } else { format!("{tag}+{k}") };
             s
@@ -1209,11 +1343,11 @@ fn exit_cmd(a: &Args) {
     } else { (String::new(), String::new()) };
     let text = format!("# exit {mode:?} y0 {depth} v0 ({}, {}) cap {n} init {spec} mu {} limit {} penalty {pen_spec} moves {mv_spec} ke {ke} bubble {},{} shrink {shrink}{seed_note}{mnote}\n\
                         # score {sc:.4}  t* {:.4}  z(t*) {:.4}  survived {k}  exit KE {:.4}  passes {}{wall}{verdict}\n{}\n",
-                       obj.v0.y, obj.v0.z, a.opts().rough.mu, a.opts().rough.limit, bub0.0, bub0.1,
+                       obj.v0.y, obj.v0.z, a.mu, a.limit, bub0.0, bub0.1,
                        exit_score(&st, depth, Exit::Time), exit_score(&st, depth, Exit::Dist),
                        exit_energy(&st, depth).unwrap_or(f64::NAN), used.join(","),
                        fmt_pitches(&p[..(k + 1).min(n)]));
-    match a.get("--out") {
+    match &e.out {
         Some(o) => { std::fs::write(o, &text).unwrap(); print!("{}", text.lines().take(2).collect::<Vec<_>>().join("\n") + "\n") }
         None => print!("{text}"),
     }
@@ -1248,11 +1382,9 @@ fn probe() {
     }
 }
 
-fn solve(a: &Args) {
-    let n: usize = a.num("--n", 40);
+fn solve(a: &Common, n: usize, spec: &str, passes: usize, out: Option<&str>) {
     let obj = a.obj(n);
-    let opts = a.opts();
-    let spec = a.get("--init").unwrap_or("hold:-13");
+    let opts = a.opts(passes);
     let r = polish(&obj, &init(spec, n), opts);
     let f = flown(&obj, &opts.floor, &r.pitches);
     let text = format!(
@@ -1263,7 +1395,7 @@ fn solve(a: &Args) {
         obj.lambda, obj.v0.y, obj.v0.z, opts.rough.mu, opts.rough.limit,
         r.passes, r.residual, r.lag1, f.survived, f.clearance, f.z, f.te, f.cost, r.j,
         fmt_pitches(&r.pitches));
-    match a.get("--out") {
+    match out {
         Some(o) => { std::fs::write(o, &text).unwrap(); print!("{}", text.lines().take(4).collect::<Vec<_>>().join("\n") + "\n") }
         None => print!("{text}"),
     }
@@ -1272,32 +1404,32 @@ fn solve(a: &Args) {
 fn main() {
     set_trig_mode(TrigMode::MthLut);
     set_flight_mode(FlightMode::Reference);
-    let a = Args::new();
-    match a.0.get(1).map(String::as_str) {
-        Some("probe") => probe(),
-        Some("solve") => solve(&a),
-        Some("endure") => endure(&a),
-        Some("exit") => exit_cmd(&a),
-        Some("depth") => {
+    match Cli::parse().cmd {
+        Cmd::Probe => probe(),
+        Cmd::Solve { c, n, init, passes, out } => solve(&c, n, &init, passes, out.as_deref()),
+        Cmd::Endure { c, passes, nmax, misses, anneal, shrink, out } =>
+            endure(&c, passes, nmax, misses, anneal, shrink, out.as_deref()),
+        Cmd::Exit(e) => exit_cmd(&e),
+        Cmd::Depth { c: a, file, every } => {
             // How far a schedule's replay goes below its start, from `--vy/--vz`: the floor
             // clearance a repeated cycle needs.
-            let p = read_pitches(a.get("--file").expect("--file"));
+            let p = read_pitches(&file);
             let st = a.obj(p.len()).replay(&p);
             let lo = st.iter().map(|s| s.pos.y).fold(f64::INFINITY, f64::min);
             let hi = st.iter().map(|s| s.pos.y).fold(f64::NEG_INFINITY, f64::max);
             let e = st.last().unwrap();
             println!("min y {lo:.3}  max y {hi:.3}  end y {:.3}  end v ({:.4}, {:.4})", e.pos.y, e.vel.y, e.vel.z);
-            if let Some(every) = a.get("--every").map(|v| v.parse::<usize>().unwrap()) {
+            if let Some(every) = every {
                 for (t, s) in st.iter().enumerate().step_by(every) {
                     println!("  t {t:4}  y {:8.3}  TE {:8.3}  v ({:+.4}, {:.4})", s.pos.y, s.total_energy(), s.vel.y, s.vel.z);
                 }
             }
         }
-        Some("laps") => {
+        Cmd::Laps { c: a, file } => {
             // A pump's laps: every local minimum (dip) and maximum (peak) of the clearance
             // before the exit, with the energy above the floor, `TE + y0`, there.
-            let p = read_pitches(a.get("--file").expect("--file"));
-            let depth = a.num("--y0", 4.0);
+            let p = read_pitches(&file);
+            let depth = a.y0;
             let st = a.obj(p.len()).replay(&p);
             let k = live_end(&st, depth);
             let h = |j: usize| st[j].pos.y + depth;
@@ -1310,14 +1442,11 @@ fn main() {
                          h(j), s.total_energy() + depth, s.vel.y, s.vel.z, p[j - 1]);
             }
         }
-        Some("safety") => {
-            let n: usize = a.num("--n", 40);
+        Cmd::Safety { c: a, n, init: spec, passes } => {
             let obj = a.obj(n);
-            let (p, c) = safety(&obj, &a.floor(), &init(a.get("--init").unwrap_or("hold:-13"), n),
-                                a.num("--limit", 85.0), a.num("--passes", 200usize));
+            let (p, c) = safety(&obj, &a.floor(), &init(&spec, n), a.limit, passes);
             println!("# clearance {c:+.5}  survived {}\n{}", a.floor().survived(&obj.replay(&p)), fmt_pitches(&p));
         }
-        _ => { eprintln!("usage: floor probe | solve --y0 <h> --n <n> [--init <spec>]"); std::process::exit(2) }
     }
 }
 

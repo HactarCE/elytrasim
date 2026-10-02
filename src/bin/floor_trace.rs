@@ -1,11 +1,32 @@
 //! Exact replay data for the interactive floor-profile figure.
 
+use clap::Parser;
+use clap_derive::Parser;
 use elytrasim::opt::{Objective, read_pitches};
 use elytrasim::sim::{FlightMode, State, TrigMode, Vec3, set_flight_mode, set_trig_mode};
 
-fn arg(flag: &str) -> Option<String> {
-    let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1)).cloned()
+/// Replay one schedule from rest and print it per tick, as CSV.
+#[derive(Parser)]
+#[command(group = clap::ArgGroup::new("schedule").required(true).args(["file", "hold", "best_hold"]))]
+struct Args {
+    /// A pitch file to replay.
+    #[arg(long)]
+    file: Option<String>,
+    /// Hold this pitch for `--n` ticks.
+    #[arg(long, allow_negative_numbers = true)]
+    hold: Option<f64>,
+    /// Hold the constant pitch that exits the floor at `--y0` latest (or furthest, `--mode dist`).
+    #[arg(long, requires = "y0")]
+    best_hold: bool,
+    /// Ticks to hold for; ignored with `--file`.
+    #[arg(long, default_value_t = 450)]
+    n: usize,
+    /// Height above the floor, for `--best-hold`.
+    #[arg(long)]
+    y0: Option<f64>,
+    /// What `--best-hold` maximizes: `time` or `dist`.
+    #[arg(long, default_value = "time", value_parser = ["time", "dist"])]
+    mode: String,
 }
 
 fn replay(pitches: &[f64]) {
@@ -54,19 +75,15 @@ fn best_hold(depth: f64, n: usize, distance: bool) -> f64 {
 fn main() {
     set_trig_mode(TrigMode::MthLut);
     set_flight_mode(FlightMode::Reference);
-    let n = arg("--n").map_or(450, |x| x.parse().expect("bad --n"));
-    let pitches = if let Some(path) = arg("--file") {
-        read_pitches(&path)
-    } else if std::env::args().any(|x| x == "--best-hold") {
-        let depth = arg("--y0").expect("--best-hold needs --y0").parse().expect("bad --y0");
-        let distance = arg("--mode").map_or(false, |x| x == "dist");
-        let pitch = best_hold(depth, n, distance);
+    let a = Args::parse();
+    let pitches = if let Some(path) = &a.file {
+        read_pitches(path)
+    } else if a.best_hold {
+        let pitch = best_hold(a.y0.unwrap(), a.n, a.mode == "dist");
         eprintln!("best_hold={pitch}");
-        vec![pitch; n]
-    } else if let Some(pitch) = arg("--hold") {
-        vec![pitch.parse().expect("bad --hold"); n]
+        vec![pitch; a.n]
     } else {
-        panic!("usage: floor_trace (--file <pitches> | --hold <degrees>) [--n <ticks>]")
+        vec![a.hold.unwrap(); a.n]
     };
     replay(&pitches);
 }
