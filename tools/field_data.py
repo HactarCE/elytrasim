@@ -21,6 +21,10 @@ JUMP = 3.0                 # field.rs JUMP: degrees between neighbors that count
 KINDS = {0: "tie", 1: "conversion", 2: "vz=0", 3: "smooth"}
 # elytra-vario's chart, blocks/second: vz_lo, vz_hi, vy_lo, vy_hi.
 CHART_BPS = (-10.0, 60.0, -30.0, 40.0)
+# The reference cycle, flown by a person (README-control.md), and the v0 it is a limit cycle of:
+# (vy, vz) in blocks/tick. The file is under runs/, so it is not in git.
+REFERENCE = os.path.join(ROOT, "runs", "veljit", "ref300.pitches")
+REFERENCE_V0 = (0.167467, 0.200887)
 
 
 class FieldData:
@@ -59,18 +63,33 @@ class FieldData:
         return r, c
 
 
+def cycle(path=REFERENCE, v0=REFERENCE_V0):
+    """(vy, vz) per tick, blocks/tick, from replaying a pitch file; tick 0 is v0."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from plot_field_replay import step
+    vy, vz = [v0[0]], [v0[1]]
+    for p in np.loadtxt(path, ndmin=1):
+        a, b = step(np.float64(vy[-1]), np.float64(vz[-1]), p)
+        vy.append(float(a)); vz.append(float(b))
+    return np.array(vy), np.array(vz)
+
+
 def binary():
     subprocess.run(["cargo", "build", "--release", "--quiet", "--bin", "field"], cwd=ROOT,
                    check=True)
     return os.path.join(ROOT, "target", "release", "field")
 
 
-def load(window_bps=CHART_BPS, samples=(1050,), pad=0.05, curves=True):
-    """Run field.rs for this window (blocks/second) unless cached, and load it."""
+def load(window_bps=CHART_BPS, samples=(1050,), pad=0.05, curves=True, lookahead=1):
+    """Run field.rs for this window (blocks/second) unless cached, and load it.
+
+    lookahead > 1 holds the pitch that many ticks (README-myopic.md's lookahead); no curves."""
     args = ["--window", ",".join(f"{x:g}" for x in window_bps),
             "--samples", ",".join(f"{x:g}" for x in samples), "--pad", f"{pad:g}"]
-    if not curves:
+    if not curves or lookahead > 1:
         args.append("--no-curves")
+    if lookahead > 1:      # not passed at 1, so the one-tick caches keep their keys
+        args += ["--lookahead", str(lookahead)]
     key = hashlib.sha1(" ".join(args).encode()).hexdigest()[:12]
     d = os.path.join(ROOT, "runs", "field", key)
     if not os.path.exists(os.path.join(d, "spec.txt")):

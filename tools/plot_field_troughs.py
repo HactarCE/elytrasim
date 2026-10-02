@@ -3,11 +3,16 @@
 
     python3 tools/plot_field_troughs.py [out.png] [--ridges] [--kinds] [--pitch=DEG]
         [--window=vz_lo,vz_hi,vy_lo,vy_hi] [--samples=N | --stretch --samples=Nz,Ny]
-        [--color=energy|pitch] [--legend=lower_right]
+        [--color=energy|pitch] [--legend=lower_right] [--levels[=BLOCKS]] [--cycle]
+        [--lookahead=N]
 
 The field is plot_field_replay's: G(v), the most total energy any pitch makes from velocity v
 in one tick. Windows are in blocks/second; the default is elytra-vario's chart, vy [-30, 40] by
 vz [-10, 60] (VarioConfig's [-1.5, 2] by [-0.5, 3] blocks/tick). README-field.md has the zooms.
+
+--lookahead=N holds the pitch N ticks instead of one (README-myopic.md's lookahead) and colors
+by the gain per tick, G_N / N, so the ramp means the same blocks/tick as at N = 1. The curve
+search is one-tick only, so that figure has no troughs, ridges or creases.
 
 A trough is a local minimum of G along the direction G curves most across. G is smooth in
 some places and creased in others, and the two need different tests:
@@ -46,12 +51,15 @@ TROUGH, RIDGE, CREASE = "#f5ae68", "#54c7e8", "#e6e9ed"
 LIMIT_EDGE = "#e6e9ed"    # the outline of each hatched region
 SMOOTH_LS = (0, (5, 3))
 PITCH_INK = "#7ad151"     # pitch contours: not energy, so not the field's colors
+LEVEL_INK = "#e6e9ed"     # level curves of G: on both backgrounds, so neither's colors
 # Best pitch as a background (--color=pitch): its own diverging pair through the near-black
 # zero, chosen off the curves' orange and cyan, which a nose-down orange would swallow.
 NOSE_UP, NOSE_DOWN = "#6f8cff", "#e0607e"
 PITCH_CMAP = matplotlib.colors.LinearSegmentedColormap.from_list(
     "pitch", [NOSE_UP, FIELD_ZERO, NOSE_DOWN])
 HALO = [matplotlib.patheffects.withStroke(linewidth=3.2, foreground=FIELD_ZERO, alpha=.8)]
+CYCLE_INK = "#a6e35a"     # the reference cycle: off the curves' orange, cyan and white
+CYCLE_DOT_EVERY = 20      # ticks between dots on it
 
 
 def grid_step(span):
@@ -83,13 +91,37 @@ def chrome(ax, title, window=None):
 
 def draw_limits(ax, F):
     """Hatch where the best pitch is a corner: / for -89 (nose up), \\ for +89 (nose down),
-    - for level. Exact equality is right: field.rs snaps a max at a corner onto it."""
-    for p, hatch in ((-PITCH_LIMIT, "///"), (PITCH_LIMIT, "\\\\\\"), (0.0, "---")):
+    - for level. Exact equality is right: field.rs snaps a max at a corner onto it.
+
+    Two dashes against three slashes: matplotlib spaces n horizontal lines 1/n of a cell apart
+    but n diagonal ones sqrt(2)/n, so "---" would be 1.4x as dense as "///"; "--" is 1.06x."""
+    for p, hatch in ((-PITCH_LIMIT, "///"), (PITCH_LIMIT, "\\\\\\"), (0.0, "--")):
         at = (F.p1 == p).astype(float)
         ax.contourf(F.vz * TPS, F.vy * TPS, at, levels=[0.5, 1.5], colors="none",
                     hatches=[hatch], zorder=1.5)
         ax.contour(F.vz * TPS, F.vy * TPS, at, levels=[0.5], colors=LIMIT_EDGE, linewidths=.6,
                    alpha=.6, zorder=1.5)
+
+
+def draw_cycle(ax, vy, vz, lw=1.6):
+    """A replayed trajectory (blocks/tick) in blocks/second: dots every CYCLE_DOT_EVERY ticks,
+    a ring at tick 0, arrows for the direction it is flown in."""
+    x, y = vz * TPS, vy * TPS
+    halo = [matplotlib.patheffects.withStroke(linewidth=lw + 2.2, foreground=FIELD_ZERO,
+                                              alpha=.85)]
+    ax.plot(x, y, color=CYCLE_INK, lw=lw, zorder=5, path_effects=halo)
+    ax.plot(x[::CYCLE_DOT_EVERY], y[::CYCLE_DOT_EVERY], "o", color=CYCLE_INK, ms=3.2,
+            mec=FIELD_ZERO, mew=.8, zorder=5)
+    ax.plot(x[0], y[0], "o", mfc="none", mec=CYCLE_INK, ms=9, mew=1.6, zorder=5)
+    for i in range(CYCLE_DOT_EVERY // 2, len(x) - 1, 3 * CYCLE_DOT_EVERY):
+        ax.annotate("", (x[i + 1], y[i + 1]), (x[i], y[i]), zorder=5,
+                    arrowprops=dict(arrowstyle="-|>", color=CYCLE_INK, lw=0, mutation_scale=14))
+
+
+def cycle_handle():
+    return matplotlib.lines.Line2D([], [], color=CYCLE_INK, lw=1.6, marker="o", ms=3.2,
+                                   mec=FIELD_ZERO, label=f"reference cycle (a person), dot "
+                                   f"every {CYCLE_DOT_EVERY} ticks, ring at tick 0")
 
 
 def option(name, default=None):
@@ -113,6 +145,9 @@ def main():
     pitch_step = float(option("pitch", "0"))
     # Unequal scales: each axis gets its own resolution and the plot is not square in velocity.
     stretch = "--stretch" in sys.argv
+    # Level curves of G every this many blocks; bare --levels puts them at +-1, 2, 5 x 10^k from 0.01,
+    # spaced like the background's colors, which compress |G| rather than step it evenly.
+    levels_step = option("levels", "auto" if "--levels" in sys.argv else None)
     # The background: "energy" (the gain G, elytra-vario's colors) or "pitch" (the best pitch).
     by_pitch = option("color", "energy") == "pitch"
 
@@ -125,7 +160,9 @@ def main():
     if len(samples) == 2 and not stretch:
         sys.exit("--samples=Nz,Ny needs --stretch: without it the grid is square")
 
-    F = fd.load(window_bps, samples)
+    lookahead = int(option("lookahead", "1"))
+    F = fd.load(window_bps, samples, lookahead=lookahead)
+    per_tick = F.G / lookahead
     width = 12.0
     height = width * (0.9 if stretch else span_y / span_z) + 0.8
     fig, ax = plt.subplots(figsize=(width, height))
@@ -139,11 +176,27 @@ def main():
         cb.ax.tick_params(colors="#b9c0c9")
         cb.outline.set_edgecolor("#4a525c")
     else:
-        ax.imshow(field_rgb(F.G), extent=F.ext(), origin="lower", interpolation="nearest",
+        ax.imshow(field_rgb(per_tick), extent=F.ext(), origin="lower", interpolation="nearest",
                   aspect="auto" if stretch else "equal", zorder=0)
     chrome(ax, "", window)
-    ax.contour(F.vz * TPS, F.vy * TPS, F.G, levels=[0.0], colors="w", linewidths=.8, alpha=.45,
+    ax.contour(F.vz * TPS, F.vy * TPS, per_tick, levels=[0.0], colors="w", linewidths=.8, alpha=.45,
                zorder=1)
+    if levels_step:
+        lo, hi = per_tick.min(), per_tick.max()
+        if levels_step == "auto":
+            mags = np.array([m * 10.0 ** e for e in range(-2, 3) for m in (1, 2, 5)])
+            levels = np.concatenate([-mags[::-1], mags])
+            levels_label = "gain at ±0.01, 0.02, 0.05, 0.1, … blocks (dashed: loss)"
+        else:
+            step = float(levels_step)
+            levels = np.arange(np.ceil(lo / step) * step, hi, step)
+            levels = levels[np.abs(levels) > step * 1e-6]       # zero has its own curve
+            levels_label = f"gain every {step:g} blocks (dashed: loss)"
+        levels = levels[(levels > lo) & (levels < hi)]
+        # Negative levels (energy lost) dashed, matplotlib's default for one color.
+        cs = ax.contour(F.vz * TPS, F.vy * TPS, per_tick, levels=levels, colors=LEVEL_INK,
+                        linewidths=.7, alpha=.75, zorder=2)
+        ax.clabel(cs, fmt=lambda v: f"{v:+g}", fontsize=8, colors=LEVEL_INK)
     draw_limits(ax, F)
     if pitch_step:
         free = np.ma.masked_where(F.stuck, F.p1)
@@ -173,9 +226,13 @@ def main():
             ax.plot(x, y, color=CREASE, lw=1.0, ls=(0, (1, 2)), alpha=.8, zorder=3,
                     path_effects=halo)
     print("curve points by (kind, class):", dict(sorted(counts.items(), key=str)))
+    # The reference cycle, replayed from its pitches over the field it is flown through.
+    with_cycle = "--cycle" in sys.argv
+    if with_cycle:
+        draw_cycle(ax, *fd.cycle())
 
     line = matplotlib.lines.Line2D
-    handles = [
+    curve_handles = [
         *([line([], [], color=TROUGH, lw=1.8, label="trough: tie (best pitch jumps)"),
            line([], [], color=TROUGH, lw=1.8, ls=(0, (6, 2, 1, 2)),
                 label="trough: conversion switches on under a fixed pitch"),
@@ -184,7 +241,13 @@ def main():
         *([line([], [], color=RIDGE, lw=1.4, ls="--", label="ridge")] if ridges else []),
         line([], [], color=CREASE, lw=1.0, ls=(0, (1, 2)),
              label="kink with no extremum: slope changes, same sign both sides"),
+    ]
+    handles = [
+        *(curve_handles if lookahead == 1 else []),
+        *([cycle_handle()] if with_cycle else []),
         line([], [], color="w", lw=.8, alpha=.6, label="zero gain"),
+        *([line([], [], color=LEVEL_INK, lw=.7, label=levels_label)]
+          if levels_step else []),
         *([line([], [], color=PITCH_INK, lw=1.0,
                 label=f"edge of free best pitch; contours every {pitch_step:g}°")]
           if pitch_step else []),
@@ -192,8 +255,7 @@ def main():
                                  label="best pitch −89 (nose-up limit)"),
         matplotlib.patches.Patch(facecolor="none", hatch="\\\\\\", edgecolor=(1, 1, 1, .4),
                                  label="best pitch +89 (nose-down limit)"),
-        # Denser than the region's: three lines in a swatch this small land on its border.
-        matplotlib.patches.Patch(facecolor="none", hatch="-----", edgecolor=(1, 1, 1, .4),
+        matplotlib.patches.Patch(facecolor="none", hatch="--", edgecolor=(1, 1, 1, .4),
                                  label="best pitch 0 (level)"),
     ]
     # Underscores for spaces, so a shell needs no quoting: --legend=lower_right.
@@ -201,8 +263,13 @@ def main():
     leg = ax.legend(handles=handles, loc=loc, facecolor="#1b1f24", edgecolor="#4a525c",
                     labelcolor="#e6e9ed", fontsize=9, framealpha=.92)
     leg.set_zorder(10)
-    title = ("best pitch for one-tick energy" if by_pitch
-             else "one-tick energy field (best pitch)")
+    if lookahead == 1:
+        title = ("best pitch for one-tick energy" if by_pitch
+                 else "one-tick energy field (best pitch)")
+    else:
+        title = (f"best pitch held {lookahead} ticks, for energy over them" if by_pitch
+                 else f"energy field, lookahead {lookahead}: best pitch held {lookahead} "
+                      f"ticks, gain per tick")
     if stretch:
         title += "  ·  axes stretched: vy and vz scales differ"
     ax.set_title(title, color="#e6e9ed")

@@ -16,9 +16,13 @@ one-off probes; `python3 tools/field_data.py --check` compares the two (bit-iden
 
 `--color=pitch` colors by the best pitch instead of the gain it makes (`field_pitch*.png` below
 are the same windows with it). Hatching marks the three corners the best pitch sits on: `///`
-−89, `\\\` +89, `---` level. Other windows take `--window=vz_lo,vz_hi,vy_lo,vy_hi` in
+−89, `\\\` +89, `--` level. Other windows take `--window=vz_lo,vz_hi,vy_lo,vy_hi` in
 blocks/second. `--kinds` draws each kind of trough in its own style, `--pitch=5` contours the best
-pitch where it's free, and `--stretch` gives each axis its own scale and resolution, for features
+pitch where it's free, `--levels` draws level curves of the gain (at ±0.01, 0.02, 0.05, 0.1, … blocks,
+spaced like the colors; `--levels=0.5` for an even step), `--cycle` draws the reference cycle
+(`runs/veljit/ref300.pitches` replayed from its `v0`; also on `plot_field_gradient.py`),
+`--lookahead=20` holds the pitch 20 ticks instead of one and colors by gain per tick (no curves:
+the crease search is one-tick only), and `--stretch` gives each axis its own scale and resolution, for features
 too thin to see at equal aspect. The other figures, all into `runs/atlas/fig/` (gitignored):
 
     tools/plot_field_troughs.py runs/atlas/fig/field_troughs_zero.png --ridges --kinds \
@@ -32,6 +36,16 @@ too thin to see at equal aspect. The other figures, all into `runs/atlas/fig/` (
         --window=-10,20,-10,10 --samples=1500
     tools/plot_field_troughs.py runs/atlas/fig/field_pitch_wide.png --ridges --kinds --color=pitch \
         --window=-40,90,-60,120 --samples=1600 --legend=lower_right
+    tools/plot_field_troughs.py runs/atlas/fig/field_levels.png --levels
+    tools/plot_field_troughs.py runs/atlas/fig/field_levels_zero.png --levels \
+        --window=-10,20,-10,10 --samples=1500
+    tools/plot_field_troughs.py runs/atlas/fig/field_levels_wide.png --levels \
+        --window=-40,90,-60,120 --samples=1600 --legend=lower_right
+    tools/plot_field_troughs.py runs/atlas/fig/field_cycle.png --ridges --cycle
+    tools/plot_field_gradient.py runs/atlas/fig/field_gradient_cycle.png --cycle
+    tools/plot_field_troughs.py runs/atlas/fig/field_lookahead20_cycle.png --lookahead=20 --cycle
+    tools/plot_field_troughs.py runs/atlas/fig/field_pitch_lookahead20_cycle.png --lookahead=20 \
+        --cycle --color=pitch
 
 Physics is the f64 `libm` transcription that `plot_field_replay.step` uses, not `mth_lut`. Numbers
 are as of 2026-10-02 02:45 EDT, on top of commit 4cb73c4.

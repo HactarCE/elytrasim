@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Derivatives of the one-tick energy field G, over elytra-vario's chart, as small multiples.
 
-    python3 tools/plot_field_gradient.py [out.png]
+    python3 tools/plot_field_gradient.py [out.png] [--cycle]
 
 Panels: the two partials of G, |grad G| with its streamlines, the best pitch the gradient is
 taken at, the Laplacian (= div grad G), the curl of grad G, det H, and the Hessian eigenvalue of
-largest magnitude (how sharply G curves across its steepest-bending direction).
+largest magnitude (how sharply G curves across its steepest-bending direction). `--cycle` draws
+the reference cycle on every panel.
 
 Every derivative is exact at its sample, from src/bin/field.rs's envelope formulas (loaded via
 field_data.py), except the curl: that one is the grid curl of the exact gradient field. A
@@ -61,6 +62,7 @@ def main():
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 
     F = fd.load()
+    cyc = fd.cycle() if "--cycle" in sys.argv else None
     creases = [c for c in F.curves if c[2] != "smooth"]
     s1, s2 = 1 / TPS, 1 / TPS ** 2                      # per block/tick -> per block/second
     gz, gy = F.gz * s1, F.gy * s1
@@ -110,6 +112,8 @@ def main():
         for q, cls, _ in creases:
             ax.plot(q[:, 0] * TPS, q[:, 1] * TPS, lw=1.3 if cls == 1 else .7,
                     color=ft.TROUGH if cls == 1 else "w", alpha=1 if cls == 1 else .55, zorder=3)
+        if cyc is not None:
+            ft.draw_cycle(ax, *cyc, lw=1.3)
         cb = fig.colorbar(im, ax=ax, fraction=.046, pad=.02)
         cb.ax.tick_params(colors=MUTED, labelsize=8)
         cb.outline.set_edgecolor(EDGE)
@@ -122,7 +126,10 @@ def main():
                       transform=axes.flat[5].transAxes, color=INK, fontsize=10, zorder=5,
                       bbox=dict(facecolor="#1b1f24", edgecolor=EDGE))
     fig.suptitle("one-tick energy field G: derivatives  ·  white = creases (G kinks), "
-                 "orange = the creases that are troughs", color=INK, fontsize=14)
+                 "orange = the creases that are troughs"
+                 + ("  ·  green = the reference cycle, dot every "
+                    f"{ft.CYCLE_DOT_EVERY} ticks, ring at tick 0" if cyc is not None else ""),
+                 color=INK, fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, .97))
     fig.savefig(out, dpi=90, facecolor=BG)
     print(out)

@@ -11,7 +11,12 @@
 //! probes; `tools/field_data.py --check` compares the two.
 //!
 //! Usage: `field --out DIR [--window vz_lo,vz_hi,vy_lo,vy_hi] [--samples N|Nz,Ny] [--pad F]
-//! [--no-curves]`; `field --help` has the details.
+//! [--no-curves] [--lookahead N]`; `field --help` has the details.
+//!
+//! `--lookahead N` holds the pitch N ticks instead of one: the lookahead-N field of README-myopic.md
+//! and elytra-vario. The grid and its derivatives carry over unchanged, since they only need g
+//! smooth in v and pitch between corners; the curve search does not (`converts` and the
+//! bracket's walls know only the first tick's conversion kink), so N > 1 needs `--no-curves`.
 //!
 //! Writes into DIR, as .npy: `vz`, `vy` (axes, blocks/tick); per sample, indexed [vy][vz]:
 //! `p1` best pitch, `G`, `p2`/`g2` runner-up local max in pitch (nan/-inf if none), `stuck`
@@ -22,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::Parser;
 use clap_derive::Parser;
@@ -48,21 +54,30 @@ const TIE_EDGE: f64 = 0.05;
 
 // ---- the kernel -----------------------------------------------------------------------------
 
+/// Ticks the pitch is held for: g is the energy change over this many (`--lookahead`, default 1).
+static LOOKAHEAD: AtomicUsize = AtomicUsize::new(1);
+
 fn g(vy: f64, vz: f64, pitch: f64) -> f64 {
     let lean = pitch.to_radians();
     let lift = lean.cos() * lean.cos();
-    let move_hor = vz.abs();
-    let mut y = vy + GRAVITY * (-1.0 + lift * 0.75);
-    let mut z = vz;
-    let conv = if y < 0.0 { y * -0.1 * lift } else { 0.0 }; // descent -> forward
-    y += conv;
-    z += conv; // look_z / look_hor is 1 over |pitch| < 90
-    let up = if lean < 0.0 { move_hor * -lean.sin() * 0.04 } else { 0.0 }; // forward -> up
-    y += up * 3.2;
-    z -= up;
-    z += (move_hor - z) * 0.1;
-    let (y1, z1) = (y * DRAG_Y, z * DRAG_Z);
-    (y1 * y1 + z1 * z1 - vy * vy - vz * vz) * 0.5 / GRAVITY + y1
+    let (mut y1, mut z1, mut climb) = (vy, vz, 0.0);
+    for _ in 0..LOOKAHEAD.load(Ordering::Relaxed) {
+        let move_hor = z1.abs();
+        let mut y = y1 + GRAVITY * (-1.0 + lift * 0.75);
+        let mut z = z1;
+        let conv = if y < 0.0 { y * -0.1 * lift } else { 0.0 }; // descent -> forward
+        y += conv;
+        z += conv; // look_z / look_hor is 1 over |pitch| < 90
+        // sin here, not hoisted beside the cos: unconditional, LLVM fuses the two into one
+        // sincos call that rounds differently, and field_geometry.py stops matching bit for bit.
+        let up = if lean < 0.0 { move_hor * -lean.sin() * 0.04 } else { 0.0 }; // forward -> up
+        y += up * 3.2;
+        z -= up;
+        z += (move_hor - z) * 0.1;
+        (y1, z1) = (y * DRAG_Y, z * DRAG_Z);
+        climb += y1;
+    }
+    (y1 * y1 + z1 * z1 - vy * vy - vz * vz) * 0.5 / GRAVITY + climb
 }
 
 fn golden_max(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
@@ -536,6 +551,9 @@ struct Args {
     /// Skip the curves: only the grid.
     #[arg(long)]
     no_curves: bool,
+    /// Ticks the pitch is held, as in README-myopic.md's lookahead. Over 1 needs --no-curves.
+    #[arg(long, default_value_t = 1)]
+    lookahead: usize,
     /// Directory to write into.
     #[arg(long)]
     out: std::path::PathBuf,
@@ -543,6 +561,9 @@ struct Args {
 
 fn main() {
     let a = Args::parse();
+    assert!(a.lookahead >= 1 && (a.lookahead == 1 || a.no_curves),
+            "--lookahead over 1 needs --no-curves: the curve search knows only one tick's kinks");
+    LOOKAHEAD.store(a.lookahead, Ordering::Relaxed);
     let w = &a.window;
     assert!(w.len() == 4 && w[0] < w[1] && w[2] < w[3], "--window wants vz_lo,vz_hi,vy_lo,vy_hi");
     let s = &a.samples;
@@ -596,6 +617,6 @@ fn main() {
         eprintln!("curves: creases {:.1?}, smooth {:.1?}", t_crease, t.elapsed() - t_crease);
     }
     std::fs::write(out.join("spec.txt"), format!(
-        "field --window {} --samples {} --pad {pad}\n", w.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
-        s.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))).unwrap();
+        "field --window {} --samples {} --pad {pad} --lookahead {}\n", w.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+        s.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","), a.lookahead)).unwrap();
 }
