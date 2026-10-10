@@ -1,5 +1,3 @@
-use std::f64::consts::PI;
-
 use super::{GRAVITY, Mth, Rot, Vec3};
 
 #[derive(Debug, Default, Clone)]
@@ -22,7 +20,7 @@ impl Entity {
 
 pub fn update_fall_flying_movement(mut vel: Vec3, rot: Rot) -> Vec3 {
     let look_angle: Vec3 = rot.look_angle();
-    let lean_angle: f32 = rot.x * (PI / 180.0) as f32;
+    let lean_angle: f32 = rot.x * (std::f64::consts::PI / 180.0) as f32;
 
     let look_hor_length: f64 = (look_angle.x * look_angle.x + look_angle.z * look_angle.z).sqrt();
     let move_hor_length: f64 = vel.horizontal_distance();

@@ -31,13 +31,38 @@ impl Vec3 {
     pub fn length(self) -> f64 {
         self.length_sq().sqrt()
     }
-}
 
-impl Vel3 {
-    pub fn yz_to_egui_vec2(self) -> egui::Vec2 {
-        egui::vec2(self.z as f32, -self.y as f32)
+    /// coord-wise abs diff.
+    pub fn abs_diff(self, rhs: Self) -> Self {
+        Self {
+            x: (self.x - rhs.x).abs(),
+            y: (self.y - rhs.y).abs(),
+            z: (self.z - rhs.z).abs(),
+        }
+    }
+
+    /// whether they're abs_diff_eq on all coords.
+    pub fn abs_diff_eq(self, rhs: Self, tol: f64) -> bool {
+        approx::abs_diff_eq!(self.x, rhs.x, epsilon = tol)
+            && approx::abs_diff_eq!(self.y, rhs.y, epsilon = tol)
+            && approx::abs_diff_eq!(self.z, rhs.z, epsilon = tol)
+    }
+
+    /// coord-wise max
+    pub fn max(self, rhs: Self) -> Self {
+        Self {
+            x: self.x.max(rhs.x),
+            y: self.y.max(rhs.y),
+            z: self.z.max(rhs.z),
+        }
     }
 }
+
+// impl Vel3 {
+//     pub fn yz_to_egui_vec2(self) -> egui::Vec2 {
+//         egui::vec2(self.z as f32, -self.y as f32)
+//     }
+// }
 
 impl AddAssign for Vec3 {
     fn add_assign(&mut self, rhs: Self) {
