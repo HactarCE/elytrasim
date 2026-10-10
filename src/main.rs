@@ -1,5 +1,5 @@
 mod frange;
-mod nocast;
+mod inlined;
 mod reference;
 mod rot0;
 mod sim;
@@ -76,7 +76,13 @@ fn main() {
 
     let tol = 1e-6;
 
-    dbg!(disagreements(reference::tick, nocast::tick, tol, &dom));
+    assert_eq!(
+        disagreements(reference::tick, inlined::tick, tol, &dom).max_dv,
+        Vec3::ZERO,
+        "inlining is exact"
+    );
+
+    dbg!(disagreements(reference::tick, inlined::tick, tol, &dom));
 }
 
 /// to avoid `-0.0` and `+0.0` collapsing in `dedup`.
@@ -84,8 +90,8 @@ fn exact_eq(l: &mut f64, r: &mut f64) -> bool {
     l.to_bits() == r.to_bits()
 }
 
-fn disagreements(lhs: Ticker, rhs: Ticker, tol: f64, dom: &Domain) -> (Summary, Vec<Case>) {
-    let mut dv = Vec3::ZERO;
+fn disagreements(lhs: Ticker, rhs: Ticker, tol: f64, dom: &Domain) -> Report {
+    let mut max_dv = Vec3::ZERO;
     let mut cases = Vec::new();
     for (&vx, &vy, &vz) in itertools::iproduct!(&dom.vxs, &dom.vys, &dom.vzs) {
         let vel = Vec3 {
@@ -100,14 +106,14 @@ fn disagreements(lhs: Ticker, rhs: Ticker, tol: f64, dom: &Domain) -> (Summary, 
             };
             let lhs = lhs(vel, rot);
             let rhs = rhs(vel, rot);
-            dv = dv.max(lhs.abs_diff(rhs));
+            max_dv = max_dv.max(lhs.abs_diff(rhs));
             if !lhs.abs_diff_eq(rhs, tol) {
                 cases.push(Case { vel, rot, lhs, rhs });
             }
         }
     }
 
-    (Summary { dv }, cases)
+    Report { max_dv, cases }
 }
 
 #[derive(Debug, Clone)]
@@ -120,15 +126,17 @@ struct Domain {
 }
 
 #[derive(Debug, Clone)]
-struct Summary {
-    /// the max abs diff
-    dv: Vec3,
-}
-
-#[derive(Debug, Clone)]
 struct Case {
     vel: Vec3,
     rot: Rot,
     lhs: Vec3,
     rhs: Vec3,
+}
+
+#[derive(Debug, Clone)]
+struct Report {
+    /// the max abs diff
+    max_dv: Vec3,
+    /// the cases that exceeded some tolerance
+    cases: Vec<Case>,
 }
