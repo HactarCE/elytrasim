@@ -168,7 +168,7 @@ fn main() {
         yaw0::tick,
         tol,
         &dom_zero
-    ));
+    ).max_dv);
 }
 
 /// to avoid `-0.0` and `+0.0` collapsing in `dedup`.
