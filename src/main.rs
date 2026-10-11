@@ -1,5 +1,6 @@
 mod cases;
 mod cases_abs;
+mod dive;
 mod frange;
 mod inlined;
 mod nocast;
@@ -118,19 +119,43 @@ fn main() {
     }
 
     let dom_zero = Domain {
-        vxs: vxs_zero,
+        vxs: vxs_zero.clone(),
         vys: vys.clone(),
         vzs: vzs.clone(),
         pitches: pitches.clone(),
-        yaws: yaws_zero,
+        yaws: yaws_zero.clone(),
     };
 
     let dom_nonzero = Domain {
-        vxs: vxs_nonzero,
-        vys,
-        vzs,
-        pitches,
-        yaws: yaws_nonzero,
+        vxs: vxs_nonzero.clone(),
+        vys: vys.clone(),
+        vzs: vzs.clone(),
+        pitches: pitches.clone(),
+        yaws: yaws_nonzero.clone(),
+    };
+
+    let dom_dive = Domain {
+        vxs: vxs_zero.clone(),
+        vys: vys.iter().filter(|vy| **vy <= 0.0).copied().collect_vec(),
+        vzs: vzs.iter().filter(|vz| **vz >= 0.0).copied().collect_vec(),
+        pitches: pitches
+            .iter()
+            .filter(|pitch| **pitch >= 0.0)
+            .copied()
+            .collect_vec(),
+        yaws: yaws_zero.clone(),
+    };
+
+    let dom_gain = Domain {
+        vxs: vxs_zero.clone(),
+        vys: vys.iter().filter(|vy| **vy >= 0.0).copied().collect_vec(),
+        vzs: vzs.iter().filter(|vz| **vz >= 0.0).copied().collect_vec(),
+        pitches: pitches
+            .iter()
+            .filter(|pitch| **pitch <= 0.0)
+            .copied()
+            .collect_vec(),
+        yaws: yaws_zero.clone(),
     };
 
     // print dom counts
@@ -192,13 +217,22 @@ fn main() {
         );
     }
 
-    println!();
-    dbg!(disagreements(cases::tick, cases_abs::tick, tol, &dom_zero).max_dv);
-
     // cases_abs
     {
         assert!(
             disagreements(cases::tick, cases_abs::tick, tol, &dom_zero)
+                .cases
+                .is_empty()
+        );
+    }
+
+    println!();
+    dbg!(disagreements(yaw0::tick, dive::tick, tol, &dom_dive).max_dv);
+
+    // dive
+    {
+        assert!(
+            disagreements(yaw0::tick, dive::tick, tol, &dom_dive)
                 .cases
                 .is_empty()
         );

@@ -26,8 +26,10 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
     let move_hor_length: f64 = vz.abs();
     // renamed from `lift_force`
     let pitch_cos2: f64 = pitch_cos * pitch_cos;
-    assert!(0.25 >= (-1.0 + pitch_cos2 * 0.75));
-    vy += GRAVITY * (-1.0 + pitch_cos2 * 0.75);
+
+    let grav = -1.0 + pitch_cos2 * 0.75;
+    assert!((-1.0..=-0.25).contains(&grav));
+    vy += GRAVITY * grav;
 
     // converts v_down to v_forward if falling
     if vy < 0.0 {
