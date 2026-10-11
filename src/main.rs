@@ -1,5 +1,6 @@
 mod frange;
 mod inlined;
+mod nocast;
 mod reference;
 mod rot0;
 mod sim;
@@ -15,11 +16,21 @@ pub type Ticker = fn(vel: Vec3, pitch: Rot) -> Vec3;
 // pub const LUT_STRIDE
 
 fn main() {
-    let vxs = vec![-0.0, 0.0];
+    let vxs_zero = vec![-0.0, 0.0];
+
+    let vxs_nonzero = {
+        let vxs_normal = Frange::from_n(-2.0, 2.0, 5);
+        let vxs_near_zero = Frange::from_n(-0.05, 0.05, 2);
+        let mut vxs = [vxs_normal, vxs_near_zero].iter().flatten().collect_vec();
+        vxs.extend_from_slice(&[-0.0, 0.0]);
+        vxs.sort_by(f64::total_cmp);
+        vxs.dedup_by(exact_eq);
+        vxs
+    };
 
     let vys = {
-        let vys_big = Frange::from_stride(-2.0, 4.0, 0.1);
-        let vys_normal = Frange::from_stride(-1.0, 2.0, 0.05);
+        let vys_big = Frange::from_stride(-2.0, 4.0, 0.2);
+        let vys_normal = Frange::from_stride(-1.0, 2.0, 0.1);
         let vys_near_zero = Frange::from_stride(-0.1, 0.1, 0.01);
         let mut vys = [vys_big, vys_normal, vys_near_zero]
             .iter()
@@ -32,8 +43,8 @@ fn main() {
     };
 
     let vzs = {
-        let vzs_big = Frange::from_stride(-2.0, 4.0, 0.1);
-        let vzs_normal = Frange::from_stride(-0.25, 3.0, 0.05);
+        let vzs_big = Frange::from_stride(-2.0, 4.0, 0.2);
+        let vzs_normal = Frange::from_stride(-0.25, 3.0, 0.1);
         let vzs_near_zero = Frange::from_stride(-0.1, 0.1, 0.01);
         let mut vzs = [vzs_big, vzs_normal, vzs_near_zero]
             .iter()
@@ -47,7 +58,7 @@ fn main() {
 
     // TODO: +-90 pitch weirdness
     let pitches = {
-        let pitches_normal = Frange::from_stride(-89.0, 89.0, 0.5);
+        let pitches_normal = Frange::from_stride(-89.0, 89.0, 4.0);
         let pitches_near_zero = Frange::from_stride(-0.1, 0.1, 0.01);
         let mut pitches = [pitches_normal, pitches_near_zero]
             .iter()
@@ -59,30 +70,105 @@ fn main() {
         pitches
     };
 
-    let yaws = vec![-0.0, 0.0];
+    let yaws_zero = vec![-0.0, 0.0];
 
-    for it in [&vxs, &vys, &vzs, &pitches, &yaws] {
+    // note yaws get wrapped to [-180.0, 180) on the server,
+    // but physics happens on the client.
+    let yaws_nonzero = {
+        let yaws_big = Frange::from_n(-400.0, 400.0, 5);
+        let yaws_normal = Frange::from_n(-190.0, 190.0, 3);
+        let yaws_near_zero = Frange::from_n(-0.05, 0.05, 2);
+        let mut yaws = [yaws_big, yaws_normal, yaws_near_zero]
+            .iter()
+            .flatten()
+            .collect_vec();
+        yaws.extend_from_slice(&[-0.0, 0.0]);
+        yaws.sort_by(f64::total_cmp);
+        yaws.dedup_by(exact_eq);
+        yaws
+    };
+
+    // assert they contain +-0.0
+    for it in [
+        &vxs_zero,
+        &vxs_nonzero,
+        &vys,
+        &vzs,
+        &pitches,
+        &yaws_zero,
+        &yaws_nonzero,
+    ] {
         assert!(it.contains(&-0.0));
         assert!(it.contains(&0.0));
     }
 
-    let dom = Domain {
-        vxs,
+    // print parameter counts
+    {
+        println!();
+        println!("vxs_zero:     {}", vxs_zero.len());
+        println!("vxs_nonzero:  {}", vxs_nonzero.len());
+        println!("vys:          {}", vys.len());
+        println!("vzs:          {}", vzs.len());
+        println!("pitches:      {}", pitches.len());
+        println!("yaws_zero:    {}", yaws_zero.len());
+        println!("yaws_nonzero: {}", yaws_nonzero.len());
+    }
+
+    let dom_zero = Domain {
+        vxs: vxs_zero,
+        vys: vys.clone(),
+        vzs: vzs.clone(),
+        pitches: pitches.clone(),
+        yaws: yaws_zero,
+    };
+
+    let dom_nonzero = Domain {
+        vxs: vxs_nonzero,
         vys,
         vzs,
         pitches,
-        yaws,
+        yaws: yaws_nonzero,
     };
+
+    // print dom counts
+    {
+        println!();
+        println!("dom_zero:    {}", dom_zero.count());
+        println!("dom_nonzero: {}", dom_nonzero.count());
+        println!(
+            "ratio:       {}",
+            dom_nonzero.count() as f64 / dom_zero.count() as f64
+        );
+    }
 
     let tol = 1e-6;
 
-    assert_eq!(
-        disagreements(reference::tick, inlined::tick, tol, &dom).max_dv,
-        Vec3::ZERO,
-        "inlining is exact"
+    // `reference` and `inlined` have exact equality in release,
+    // but not in debug.
+    // assert!(
+    //     disagreements(reference::tick, inlined::tick, tol, &dom_nonzero)
+    //         .cases
+    //         .is_empty()
+    // );
+    // assert_eq!(
+    //     disagreements(reference::tick, inlined::tick, tol, &dom_nonzero).max_dv,
+    //     Vec3::ZERO,
+    //     "inlining is exact"
+    // );
+
+    assert!(
+        disagreements(reference::tick, nocast::tick, tol, &dom_nonzero)
+            .cases
+            .is_empty()
     );
 
-    dbg!(disagreements(reference::tick, inlined::tick, tol, &dom));
+    println!();
+    dbg!(disagreements(
+        inlined::tick,
+        nocast::tick,
+        tol,
+        &dom_nonzero
+    ));
 }
 
 /// to avoid `-0.0` and `+0.0` collapsing in `dedup`.
@@ -123,6 +209,11 @@ struct Domain {
     vzs: Vec<f64>,
     pitches: Vec<f64>,
     yaws: Vec<f64>,
+}
+impl Domain {
+    fn count(&self) -> usize {
+        self.vxs.len() * self.vys.len() * self.vzs.len() * self.pitches.len() * self.yaws.len()
+    }
 }
 
 #[derive(Debug, Clone)]

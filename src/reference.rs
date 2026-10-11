@@ -2,6 +2,9 @@ use crate::sim::*;
 
 /// the mechanical translation.
 /// no parent.
+/// for almost anything, you'll likely want
+/// to branch off [`crate::inlined::tick`] instead.
+/// tho `inlined` doesn't support the LUT ig.
 pub fn tick(mut vel: Vec3, rot: Rot) -> Vec3 {
     let look_angle: Vec3 = rot.look_angle();
     let lean_angle: f32 = rot.x * (std::f64::consts::PI / 180.0) as f32;

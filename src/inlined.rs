@@ -1,7 +1,7 @@
 use crate::sim::*;
 
 /// inline methods.
-/// parent is [`crate::reference::tick`]
+/// parent is [`crate::reference::tick`].
 pub fn tick(mut vel: Vec3, rot: Rot) -> Vec3 {
     let look_angle: Vec3 = {
         let real_x_rot: f32 = rot.x * (std::f64::consts::PI / 180.0) as f32;
@@ -20,12 +20,11 @@ pub fn tick(mut vel: Vec3, rot: Rot) -> Vec3 {
 
     let look_hor_length: f64 = (look_angle.x * look_angle.x + look_angle.z * look_angle.z).sqrt();
     let move_hor_length: f64 = (vel.x * vel.x + vel.z * vel.z).sqrt();
-    let gravity: f64 = GRAVITY;
     let lift_force: f64 = {
         let t: f64 = (lean_angle as f64).cos();
         t * t
     };
-    vel.y += gravity * (-1.0 + lift_force * 0.75);
+    vel.y += GRAVITY * (-1.0 + lift_force * 0.75);
 
     // converts v_down to v_forward
     if vel.y < 0.0 && look_hor_length > 0.0 {

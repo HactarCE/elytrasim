@@ -48,13 +48,18 @@ impl Vec3 {
             && approx::abs_diff_eq!(self.z, rhs.z, epsilon = tol)
     }
 
-    /// coord-wise max
+    /// coord-wise max.
     pub fn max(self, rhs: Self) -> Self {
         Self {
             x: self.x.max(rhs.x),
             y: self.y.max(rhs.y),
             z: self.z.max(rhs.z),
         }
+    }
+
+    /// the maximum element.
+    pub fn max_elem(self) -> f64 {
+        self.x.max(self.y.max(self.z))
     }
 }
 
