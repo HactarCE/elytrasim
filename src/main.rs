@@ -1,6 +1,8 @@
 mod cases;
 mod cases_abs;
 mod dive;
+mod dive_linear;
+mod dive_linear_oracle;
 mod frange;
 mod inlined;
 mod nocast;
@@ -226,13 +228,35 @@ fn main() {
         );
     }
 
-    println!();
-    dbg!(disagreements(yaw0::tick, dive::tick, tol, &dom_dive).max_dv);
-
     // dive
     {
+        // println!();
+        // dbg!(disagreements(yaw0::tick, dive::tick, tol, &dom_dive).max_dv);
         assert!(
             disagreements(yaw0::tick, dive::tick, tol, &dom_dive)
+                .cases
+                .is_empty()
+        );
+    }
+
+    // dive_linear
+    {
+        let mut dom = dom_dive.clone();
+        dom.pitches = dom
+            .pitches
+            .into_iter()
+            .filter(|pitch| {
+                (0.0..=1.0).contains(&dive_linear_oracle::linear_cos2(
+                    *pitch * (std::f64::consts::PI / 180.0),
+                ))
+            })
+            .collect_vec();
+        assert!(!dom.pitches.is_empty());
+
+        println!();
+        dbg!(disagreements(dive_linear_oracle::tick, dive_linear::tick, tol, &dom).max_dv);
+        assert!(
+            disagreements(dive_linear_oracle::tick, dive_linear::tick, tol, &dom)
                 .cases
                 .is_empty()
         );
