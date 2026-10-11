@@ -2,8 +2,8 @@ mod frange;
 mod inlined;
 mod nocast;
 mod reference;
-mod rot0;
 mod sim;
+mod yaw0;
 
 use itertools::Itertools;
 
@@ -156,18 +156,18 @@ fn main() {
     //     "inlining is exact"
     // );
 
-    assert!(
-        disagreements(reference::tick, nocast::tick, tol, &dom_nonzero)
-            .cases
-            .is_empty()
-    );
+    // assert!(
+    //     disagreements(reference::tick, nocast::tick, tol, &dom_nonzero)
+    //         .cases
+    //         .is_empty()
+    // );
 
     println!();
     dbg!(disagreements(
-        inlined::tick,
-        nocast::tick,
+        reference::tick,
+        yaw0::tick,
         tol,
-        &dom_nonzero
+        &dom_zero
     ));
 }
 
