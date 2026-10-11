@@ -4,12 +4,14 @@ mod dive;
 mod dive_linear;
 mod dive_linear_oracle;
 mod frange;
+mod gain;
 mod inlined;
 mod nocast;
+mod nomut;
+mod pitch0;
 mod reference;
 mod sim;
 mod yaw0;
-mod gain;
 
 use itertools::Itertools;
 
@@ -151,7 +153,11 @@ fn main() {
 
     let dom_gain = Domain {
         vxs: vxs_zero.clone(),
-        vys: vys.iter().filter(|vy| **vy >= GRAVITY).copied().collect_vec(),
+        vys: vys
+            .iter()
+            .filter(|vy| **vy >= GRAVITY)
+            .copied()
+            .collect_vec(),
         vzs: vzs.iter().filter(|vz| **vz >= 0.0).copied().collect_vec(),
         pitches: pitches
             .iter()
@@ -211,6 +217,15 @@ fn main() {
         );
     }
 
+    // nomut
+    {
+        assert!(
+            disagreements(yaw0::tick, nomut::tick, tol, &dom_zero)
+                .cases
+                .is_empty()
+        );
+    }
+
     // cases
     {
         assert!(
@@ -263,13 +278,27 @@ fn main() {
         );
     }
 
-
     // gain
     {
-        println!();
-        dbg!(disagreements(yaw0::tick, gain::tick, tol, &dom_gain).max_dv);
+        // println!();
+        // dbg!(disagreements(yaw0::tick, gain::tick, tol, &dom_gain).max_dv);
         assert!(
             disagreements(yaw0::tick, gain::tick, tol, &dom_gain)
+                .cases
+                .is_empty()
+        );
+    }
+
+    // pitch0
+    {
+        let mut dom = dom_dive.clone();
+        dom.pitches = vec![0.0];
+
+        println!();
+        dbg!(disagreements(yaw0::tick, pitch0::tick, tol, &dom).max_dv);
+
+        assert!(
+            disagreements(yaw0::tick, pitch0::tick, tol, &dom)
                 .cases
                 .is_empty()
         );
