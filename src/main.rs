@@ -1,4 +1,5 @@
 mod cases;
+mod cases_abs;
 mod frange;
 mod inlined;
 mod nocast;
@@ -182,13 +183,22 @@ fn main() {
         );
     }
 
-    println!();
-    dbg!(disagreements(yaw0::tick, cases::tick, tol, &dom_zero).max_dv);
-
     // cases
     {
         assert!(
             disagreements(yaw0::tick, cases::tick, tol, &dom_zero)
+                .cases
+                .is_empty()
+        );
+    }
+
+    println!();
+    dbg!(disagreements(cases::tick, cases_abs::tick, tol, &dom_zero).max_dv);
+
+    // cases_abs
+    {
+        assert!(
+            disagreements(cases::tick, cases_abs::tick, tol, &dom_zero)
                 .cases
                 .is_empty()
         );

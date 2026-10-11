@@ -1,8 +1,7 @@
 use crate::sim::*;
 
-/// assume xv and yaw is zero.
-/// also assumes that `cos` is algebraic.
-/// this breaks the LUT.
+/// split the branches.
+/// also remove mut.
 /// parent is [`crate::yaw0::tick`].
 pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
     assert_eq!(vel.x, 0.0);
@@ -25,11 +24,7 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
     let pitch_cos: f64 = pitch_rad.cos();
     assert!(pitch_cos >= 0.0);
 
-    // let vy0: f64 = vy;
-    // // for vz0.abs() stuff.
-    // // maybe we can just use vz in its place?
-    // // this is a candidate for fudging.
-    // let vz0: f64 = vz;
+    let vz0_abs = vz0.abs();
 
     // renamed from `lift_force`
     let pitch_cos2: f64 = pitch_cos * pitch_cos;
@@ -43,12 +38,17 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
         assert!(convert >= 0.0);
         let vy_fall: f64 = vy_grav + convert;
         let vz_fall: f64 = vz0 + convert;
+        // let vy_fall: f64 = vy_grav * (1.0 - 0.1 * pitch_cos2);
         let vy_grav = ();
+        let vz0_ = vz0;
+        let vz0 = ();
 
         // converts v_forward to v_up if looking up
         if pitch_rad < 0.0 {
+            // falling, looking up
+
             assert!(pitch_sin <= 0.0);
-            let convert: f64 = vz0.abs() * -pitch_sin * 0.04;
+            let convert: f64 = vz0_abs * -pitch_sin * 0.04;
             assert!(convert >= 0.0);
             let vy_up = vy_fall + convert * 3.2;
             let vz_up = vz_fall - convert;
@@ -56,14 +56,18 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
             let vz_fall = ();
 
             // turning
-            let vz_turn = vz_up + (vz0.abs() - vz_up) * 0.1;
+            let vz_turn = vz_up * 0.9 + vz0_abs * 0.1;
             let vz_up = ();
             (vy_up, vz_turn)
         } else {
             // falling, looking down
 
             // turning
-            let vz_turn = vz_fall + (vz0.abs() - vz_fall) * 0.1;
+            // idk whether this is tight
+            if vz0_ >= 0.0 {
+                assert!(vz_fall >= vz0_abs);
+            }
+            let vz_turn = vz_fall * 0.9 + vz0_abs * 0.1;
             let vz_fall = ();
             (vy_fall, vz_turn)
         }
@@ -72,11 +76,12 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
 
         // converts v_forward to v_up if looking up
         if pitch_rad < 0.0 {
+            // rising, looking up
+
             assert!(pitch_sin <= 0.0);
-            let convert: f64 = vz0.abs() * -pitch_sin * 0.04;
+            let convert: f64 = vz0_abs * -pitch_sin * 0.04;
             assert!(convert >= 0.0);
             let vy_up = vy_grav + convert * 3.2;
-            let vy_grav = ();
             let vz_up = if vz0 > 0.0 {
                 vz0 * (1.0 + pitch_sin * 0.04)
             } else if vz0 == 0.0 {
@@ -84,23 +89,24 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
             } else {
                 vz0 * (1.0 - pitch_sin * 0.04)
             };
+            let vy_grav = ();
+            let vz0 = ();
 
             // turning
-            let vz_turn = vz_up + (vz0.abs() - vz_up) * 0.1;
+            assert!(vz_up <= vz0_abs);
+            let vz_turn = vz_up * 0.9 + vz0_abs * 0.1;
             let vz_up = ();
             (vy_up, vz_turn)
         } else {
             // rising, looking down
 
             // turning
-            // if we moving forwards, don't update vz
-            let vz_turn = if vz0 > 0.0 {
+            let vz_turn = if vz0 >= 0.0 {
+                // moving forwards
                 vz0
-            } else if vz0 == 0.0 {
-                0.0
             } else {
                 // moving backwards
-                vz0 + -2.0 * vz0 * 0.1
+                vz0 * 0.8
             };
             let vz0 = ();
             (vy_grav, vz_turn)
