@@ -103,6 +103,7 @@ fn main() {
     }
 
     // print parameter counts
+    #[cfg(false)]
     {
         println!();
         println!("vxs_zero:     {}", vxs_zero.len());
@@ -131,6 +132,7 @@ fn main() {
     };
 
     // print dom counts
+    #[cfg(false)]
     {
         println!();
         println!("dom_zero:    {}", dom_zero.count());
@@ -143,32 +145,44 @@ fn main() {
 
     let tol = 1e-6;
 
-    // `reference` and `inlined` have exact equality in release,
-    // but not in debug.
-    // assert!(
-    //     disagreements(reference::tick, inlined::tick, tol, &dom_nonzero)
-    //         .cases
-    //         .is_empty()
-    // );
-    // assert_eq!(
-    //     disagreements(reference::tick, inlined::tick, tol, &dom_nonzero).max_dv,
-    //     Vec3::ZERO,
-    //     "inlining is exact"
-    // );
+    // inlined
+    #[cfg(false)]
+    {
+        // `reference` and `inlined` have exact equality in release,
+        // but not in debug.
+        assert!(
+            disagreements(reference::tick, inlined::tick, tol, &dom_nonzero)
+                .cases
+                .is_empty()
+        );
+        assert_eq!(
+            disagreements(reference::tick, inlined::tick, tol, &dom_nonzero).max_dv,
+            Vec3::ZERO,
+            "inlining is exact"
+        );
+    }
 
-    // assert!(
-    //     disagreements(reference::tick, nocast::tick, tol, &dom_nonzero)
-    //         .cases
-    //         .is_empty()
-    // );
+    // nocast
+    #[cfg(false)]
+    {
+        assert!(
+            disagreements(inlined::tick, nocast::tick, tol, &dom_nonzero)
+                .cases
+                .is_empty()
+        );
+    }
 
     println!();
-    dbg!(disagreements(
-        reference::tick,
-        yaw0::tick,
-        tol,
-        &dom_zero
-    ).max_dv);
+    dbg!(disagreements(nocast::tick, yaw0::tick, tol, &dom_zero).max_dv);
+
+    // yaw0
+    {
+        assert!(
+            disagreements(nocast::tick, yaw0::tick, tol, &dom_zero)
+                .cases
+                .is_empty()
+        );
+    }
 }
 
 /// to avoid `-0.0` and `+0.0` collapsing in `dedup`.
