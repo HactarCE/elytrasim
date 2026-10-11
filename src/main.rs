@@ -295,10 +295,10 @@ fn main() {
         dom.pitches = vec![0.0];
 
         println!();
-        dbg!(disagreements(yaw0::tick, pitch0::tick, tol, &dom).max_dv);
+        dbg!(disagreements(nomut::tick, pitch0::tick, tol, &dom).max_dv);
 
         assert!(
-            disagreements(yaw0::tick, pitch0::tick, tol, &dom)
+            disagreements(nomut::tick, pitch0::tick, tol, &dom)
                 .cases
                 .is_empty()
         );

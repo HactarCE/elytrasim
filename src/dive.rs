@@ -25,17 +25,16 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
     let pitch_cos2 = pitch_cos * pitch_cos;
 
     let grav = -1.0 + pitch_cos2 * 0.75;
-    assert!((-1.0..=-0.25).contains(&grav));
     let vy_grav = vy0 + GRAVITY * grav;
+    
+    assert!((-1.0..=-0.25).contains(&grav));
 
     // converts v_down to v_forward if falling
     let convert = vy_grav * -0.1 * pitch_cos2;
-    assert!(convert >= 0.0);
-    // let vy_fall = vy_grav + convert;
-    let vy_fall = vy_grav * (1.0 - 0.1 * pitch_cos2);
-
-    // turning
+    let vy_fall = vy_grav + convert;
     let vz_turn = vz0 + convert * 0.9;
+
+    assert!(convert >= 0.0);
 
     Vec3 {
         x: 0.0,

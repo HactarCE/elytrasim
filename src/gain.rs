@@ -24,14 +24,21 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
     // renamed from `lift_force`
     let pitch_cos2 = pitch_cos * pitch_cos;
 
-    // converts v_forward to v_up if looking up
     let pitch_sin = pitch_rad.sin();
     assert!(pitch_sin <= 0.0);
-    let convert = vz0 * -pitch_sin * 0.04;
-    assert!(convert >= 0.0);
 
-    let vy_up = vy0 + convert * 3.2 + GRAVITY * (-1.0 + pitch_cos2 * 0.75);
+    let grav = -1.0 + pitch_cos2 * 0.75;
+    let vy_grav = vy0 + GRAVITY * grav;
+    
+    assert!((-1.0..=-0.25).contains(&grav));
+    assert!(vy_grav >= 0.0);
+
+    // converts v_forward to v_up if looking up
+    let convert = vz0 * -pitch_sin * 0.04;
+    let vy_up = vy_grav + convert * 3.2;
     let vz_turn = vz0 - convert * 0.9;
+
+    assert!(convert >= 0.0);
 
     Vec3 {
         x: 0.0,
