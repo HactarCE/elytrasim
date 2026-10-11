@@ -21,21 +21,30 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
 
     let pitch_rad = pitch * (PI / 180.0);
 
-    let pitch_cos2 = -pitch_rad + (PI + 2.0) / 4.0;
-    assert!((0.0..=1.0).contains(&pitch_cos2));
-
-    let grav = -1.0 + pitch_cos2 * 0.75;
-    assert!((-1.0..=-0.25).contains(&grav));
-    let vy_grav = vy0 + GRAVITY * grav;
-
     // converts v_down to v_forward if falling
-    let convert = vy_grav * -0.1 * pitch_cos2;
-    assert!(convert >= 0.0);
-    // let vy_fall = vy_grav + convert;
-    let vy_fall = vy_grav * (1.0 - 0.1 * pitch_cos2);
+    const Y_PITCH2: f64 = -0.075 * GRAVITY;
+    const Y_PITCH: f64 = GRAVITY * (0.0375 * PI - 0.775);
+    const Y_VY_PITCH: f64 = 0.1;
+    const Y_VY: f64 = 0.95 - 0.025 * PI;
+    const Y_OFFSET: f64 = GRAVITY * (-0.0046875 * PI * PI + 0.19375 * PI - 0.59375);
+    let vy_fall = Y_PITCH2 * pitch_rad.powi(2)
+        + Y_PITCH * pitch_rad
+        + Y_VY_PITCH * vy0 * pitch_rad
+        + Y_VY * vy0
+        + Y_OFFSET;
 
     // turning
-    let vz_turn = vz0 + convert * 0.9;
+    const Z_PITCH2: f64 = -0.0675 * GRAVITY;
+    const Z_PITCH: f64 = GRAVITY * (0.03375 * PI - 0.0225);
+    const Z_VY_PITCH: f64 = 0.09;
+    const Z_VY: f64 = -0.0225 * PI - 0.045;
+    const Z_OFFSET: f64 = GRAVITY * (-0.00421875 * PI * PI + 0.005625 * PI + 0.028125);
+    let vz_turn = vz0
+        + Z_PITCH2 * pitch_rad.powi(2)
+        + Z_PITCH * pitch_rad
+        + Z_VY_PITCH * vy0 * pitch_rad
+        + Z_VY * vy0
+        + Z_OFFSET;
 
     Vec3 {
         x: 0.0,
