@@ -29,7 +29,7 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
 
     let grav = -1.0 + pitch_cos2 * 0.75;
     let vy_grav = vy0 + GRAVITY * grav;
-    
+
     assert!((-1.0..=-0.25).contains(&grav));
     assert!(vy_grav >= 0.0);
 
@@ -37,6 +37,8 @@ pub fn tick(vel: Vec3, rot: Rot) -> Vec3 {
     let convert = vz0 * -pitch_sin * 0.04;
     let vy_up = vy_grav + convert * 3.2;
     let vz_turn = vz0 - convert * 0.9;
+    // let vy_up = vy_grav + vz0 * -pitch_sin * 0.04 * 3.2;
+    // let vz_turn = vz0 * (1.0 + pitch_sin * 0.04 * 0.9);
 
     assert!(convert >= 0.0);
 
